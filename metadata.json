@@ -1,0 +1,6 @@
+{
+  "name": "Quicky",
+  "description": "Quicky: Dating, social discovery, interactive Truth or Dare games, and intelligent character matching",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
