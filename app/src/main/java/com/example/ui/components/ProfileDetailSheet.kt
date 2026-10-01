@@ -28,7 +28,7 @@ import com.example.model.UserProfile
 import com.example.model.VisibilityLevel
 import com.example.ui.theme.*
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ProfileDetailSheet(
     profile: UserProfile,
@@ -256,16 +256,17 @@ fun ProfileDetailSheet(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Interests
+                // Interests (arranged correctly across multiple rows)
                 Text(
                     text = "Interests",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
-                Row(
+                FlowRow(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     profile.interests.forEach { interest ->
                         SuggestionChip(

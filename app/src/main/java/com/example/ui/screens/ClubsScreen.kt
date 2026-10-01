@@ -39,19 +39,28 @@ fun ClubsScreen(
     onJoinClub: (String) -> Unit,
     onLeaveClub: (String) -> Unit,
     onCreateClubClick: () -> Unit,
+    onLeaveAndJoinClub: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var selectedCategory by remember { mutableStateOf("All") }
+    var searchQuery by remember { mutableStateOf("") }
     var showLeaveConfirmDialog by remember { mutableStateOf<Club?>(null) }
+    var showSwitchClubConfirmDialog by remember { mutableStateOf<Club?>(null) }
 
     val myClub = remember(clubs, activeClubId) {
         clubs.find { it.id == activeClubId }
     }
 
     val categories = listOf("All", "Gaming & Ludo", "Food & Lifestyle", "Music & Arts", "Entertainment")
-    val filteredClubs = remember(selectedCategory, clubs) {
-        if (selectedCategory == "All") clubs
-        else clubs.filter { it.category.contains(selectedCategory, ignoreCase = true) }
+    val filteredClubs = remember(selectedCategory, searchQuery, clubs) {
+        clubs.filter { club ->
+            val matchesCategory = selectedCategory == "All" || club.category.contains(selectedCategory, ignoreCase = true)
+            val matchesSearch = searchQuery.isBlank() ||
+                    club.name.contains(searchQuery, ignoreCase = true) ||
+                    club.description.contains(searchQuery, ignoreCase = true) ||
+                    club.category.contains(searchQuery, ignoreCase = true)
+            matchesCategory && matchesSearch
+        }
     }
 
     Scaffold(
@@ -267,6 +276,34 @@ fun ClubsScreen(
                 }
             }
 
+            // Club Name Search Bar
+            item {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Search club by name or interest...", style = MaterialTheme.typography.bodyMedium) },
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search", tint = QuickyPurple) },
+                    trailingIcon = {
+                        if (searchQuery.isNotBlank()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(20.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = QuickyPurple,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("clubs_search_input")
+                )
+            }
+
             // Category Filter Pills
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -284,6 +321,35 @@ fun ClubsScreen(
                 }
             }
 
+            if (filteredClubs.isEmpty()) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("🔍", fontSize = 32.sp)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "No clubs match '$searchQuery'",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Try searching a different name or browse categories above",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
             // Clubs List
             items(filteredClubs) { club ->
                 val isMyClub = club.id == activeClubId
@@ -293,7 +359,10 @@ fun ClubsScreen(
                 Surface(
                     shape = RoundedCornerShape(18.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .clickable { onOpenClub(club) }
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(
@@ -355,37 +424,71 @@ fun ClubsScreen(
 
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        // Action Buttons based on Rules
+                        // Action Buttons: user can always View Club, and Join if not joined and has space
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // View Club Button (always available)
+                            OutlinedButton(
+                                onClick = { onOpenClub(club) },
+                                shape = RoundedCornerShape(18.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("View Club")
+                            }
+
                             when {
                                 isMyClub -> {
                                     Button(
                                         onClick = { onOpenClub(club) },
                                         colors = ButtonDefaults.buttonColors(containerColor = QuickyPurple),
-                                        shape = RoundedCornerShape(18.dp)
+                                        shape = RoundedCornerShape(18.dp),
+                                        modifier = Modifier.weight(1f)
                                     ) {
-                                        Text("Open Club Chat", fontWeight = FontWeight.Bold)
+                                        Text("Open Chat", fontWeight = FontWeight.Bold)
                                     }
                                 }
                                 userAlreadyInOtherClub -> {
-                                    OutlinedButton(
-                                        onClick = {},
-                                        enabled = false,
-                                        shape = RoundedCornerShape(18.dp)
-                                    ) {
-                                        Text("Already in a Club", style = MaterialTheme.typography.labelMedium)
+                                    if (!isFull) {
+                                        Button(
+                                            onClick = { showSwitchClubConfirmDialog = club },
+                                            colors = ButtonDefaults.buttonColors(containerColor = QuickyPurple.copy(alpha = 0.85f)),
+                                            shape = RoundedCornerShape(18.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("switch_to_club_${club.id}")
+                                        ) {
+                                            Text("Leave & Join", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        }
+                                    } else {
+                                        Surface(
+                                            color = ActionPass.copy(alpha = 0.12f),
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier.padding(start = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = "Club Full",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = ActionPass,
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                                            )
+                                        }
                                     }
                                 }
                                 isFull -> {
-                                    OutlinedButton(
-                                        onClick = {},
-                                        enabled = false,
-                                        shape = RoundedCornerShape(18.dp)
+                                    Surface(
+                                        color = ActionPass.copy(alpha = 0.12f),
+                                        shape = RoundedCornerShape(14.dp),
+                                        modifier = Modifier.padding(start = 4.dp)
                                     ) {
-                                        Text("Club Full (15 max)", style = MaterialTheme.typography.labelMedium)
+                                        Text(
+                                            text = "Club Full (15 max)",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = ActionPass,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                                        )
                                     }
                                 }
                                 else -> {
@@ -393,7 +496,9 @@ fun ClubsScreen(
                                         onClick = { onJoinClub(club.id) },
                                         colors = ButtonDefaults.buttonColors(containerColor = QuickyPurple),
                                         shape = RoundedCornerShape(18.dp),
-                                        modifier = Modifier.testTag("join_club_${club.id}")
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("join_club_${club.id}")
                                     ) {
                                         Text("Join Club", fontWeight = FontWeight.Bold)
                                     }
@@ -425,6 +530,33 @@ fun ClubsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showLeaveConfirmDialog = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Switch Club confirmation dialog (One club at a time enforcement)
+    showSwitchClubConfirmDialog?.let { targetClub ->
+        AlertDialog(
+            onDismissRequest = { showSwitchClubConfirmDialog = null },
+            title = { Text("Leave & Join New Club?") },
+            text = {
+                Text("A user can join in only ONE club at a time. In order to join \"${targetClub.name}\", you must first leave your current club (\"${myClub?.name ?: "Existing Club"}\"). Would you like to leave your current club and join ${targetClub.name}?")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onLeaveAndJoinClub(targetClub.id)
+                        showSwitchClubConfirmDialog = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = QuickyPurple)
+                ) {
+                    Text("Leave & Join ${targetClub.name}")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSwitchClubConfirmDialog = null }) {
                     Text("Cancel")
                 }
             }

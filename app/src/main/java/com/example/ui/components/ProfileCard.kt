@@ -26,6 +26,7 @@ import com.example.R
 import com.example.model.UserProfile
 import com.example.ui.theme.*
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ProfileCard(
     profile: UserProfile,
@@ -242,12 +243,13 @@ fun ProfileCard(
                     modifier = Modifier.padding(top = 6.dp)
                 )
 
-                // Interest Badges
-                Row(
+                // Interest Badges arranged across multiple rows
+                FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.padding(top = 8.dp)
                 ) {
-                    profile.interests.take(3).forEach { interest ->
+                    profile.interests.forEach { interest ->
                         Surface(
                             color = Color.Black.copy(alpha = 0.45f),
                             shape = CircleShape,

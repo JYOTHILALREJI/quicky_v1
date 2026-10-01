@@ -553,7 +553,7 @@ object MockDataProvider {
     val sampleClubs = listOf(
         Club(
             id = "club_gamers",
-            ownerId = "user_alex",
+            ownerId = "user_me",
             name = "Weekend Gamers 🎲",
             description = "Passionate casual gamers who love Ludo showdowns, multiplayer banter, and spontaneous gaming nights.",
             logoEmoji = "🕹️",
@@ -562,8 +562,8 @@ object MockDataProvider {
             createdAt = "3 days ago",
             category = "Gaming & Ludo",
             members = listOf(
-                ClubMember("cm_1", "user_alex", "Alex", R.drawable.img_profile_alex, "The Adventurer", true, "OWNER", "ACTIVE", "3d ago"),
-                ClubMember("cm_2", "user_me", "Jordan (You)", R.drawable.img_onboarding_hero, "The Explorer", true, "MEMBER", "ACTIVE", "2d ago"),
+                ClubMember("cm_1", "user_me", "Jordan (You)", R.drawable.img_onboarding_hero, "The Explorer", true, "OWNER", "ACTIVE", "3d ago"),
+                ClubMember("cm_2", "user_alex", "Alex", R.drawable.img_profile_alex, "The Adventurer", true, "MEMBER", "ACTIVE", "2d ago"),
                 ClubMember("cm_3", "user_sarah", "Sarah", R.drawable.img_profile_sarah, "The Playful One", true, "MEMBER", "ACTIVE", "2d ago"),
                 ClubMember("cm_4", "user_maya", "Maya", R.drawable.img_profile_alex, "The Conversationalist", true, "MEMBER", "ACTIVE", "1d ago"),
                 ClubMember("cm_5", "user_liam", "Liam", null, "The Deep Thinker", false, "MEMBER", "ACTIVE", "1d ago"),

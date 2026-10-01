@@ -616,10 +616,10 @@ fun ProfileScreen(
 
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
-                // Settings & Legal
+                // Account & Legal
                 ListItem(
-                    headlineContent = { Text("Settings & Legal (18+)", fontWeight = FontWeight.SemiBold) },
-                    supportingContent = { Text("Download data, terms, delete account") },
+                    headlineContent = { Text("Account & Legal", fontWeight = FontWeight.SemiBold) },
+                    supportingContent = { Text("Theme mode, download data, terms, delete account") },
                     leadingContent = { Icon(Icons.Outlined.Settings, contentDescription = null) },
                     trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),

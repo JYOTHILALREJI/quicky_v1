@@ -1,7 +1,9 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,7 +31,9 @@ import com.example.R
 import com.example.data.MockDataProvider
 import com.example.model.*
 import com.example.ui.components.ChatBubble
+import com.example.ui.components.ReplyPreviewBanner
 import com.example.ui.theme.*
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,7 +42,7 @@ fun ChatDetailScreen(
     messages: List<ChatMessage>,
     prompts: List<TruthOrDarePrompt>,
     onBack: () -> Unit,
-    onSendMessage: (String) -> Unit,
+    onSendMessage: (text: String, replyToText: String?, replyToSender: String?) -> Unit,
     onSendPrompt: (TruthOrDarePrompt) -> Unit,
     onAnswerGame: (String, String) -> Unit, // messageId, answerText
     onAddReaction: (String, String) -> Unit, // messageId, emoji
@@ -46,12 +50,30 @@ fun ChatDetailScreen(
     onUnmatch: () -> Unit,
     onBlock: () -> Unit,
     onReport: (String) -> Unit,
+    isPremium: Boolean = false,
+    onOpenPremiumStore: () -> Unit = {},
+    onOpenLudo: () -> Unit = {},
+    onSendVoiceMessage: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val coroutineScope = rememberCoroutineScope()
     var inputText by remember { mutableStateOf("") }
+    var replyingToMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showGamePicker by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
+    var isRecordingVoiceNote by remember { mutableStateOf(false) }
+    var voiceRecordSeconds by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(isRecordingVoiceNote) {
+        if (isRecordingVoiceNote) {
+            voiceRecordSeconds = 0
+            while (isRecordingVoiceNote) {
+                delay(1000)
+                voiceRecordSeconds++
+            }
+        }
+    }
 
     Scaffold(
         modifier = modifier
@@ -121,11 +143,19 @@ fun ChatDetailScreen(
                     }
                 },
                 actions = {
+                    val isDark = MaterialTheme.colorScheme.background == DarkBg || MaterialTheme.colorScheme.surface == DarkSurface
+
+                    // Games section in chat
                     IconButton(
                         onClick = { showGamePicker = true },
                         modifier = Modifier.testTag("chat_top_game_button")
                     ) {
-                        Icon(imageVector = Icons.Filled.SportsEsports, contentDescription = "Play Truth or Dare", tint = SparkPurple)
+                        // Vector SVG icon, color-neutral (White in dark theme, Black in light theme)
+                        Icon(
+                            imageVector = Icons.Filled.SportsEsports,
+                            contentDescription = "Chat Games Section",
+                            tint = if (isDark) Color.White else Color.Black
+                        )
                     }
 
                     Box {
@@ -222,7 +252,8 @@ fun ChatDetailScreen(
                     ChatBubble(
                         message = msg,
                         onReactionClick = { emoji -> onAddReaction(msg.id, emoji) },
-                        onAnswerGame = { answer -> onAnswerGame(msg.id, answer) }
+                        onAnswerGame = { answer -> onAnswerGame(msg.id, answer) },
+                        onSwipeToReply = { replyingToMessage = msg }
                     )
                 }
             }
@@ -275,79 +306,180 @@ fun ChatDetailScreen(
                 }
             }
 
+            // Replying To Preview Banner
+            if (replyingToMessage != null) {
+                ReplyPreviewBanner(
+                    replySender = if (replyingToMessage!!.isMine) "You" else match.user.name,
+                    replyText = replyingToMessage!!.text,
+                    onCancel = { replyingToMessage = null }
+                )
+            }
+
             // Bottom Input Bar
             Surface(
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 6.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                        .navigationBarsPadding(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Play Game CTA Button
-                    FilledIconButton(
-                        onClick = { showGamePicker = true },
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = SparkPurple.copy(alpha = 0.2f),
-                            contentColor = SparkPurple
-                        ),
+                if (isRecordingVoiceNote) {
+                    // Active In-Chat Voice Note Recording Bar
+                    Row(
                         modifier = Modifier
-                            .size(44.dp)
-                            .testTag("chat_bottom_game_button")
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .navigationBarsPadding(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Icon(imageVector = Icons.Filled.SportsEsports, contentDescription = "Play game")
-                    }
-
-                    // Message text input
-                    TextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        placeholder = { Text("Message ${match.user.name}...", style = MaterialTheme.typography.bodyMedium) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("chat_message_input"),
-                        shape = RoundedCornerShape(24.dp),
-                        colors = TextFieldDefaults.colors(
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                        maxLines = 4
-                    )
-
-                    // Send Button
-                    FilledIconButton(
-                        onClick = {
-                            if (inputText.isNotBlank()) {
-                                onSendMessage(inputText)
-                                inputText = ""
+                        Surface(
+                            shape = CircleShape,
+                            color = SparkRose.copy(alpha = 0.2f),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .clip(CircleShape)
+                                        .background(SparkRose)
+                                )
                             }
-                        },
-                        enabled = inputText.isNotBlank(),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = SparkRose,
-                            contentColor = Color.White,
-                            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
-                        ),
+                        }
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Recording voice message...",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SparkRose
+                            )
+                            Text(
+                                text = "0:0$voiceRecordSeconds",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        // Cancel / Discard
+                        IconButton(
+                            onClick = {
+                                isRecordingVoiceNote = false
+                                voiceRecordSeconds = 0
+                            },
+                            modifier = Modifier.testTag("chat_voice_cancel_button")
+                        ) {
+                            Icon(Icons.Filled.Close, contentDescription = "Discard", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+
+                        // Send Voice Note
+                        FilledIconButton(
+                            onClick = {
+                                val dur = voiceRecordSeconds.coerceAtLeast(3)
+                                onSendVoiceMessage(dur)
+                                isRecordingVoiceNote = false
+                                voiceRecordSeconds = 0
+                            },
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = SparkRose,
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .size(44.dp)
+                                .testTag("chat_voice_send_button")
+                        ) {
+                            Icon(Icons.Filled.Send, contentDescription = "Send voice message", modifier = Modifier.size(20.dp))
+                        }
+                    }
+                } else {
+                    Row(
                         modifier = Modifier
-                            .size(44.dp)
-                            .testTag("chat_send_button")
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .navigationBarsPadding(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(imageVector = Icons.Filled.Send, contentDescription = "Send message", modifier = Modifier.size(20.dp))
+                        // Message text input
+                        TextField(
+                            value = inputText,
+                            onValueChange = { inputText = it },
+                            placeholder = { Text("Message ${match.user.name}...", style = MaterialTheme.typography.bodyMedium) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("chat_message_input"),
+                            shape = RoundedCornerShape(24.dp),
+                            colors = TextFieldDefaults.colors(
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            maxLines = 4
+                        )
+
+                        // Voice Message Option in Chat
+                        IconButton(
+                            onClick = {
+                                isRecordingVoiceNote = true
+                            },
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(if (inputText.isBlank()) SparkPurple.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant)
+                                .testTag("chat_voice_message_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Mic,
+                                contentDescription = "Record Voice Message",
+                                tint = if (inputText.isBlank()) SparkPurple else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        // Send Button
+                        if (inputText.isNotBlank()) {
+                            FilledIconButton(
+                                onClick = {
+                                    if (inputText.isNotBlank()) {
+                                        onSendMessage(
+                                            inputText,
+                                            replyingToMessage?.text?.take(60),
+                                            if (replyingToMessage != null) (if (replyingToMessage!!.isMine) "You" else match.user.name) else null
+                                        )
+                                        inputText = ""
+                                        replyingToMessage = null
+                                    }
+                                },
+                                enabled = inputText.isNotBlank(),
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = SparkRose,
+                                    contentColor = Color.White,
+                                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                                ),
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .testTag("chat_send_button")
+                            ) {
+                                Icon(imageVector = Icons.Filled.Send, contentDescription = "Send message", modifier = Modifier.size(20.dp))
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    // Truth or Dare Picker Sheet
+    // Chat Games Section Modal Sheet
     if (showGamePicker) {
+        var gamesSectionTab by remember { mutableIntStateOf(0) } // 0: Truth or Dare, 1: Premium Games
+        var todMode by remember { mutableStateOf("SYSTEM") } // "SYSTEM" or "CUSTOM"
+        var selectedCategory by remember { mutableStateOf("All") }
+        var customPromptType by remember { mutableStateOf("TRUTH") } // "TRUTH" or "DARE"
+        var customQuestionText by remember { mutableStateOf("") }
+
+        val filteredPrompts = remember(selectedCategory, prompts) {
+            if (selectedCategory == "All") prompts else prompts.filter { it.category == selectedCategory }
+        }
+
         ModalBottomSheet(
             onDismissRequest = { showGamePicker = false },
             containerColor = MaterialTheme.colorScheme.surface
@@ -355,87 +487,395 @@ fun ChatDetailScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .navigationBarsPadding()
             ) {
+                // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "Challenge ${match.user.name} 🎮",
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                    )
+                    Column {
+                        Text(
+                            text = "Chat Games with ${match.user.name} 🎮",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            text = "Free Truth or Dare & Premium interactive games",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     IconButton(onClick = { showGamePicker = false }) {
                         Icon(imageVector = Icons.Filled.Close, contentDescription = "Close")
                     }
                 }
 
-                Text(
-                    text = "Pick a prompt category to send directly into the chat:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Section Tabs (Truth or Dare vs Premium Games)
+                TabRow(
+                    selectedTabIndex = gamesSectionTab,
+                    containerColor = Color.Transparent,
+                    divider = {}
+                ) {
+                    Tab(
+                        selected = gamesSectionTab == 0,
+                        onClick = { gamesSectionTab = 0 },
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("Truth or Dare", fontWeight = FontWeight.Bold)
+                                Surface(shape = CircleShape, color = ActionLike.copy(alpha = 0.2f)) {
+                                    Text("FREE", fontSize = 10.sp, color = ActionLike, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                                }
+                            }
+                        }
+                    )
+                    Tab(
+                        selected = gamesSectionTab == 1,
+                        onClick = { gamesSectionTab = 1 },
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("Premium Games", fontWeight = FontWeight.Bold)
+                                Icon(Icons.Filled.Lock, contentDescription = null, tint = SparkGold, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                val categories = listOf("Flirty", "Funny", "Deep", "First Date")
-                categories.forEach { cat ->
-                    val catPrompts = prompts.filter { it.category == cat }
-                    val randomPrompt = catPrompts.randomOrNull() ?: prompts.first()
-
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                            .clickable {
-                                onSendPrompt(randomPrompt)
-                                showGamePicker = false
-                            }
-                    ) {
+                when (gamesSectionTab) {
+                    0 -> {
+                        // TRUTH OR DARE SECTION
+                        // Toggle between System Prompt & Custom Question
                         Row(
-                            modifier = Modifier.padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = cat,
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            FilterChip(
+                                selected = todMode == "SYSTEM",
+                                onClick = { todMode = "SYSTEM" },
+                                label = { Text("✨ System Prompts") },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = SparkPurple,
+                                    selectedLabelColor = Color.White
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                            FilterChip(
+                                selected = todMode == "CUSTOM",
+                                onClick = { todMode = "CUSTOM" },
+                                label = { Text("✍️ Custom Question") },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = SparkRose,
+                                    selectedLabelColor = Color.White
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        if (todMode == "SYSTEM") {
+                            // Category filter chips
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                val cats = listOf("All", "Flirty", "Funny", "Deep", "First Date")
+                                items(cats) { cat ->
+                                    SuggestionChip(
+                                        onClick = { selectedCategory = cat },
+                                        label = { Text(cat, fontSize = 12.sp) },
+                                        colors = SuggestionChipDefaults.suggestionChipColors(
+                                            containerColor = if (selectedCategory == cat) QuickyPurple.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
+                                            labelColor = if (selectedCategory == cat) QuickyPurple else MaterialTheme.colorScheme.onSurface
+                                        )
                                     )
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = if (randomPrompt.type == "TRUTH") SparkPurple else SparkRose
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            // Quick random buttons
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        val truthPrompt = prompts.filter { it.type == "TRUTH" }.randomOrNull() ?: prompts.first()
+                                        onSendPrompt(truthPrompt)
+                                        showGamePicker = false
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = SparkPurple),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🎲 Random Truth", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        val darePrompt = prompts.filter { it.type == "DARE" }.randomOrNull() ?: prompts.last()
+                                        onSendPrompt(darePrompt)
+                                        showGamePicker = false
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = SparkRose),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🔥 Random Dare", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            LazyColumn(
+                                modifier = Modifier.height(260.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(filteredPrompts) { prompt ->
+                                    Card(
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                        shape = RoundedCornerShape(14.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                onSendPrompt(prompt)
+                                                showGamePicker = false
+                                            }
                                     ) {
+                                        Row(
+                                            modifier = Modifier.padding(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Surface(
+                                                        shape = RoundedCornerShape(6.dp),
+                                                        color = if (prompt.type == "TRUTH") SparkPurple else SparkRose
+                                                    ) {
+                                                        Text(
+                                                            text = prompt.type,
+                                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                            color = Color.White,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                    Text(
+                                                        text = "• ${prompt.category}",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                Text(
+                                                    text = prompt.text,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    modifier = Modifier.padding(top = 4.dp)
+                                                )
+                                            }
+                                            IconButton(onClick = {
+                                                onSendPrompt(prompt)
+                                                showGamePicker = false
+                                            }) {
+                                                Icon(Icons.Filled.Send, contentDescription = "Send", tint = SparkRose)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // CUSTOM QUESTION INPUT SECTION
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(
+                                        text = "Write your own question or challenge:",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        FilterChip(
+                                            selected = customPromptType == "TRUTH",
+                                            onClick = { customPromptType = "TRUTH" },
+                                            label = { Text("Truth 🎲") },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = SparkPurple,
+                                                selectedLabelColor = Color.White
+                                            )
+                                        )
+                                        FilterChip(
+                                            selected = customPromptType == "DARE",
+                                            onClick = { customPromptType = "DARE" },
+                                            label = { Text("Dare 🔥") },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = SparkRose,
+                                                selectedLabelColor = Color.White
+                                            )
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    OutlinedTextField(
+                                        value = customQuestionText,
+                                        onValueChange = { customQuestionText = it },
+                                        placeholder = {
+                                            Text(
+                                                if (customPromptType == "TRUTH")
+                                                    "e.g. What's the wildest adventure you've ever had?"
+                                                else
+                                                    "e.g. Send a 5-second voice impression of a celebrity!"
+                                            )
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        minLines = 3,
+                                        maxLines = 4
+                                    )
+
+                                    Spacer(modifier = Modifier.height(12.dp))
+
+                                    Button(
+                                        onClick = {
+                                            if (customQuestionText.isNotBlank()) {
+                                                val customPrompt = TruthOrDarePrompt(
+                                                    id = "custom_${System.currentTimeMillis()}",
+                                                    category = "Custom",
+                                                    type = customPromptType,
+                                                    text = customQuestionText.trim()
+                                                )
+                                                onSendPrompt(customPrompt)
+                                                customQuestionText = ""
+                                                showGamePicker = false
+                                            }
+                                        },
+                                        enabled = customQuestionText.isNotBlank(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (customPromptType == "TRUTH") SparkPurple else SparkRose
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(Icons.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Send Custom $customPromptType Challenge", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    1 -> {
+                        // PREMIUM GAMES SECTION (Locked for free users!)
+                        LazyColumn(
+                            modifier = Modifier.height(300.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            item {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = SparkGold.copy(alpha = 0.12f),
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(Icons.Filled.Stars, contentDescription = null, tint = SparkGold, modifier = Modifier.size(20.dp))
                                         Text(
-                                            text = randomPrompt.type,
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = Color.White,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            text = if (isPremium) "Quicky Gold Active: All multiplayer games unlocked!" else "Premium Games are locked for free users. Upgrade to unlock all!",
+                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
                                     }
                                 }
-                                Text(
-                                    text = randomPrompt.text,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 2,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(top = 4.dp)
+                            }
+
+                            // 1. 2-Player Ludo Arena
+                            item {
+                                PremiumGameCard(
+                                    title = "2-Player Ludo Arena 🎲",
+                                    description = "Real-time dice rolling showdown right inside chat. 57 steps to victory!",
+                                    isLocked = !isPremium,
+                                    onClick = {
+                                        if (isPremium) {
+                                            showGamePicker = false
+                                            onOpenLudo()
+                                        } else {
+                                            onOpenPremiumStore()
+                                        }
+                                    }
                                 )
                             }
 
-                            Icon(imageVector = Icons.Filled.Send, contentDescription = "Send", tint = SparkRose)
+                            // 2. Speed Trivia 1v1
+                            item {
+                                PremiumGameCard(
+                                    title = "Speed Trivia 1v1 🧠",
+                                    description = "60-second rapid-fire knowledge faceoff with live score tracking.",
+                                    isLocked = !isPremium,
+                                    onClick = {
+                                        if (isPremium) {
+                                            onSendMessage("Let's play Speed Trivia 1v1! 🧠", null, null)
+                                            showGamePicker = false
+                                        } else {
+                                            onOpenPremiumStore()
+                                        }
+                                    }
+                                )
+                            }
+
+                            // 3. Couples Dilemma
+                            item {
+                                PremiumGameCard(
+                                    title = "Couples Dilemma 🤔",
+                                    description = "Intriguing ethical and relationship dilemmas to test your synergy.",
+                                    isLocked = !isPremium,
+                                    onClick = {
+                                        if (isPremium) {
+                                            onSendMessage("I picked Couples Dilemma for us! 🤔", null, null)
+                                            showGamePicker = false
+                                        } else {
+                                            onOpenPremiumStore()
+                                        }
+                                    }
+                                )
+                            }
+
+                            // 4. Would You Rather (Spicy)
+                            item {
+                                PremiumGameCard(
+                                    title = "Would You Rather (Exclusive) 🎭",
+                                    description = "Unfiltered moral and humorous hypothetical questions.",
+                                    isLocked = !isPremium,
+                                    onClick = {
+                                        if (isPremium) {
+                                            onSendMessage("Starting Would You Rather! 🎭", null, null)
+                                            showGamePicker = false
+                                        } else {
+                                            onOpenPremiumStore()
+                                        }
+                                    }
+                                )
+                            }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(16.dp))
             }
         }
     }
@@ -460,5 +900,78 @@ fun ChatDetailScreen(
                 TextButton(onClick = { showReportDialog = false }) { Text("Cancel") }
             }
         )
+    }
+}
+
+@Composable
+fun PremiumGameCard(
+    title: String,
+    description: String,
+    isLocked: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (isLocked) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surfaceVariant
+        ),
+        shape = RoundedCornerShape(16.dp),
+        border = if (isLocked) androidx.compose.foundation.BorderStroke(1.dp, SparkGold.copy(alpha = 0.5f)) else null,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    if (isLocked) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = SparkGold.copy(alpha = 0.2f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(Icons.Filled.Lock, contentDescription = null, tint = SparkGold, modifier = Modifier.size(11.dp))
+                                Text("LOCKED", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = SparkGold)
+                            }
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = ActionLike.copy(alpha = 0.2f)
+                        ) {
+                            Text("UNLOCKED", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = ActionLike, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                        }
+                    }
+                }
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+
+            IconButton(onClick = onClick) {
+                if (isLocked) {
+                    Icon(Icons.Filled.Lock, contentDescription = "Locked game", tint = SparkGold)
+                } else {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = "Play game", tint = QuickyPurple)
+                }
+            }
+        }
     }
 }

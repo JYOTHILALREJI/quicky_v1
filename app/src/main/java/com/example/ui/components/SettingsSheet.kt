@@ -16,11 +16,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.model.AppThemeMode
 import com.example.ui.theme.ActionPass
+import com.example.ui.theme.QuickyPink
+import com.example.ui.theme.QuickyPurple
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsSheet(
+    currentTheme: AppThemeMode = AppThemeMode.LIGHT,
+    onThemeChange: (AppThemeMode) -> Unit = {},
     onDownloadData: () -> Unit,
     onDeleteAccount: () -> Unit,
     onDismiss: () -> Unit
@@ -44,12 +49,71 @@ fun SettingsSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Settings & Legal",
+                    text = "Account & Legal",
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                 )
 
                 IconButton(onClick = onDismiss) {
                     Icon(imageVector = Icons.Filled.Close, contentDescription = "Close")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Appearance & Theme Section (Adapts App to Dark Theme)
+            Text(
+                "APPEARANCE & THEME",
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = "Theme: ${currentTheme.name.lowercase().replaceFirstChar { it.uppercase() }}",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = currentTheme == AppThemeMode.LIGHT,
+                            onClick = { onThemeChange(AppThemeMode.LIGHT) },
+                            label = { Text("Light ☀️") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = QuickyPink,
+                                selectedLabelColor = androidx.compose.ui.graphics.Color.White
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = currentTheme == AppThemeMode.DARK,
+                            onClick = { onThemeChange(AppThemeMode.DARK) },
+                            label = { Text("Dark 🌙") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = QuickyPurple,
+                                selectedLabelColor = androidx.compose.ui.graphics.Color.White
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = currentTheme == AppThemeMode.SYSTEM,
+                            onClick = { onThemeChange(AppThemeMode.SYSTEM) },
+                            label = { Text("Auto") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = androidx.compose.ui.graphics.Color.White
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
 

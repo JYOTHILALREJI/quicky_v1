@@ -227,4 +227,60 @@ class SparkViewModelTest {
         val updatedPack = viewModel.uiState.value.stickerPacks.first { it.id == unownedPack.id }
         assertTrue(updatedPack.isOwned)
     }
+
+    @Test
+    fun testThemeModeChange() {
+        assertEquals(com.example.model.AppThemeMode.LIGHT, viewModel.uiState.value.themeMode)
+        viewModel.setThemeMode(com.example.model.AppThemeMode.DARK)
+        assertEquals(com.example.model.AppThemeMode.DARK, viewModel.uiState.value.themeMode)
+        viewModel.setThemeMode(com.example.model.AppThemeMode.SYSTEM)
+        assertEquals(com.example.model.AppThemeMode.SYSTEM, viewModel.uiState.value.themeMode)
+    }
+
+    @Test
+    fun testPersonalInformationToggleAndUpdate() {
+        assertFalse(viewModel.uiState.value.showPersonalInformationSheet)
+        viewModel.togglePersonalInformation(true)
+        assertTrue(viewModel.uiState.value.showPersonalInformationSheet)
+
+        viewModel.updatePersonalInformation(
+            height = "180 cm",
+            occupation = "Senior Engineer",
+            education = "Master's Degree",
+            intent = "Long-term relationship",
+            fieldVisibility = mapOf("height" to com.example.model.VisibilityLevel.EVERYONE)
+        )
+
+        assertFalse(viewModel.uiState.value.showPersonalInformationSheet)
+        assertEquals("180 cm", viewModel.uiState.value.userProfile.height)
+        assertEquals("Senior Engineer", viewModel.uiState.value.userProfile.occupation)
+        assertEquals("Master's Degree", viewModel.uiState.value.userProfile.educationLevel)
+    }
+
+    @Test
+    fun testOwnerCanRemoveClubMemberAnytime() {
+        val club = viewModel.uiState.value.clubs.find { it.id == "club_gamers" }!!
+        val memberCountBefore = club.members.size
+        val memberToRemove = club.members.first { it.userId != "user_me" }
+
+        viewModel.removeClubMember("club_gamers", memberToRemove.userId)
+
+        val updatedClub = viewModel.uiState.value.clubs.find { it.id == "club_gamers" }!!
+        assertEquals(memberCountBefore - 1, updatedClub.members.size)
+        assertFalse(updatedClub.members.any { it.userId == memberToRemove.userId })
+    }
+
+    @Test
+    fun testSendLudoMessageWithReply() {
+        viewModel.sendLudoChatMessage(
+            text = "Nice move!",
+            replyToText = "Alex rolled a 6",
+            replyToSender = "Alex"
+        )
+
+        val lastMsg = viewModel.uiState.value.ludoRoom.chatMessages.last()
+        assertEquals("Nice move!", lastMsg.text)
+        assertEquals("Alex rolled a 6", lastMsg.replyToText)
+        assertEquals("Alex", lastMsg.replyToSender)
+    }
 }

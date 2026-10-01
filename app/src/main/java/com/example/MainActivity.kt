@@ -31,9 +31,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            SparkTheme {
-                SparkApp()
-            }
+            SparkApp()
         }
     }
 }
@@ -41,68 +39,96 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun SparkApp(viewModel: SparkViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
-    var showEditProfileSheet by remember { mutableStateOf(false) }
-
-    // Toast and message notifications
-    LaunchedEffect(state.toastMessage) {
-        state.toastMessage?.let { msg ->
-            scope.launch {
-                snackbarHostState.showSnackbar(msg)
-            }
-            viewModel.clearToast()
-        }
+    val isSystemDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val isDark = when (state.themeMode) {
+        com.example.model.AppThemeMode.DARK -> true
+        com.example.model.AppThemeMode.LIGHT -> false
+        com.example.model.AppThemeMode.SYSTEM -> isSystemDark
     }
 
-    // Back button handling per requirements
-    BackHandler(enabled = state.selectedProfileDetail != null || state.selectedMatchForChat != null || state.selectedClubForDetail != null || state.isLudoActive || state.currentTab != SparkTab.DISCOVER) {
-        when {
-            state.isLudoActive -> viewModel.closeLudoGame()
-            state.selectedClubForDetail != null -> viewModel.closeClubDetail()
-            state.selectedProfileDetail != null -> viewModel.closeProfileDetail()
-            state.selectedMatchForChat != null -> viewModel.closeChat()
-            state.currentTab != SparkTab.DISCOVER -> viewModel.setTab(SparkTab.DISCOVER)
-        }
-    }
+    SparkTheme(darkTheme = isDark) {
+        val context = LocalContext.current
+        val snackbarHostState = remember { SnackbarHostState() }
+        val scope = rememberCoroutineScope()
+        var showEditProfileSheet by remember { mutableStateOf(false) }
 
-    if (!state.isOnboardingComplete) {
-        OnboardingScreen(onComplete = { viewModel.completeOnboarding() })
-    } else if (state.isLudoActive) {
-        // 2-PLAYER PREMIUM LUDO GAME ARENA (PRD Section 3 - 10)
-        LudoGameRoomScreen(
-            room = state.ludoRoom,
-            isPremium = state.entitlements.isPremium,
-            onBack = { viewModel.closeLudoGame() },
-            onRollDice = { viewModel.rollLudoDice() },
-            onMoveToken = { tokenId -> viewModel.moveLudoToken(tokenId) },
-            onSendMessage = { text -> viewModel.sendLudoChatMessage(text) },
-            onSendSticker = { emoji -> viewModel.sendLudoChatMessage("", stickerEmoji = emoji) },
-            onSendVoiceMessage = { viewModel.sendLudoChatMessage("", isVoice = true) },
-            onOpenStickerPicker = { viewModel.openStickerPicker() },
-            onOpenPremiumStore = { viewModel.openPremiumStore() }
-        )
-    } else if (state.selectedClubForDetail != null) {
-        // CLUB DETAIL & COMMON CHAT (PRD Section 18 & 28)
-        val club = state.selectedClubForDetail!!
-        val clubMessages = state.clubMessages[club.id] ?: emptyList()
-        ClubDetailScreen(
-            club = club,
-            messages = clubMessages,
-            isPremium = state.entitlements.isPremium,
-            onBack = { viewModel.closeClubDetail() },
-            onSendMessage = { text -> viewModel.sendClubMessage(club.id, text) },
-            onSendVoiceMessage = { viewModel.sendClubMessage(club.id, "", isVoice = true) },
-            onOpenStickerPicker = { viewModel.openStickerPicker() },
-            onOpenPremiumStore = { viewModel.openPremiumStore() },
-            onViewMemberProfile = { userId ->
-                val candidate = state.discoveryDeck.find { it.id == userId }
-                    ?: state.matches.map { it.user }.find { it.id == userId }
-                if (candidate != null) viewModel.openProfileDetail(candidate)
+        // Toast and message notifications
+        LaunchedEffect(state.toastMessage) {
+            state.toastMessage?.let { msg ->
+                scope.launch {
+                    snackbarHostState.showSnackbar(msg)
+                }
+                viewModel.clearToast()
             }
-        )
-    } else {
+        }
+
+        // Back button handling per requirements
+        BackHandler(enabled = state.selectedProfileDetail != null || state.selectedMatchForChat != null || state.selectedClubForDetail != null || state.isLudoActive || state.showPersonalInformationSheet || state.currentTab != SparkTab.DISCOVER) {
+            when {
+                state.isLudoActive -> viewModel.closeLudoGame()
+                state.selectedClubForDetail != null -> viewModel.closeClubDetail()
+                state.showPersonalInformationSheet -> viewModel.togglePersonalInformation(false)
+                state.selectedProfileDetail != null -> viewModel.closeProfileDetail()
+                state.selectedMatchForChat != null -> viewModel.closeChat()
+                state.currentTab != SparkTab.DISCOVER -> viewModel.setTab(SparkTab.DISCOVER)
+            }
+        }
+
+        if (!state.isOnboardingComplete) {
+            OnboardingScreen(onComplete = { viewModel.completeOnboarding() })
+        } else if (state.isLudoActive) {
+            // 2-PLAYER PREMIUM LUDO GAME ARENA (PRD Section 3 - 10)
+            LudoGameRoomScreen(
+                room = state.ludoRoom,
+                isPremium = state.entitlements.isPremium,
+                onBack = { viewModel.closeLudoGame() },
+                onRollDice = { viewModel.rollLudoDice() },
+                onMoveToken = { tokenId -> viewModel.moveLudoToken(tokenId) },
+                onSendMessage = { text, replyText, replySender ->
+                    viewModel.sendLudoChatMessage(text, replyToText = replyText, replyToSender = replySender)
+                },
+                onSendSticker = { emoji -> viewModel.sendLudoChatMessage("", stickerEmoji = emoji) },
+                onSendVoiceMessage = { viewModel.sendLudoChatMessage("", isVoice = true) },
+                onOpenStickerPicker = { viewModel.openStickerPicker() },
+                onOpenPremiumStore = { viewModel.openPremiumStore() }
+            )
+        } else if (state.selectedClubForDetail != null) {
+            // CLUB DETAIL & COMMON CHAT (PRD Section 18 & 28)
+            val club = state.selectedClubForDetail!!
+            val clubMessages = state.clubMessages[club.id] ?: emptyList()
+            ClubDetailScreen(
+                club = club,
+                messages = clubMessages,
+                isPremium = state.entitlements.isPremium,
+                currentUserId = state.userProfile.id,
+                activeClubId = state.activeClubId,
+                myClubName = state.clubs.find { it.id == state.activeClubId }?.name,
+                onBack = { viewModel.closeClubDetail() },
+                onSendMessage = { text, replyText, replySender ->
+                    viewModel.sendClubMessage(club.id, text, replyToText = replyText, replyToSender = replySender)
+                },
+                onSendVoiceMessage = { viewModel.sendClubMessage(club.id, "", isVoice = true) },
+                onOpenStickerPicker = { viewModel.openStickerPicker() },
+                onOpenPremiumStore = { viewModel.openPremiumStore() },
+                onViewMemberProfile = { userId ->
+                    val candidate = state.discoveryDeck.find { it.id == userId }
+                        ?: state.matches.map { it.user }.find { it.id == userId }
+                    if (candidate != null) viewModel.openProfileDetail(candidate)
+                },
+                onRemoveMember = { clubId, memberUserId ->
+                    viewModel.removeClubMember(clubId, memberUserId)
+                },
+                onJoinClub = { clubId ->
+                    viewModel.joinClub(clubId)
+                },
+                onLeaveAndJoinClub = { newClubId ->
+                    viewModel.leaveAndJoinClub(newClubId)
+                },
+                onLeaveClub = { clubId ->
+                    viewModel.leaveClub(clubId)
+                }
+            )
+        } else {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             topBar = {
@@ -143,14 +169,20 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                         messages = activeMessages,
                         prompts = state.truthOrDarePrompts,
                         onBack = { viewModel.closeChat() },
-                        onSendMessage = { text -> viewModel.sendMessage(selectedChat.id, text) },
+                        onSendMessage = { text, replyText, replySender ->
+                            viewModel.sendMessage(selectedChat.id, text, replyToText = replyText, replyToSender = replySender)
+                        },
                         onSendPrompt = { prompt -> viewModel.sendTruthOrDareInChat(selectedChat.id, prompt, selectedChat.user.id) },
                         onAnswerGame = { messageId, answer -> viewModel.answerTruthOrDare(selectedChat.id, messageId, answer) },
                         onAddReaction = { messageId, emoji -> viewModel.addReaction(selectedChat.id, messageId, emoji) },
                         onViewProfile = { profile -> viewModel.openProfileDetail(profile) },
                         onUnmatch = { viewModel.unmatchUser(selectedChat.id) },
                         onBlock = { viewModel.blockUser(selectedChat.user.id) },
-                        onReport = { reason -> viewModel.reportUser(selectedChat.user.id, reason) }
+                        onReport = { reason -> viewModel.reportUser(selectedChat.user.id, reason) },
+                        isPremium = state.entitlements.isPremium,
+                        onOpenPremiumStore = { viewModel.openPremiumStore() },
+                        onOpenLudo = { viewModel.openLudoGame() },
+                        onSendVoiceMessage = { duration -> viewModel.sendVoiceMessage(selectedChat.id, duration) }
                     )
                 } else {
                     when (currentTab) {
@@ -215,6 +247,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                                 onOpenClub = { club -> viewModel.openClub(club) },
                                 onJoinClub = { clubId -> viewModel.joinClub(clubId) },
                                 onLeaveClub = { clubId -> viewModel.leaveClub(clubId) },
+                                onLeaveAndJoinClub = { newClubId -> viewModel.leaveAndJoinClub(newClubId) },
                                 onCreateClubClick = { viewModel.toggleCreateClubDialog(true) }
                             )
                         }
@@ -324,9 +357,11 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
         )
     }
 
-    // Settings & Legal Sheet
+    // Settings & Legal Sheet (Account & Legal)
     if (state.showSettings) {
         SettingsSheet(
+            currentTheme = state.themeMode,
+            onThemeChange = { mode -> viewModel.setThemeMode(mode) },
             onDownloadData = {
                 viewModel.showToast("Data export initiated. Download link sent to your verified email.")
             },
@@ -334,6 +369,17 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 viewModel.showToast("Account deleted.")
             },
             onDismiss = { viewModel.toggleSettings(false) }
+        )
+    }
+
+    // Personal Information & Visibility Sheet (PRD Section 65 - 69)
+    if (state.showPersonalInformationSheet) {
+        PersonalInformationSheet(
+            profile = state.userProfile,
+            onSave = { height, occupation, education, intent, fieldVisibility ->
+                viewModel.updatePersonalInformation(height, occupation, education, intent, fieldVisibility)
+            },
+            onDismiss = { viewModel.togglePersonalInformation(false) }
         )
     }
 
@@ -382,5 +428,6 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             },
             onDismiss = { viewModel.toggleCreateClubDialog(false) }
         )
+    }
     }
 }

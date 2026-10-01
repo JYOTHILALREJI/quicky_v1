@@ -43,6 +43,8 @@ import com.example.model.LudoChatMessage
 import com.example.model.LudoPlayer
 import com.example.model.LudoRoom
 import com.example.model.LudoToken
+import com.example.ui.components.ReplyPreviewBanner
+import com.example.ui.components.SwipeToReplyContainer
 import com.example.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -53,7 +55,7 @@ fun LudoGameRoomScreen(
     onBack: () -> Unit,
     onRollDice: () -> Unit,
     onMoveToken: (Int) -> Unit,
-    onSendMessage: (text: String) -> Unit,
+    onSendMessage: (text: String, replyToText: String?, replyToSender: String?) -> Unit,
     onSendSticker: (String) -> Unit,
     onSendVoiceMessage: () -> Unit,
     onOpenStickerPicker: () -> Unit,
@@ -61,6 +63,7 @@ fun LudoGameRoomScreen(
     modifier: Modifier = Modifier
 ) {
     var messageText by remember { mutableStateOf("") }
+    var replyingToMessage by remember { mutableStateOf<LudoChatMessage?>(null) }
     val chatListState = rememberLazyListState()
 
     // Scroll chat to bottom when new messages arrive
@@ -239,7 +242,7 @@ fun LudoGameRoomScreen(
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
                                 color = MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier.clickable { onSendMessage(quickReact) }
+                                modifier = Modifier.clickable { onSendMessage(quickReact, null, null) }
                             ) {
                                 Text(
                                     text = quickReact,
@@ -281,52 +284,79 @@ fun LudoGameRoomScreen(
                                 }
                             }
                         } else {
-                            // Player Chat Bubble
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = if (msg.isMine) Arrangement.End else Arrangement.Start
-                            ) {
-                                Surface(
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = if (msg.isMine) QuickyPink else MaterialTheme.colorScheme.surfaceVariant,
-                                    modifier = Modifier.widthIn(max = 260.dp)
+                            // Player Chat Bubble with Swipe-to-Reply
+                            SwipeToReplyContainer(onSwipeToReply = { replyingToMessage = msg }) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = if (msg.isMine) Arrangement.End else Arrangement.Start
                                 ) {
-                                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
-                                        Text(
-                                            text = msg.senderName,
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = if (msg.isMine) Color.White.copy(alpha = 0.85f) else QuickyPurple
-                                        )
-                                        if (msg.stickerEmoji != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = if (msg.isMine) QuickyPink else MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.widthIn(max = 260.dp)
+                                    ) {
+                                        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
                                             Text(
-                                                text = msg.stickerEmoji,
-                                                fontSize = 28.sp,
-                                                modifier = Modifier.padding(vertical = 2.dp)
+                                                text = msg.senderName,
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = if (msg.isMine) Color.White.copy(alpha = 0.85f) else QuickyPurple
                                             )
-                                        }
-                                        if (msg.text.isNotBlank()) {
-                                            Text(
-                                                text = msg.text,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = if (msg.isMine) Color.White else MaterialTheme.colorScheme.onSurface
-                                            )
-                                        }
-                                        if (msg.voiceDurationSeconds != null) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Filled.PlayArrow,
-                                                    contentDescription = null,
-                                                    tint = if (msg.isMine) Color.White else QuickyPink,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
+
+                                            // Quoted Reply Preview
+                                            if (msg.replyToText != null) {
+                                                Surface(
+                                                    color = if (msg.isMine) Color.Black.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                                                ) {
+                                                    Column(modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)) {
+                                                        Text(
+                                                            text = msg.replyToSender ?: "Reply",
+                                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 9.sp),
+                                                            color = if (msg.isMine) Color.White.copy(alpha = 0.9f) else QuickyPurple
+                                                        )
+                                                        Text(
+                                                            text = msg.replyToText,
+                                                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                            color = if (msg.isMine) Color.White.copy(alpha = 0.75f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            }
+
+                                            if (msg.stickerEmoji != null) {
                                                 Text(
-                                                    text = "Voice note · 0:0${msg.voiceDurationSeconds}",
-                                                    style = MaterialTheme.typography.labelSmall,
+                                                    text = msg.stickerEmoji,
+                                                    fontSize = 28.sp,
+                                                    modifier = Modifier.padding(vertical = 2.dp)
+                                                )
+                                            }
+                                            if (msg.text.isNotBlank()) {
+                                                Text(
+                                                    text = msg.text,
+                                                    style = MaterialTheme.typography.bodySmall,
                                                     color = if (msg.isMine) Color.White else MaterialTheme.colorScheme.onSurface
                                                 )
+                                            }
+                                            if (msg.voiceDurationSeconds != null) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.PlayArrow,
+                                                        contentDescription = null,
+                                                        tint = if (msg.isMine) Color.White else QuickyPink,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                    Text(
+                                                        text = "Voice note · 0:0${msg.voiceDurationSeconds}",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = if (msg.isMine) Color.White else MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -334,6 +364,15 @@ fun LudoGameRoomScreen(
                             }
                         }
                     }
+                }
+
+                // Replying To Preview Banner
+                if (replyingToMessage != null) {
+                    ReplyPreviewBanner(
+                        replySender = if (replyingToMessage!!.isMine) "You" else replyingToMessage!!.senderName,
+                        replyText = replyingToMessage!!.text.ifBlank { replyingToMessage!!.stickerEmoji ?: "Voice note" },
+                        onCancel = { replyingToMessage = null }
+                    )
                 }
 
                 // Chat Input Bar (Text, Stickers, Voice)
@@ -395,8 +434,13 @@ fun LudoGameRoomScreen(
                         IconButton(
                             onClick = {
                                 if (messageText.isNotBlank()) {
-                                    onSendMessage(messageText)
+                                    onSendMessage(
+                                        messageText,
+                                        replyingToMessage?.text?.ifBlank { replyingToMessage?.stickerEmoji }?.take(60),
+                                        if (replyingToMessage != null) (if (replyingToMessage!!.isMine) "You" else replyingToMessage!!.senderName) else null
+                                    )
                                     messageText = ""
+                                    replyingToMessage = null
                                 }
                             },
                             enabled = messageText.isNotBlank(),

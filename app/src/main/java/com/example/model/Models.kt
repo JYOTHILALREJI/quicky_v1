@@ -74,6 +74,7 @@ data class ChatMessage(
     val isMine: Boolean,
     val isRead: Boolean = true,
     val replyToText: String? = null,
+    val replyToSender: String? = null,
     val reactions: List<String> = emptyList(),
     val gameCard: GameCardData? = null,
     val imageResId: Int? = null,
@@ -90,7 +91,10 @@ data class GameCardData(
     val targetPlayerId: String,
     val answerText: String? = null,
     val isCompleted: Boolean = false,
-    val isPremiumOnly: Boolean = false
+    val isPremiumOnly: Boolean = false,
+    val responseType: String = "TEXT", // "TEXT", "VOICE", "CAMERA"
+    val cameraPhotoResId: Int? = null,
+    val voiceDurationSeconds: Int? = null
 )
 
 data class GameDefinition(
@@ -217,7 +221,9 @@ data class ClubMessage(
     val stickerEmoji: String? = null,
     val voiceDurationSeconds: Int? = null,
     val timestamp: String = "Just now",
-    val isMine: Boolean = false
+    val isMine: Boolean = false,
+    val replyToText: String? = null,
+    val replyToSender: String? = null
 )
 
 // -------------------------------------------------------------
@@ -255,7 +261,9 @@ data class LudoChatMessage(
     val stickerEmoji: String? = null,
     val voiceDurationSeconds: Int? = null,
     val timestamp: String = "Just now",
-    val isMine: Boolean = false
+    val isMine: Boolean = false,
+    val replyToText: String? = null,
+    val replyToSender: String? = null
 )
 
 data class LudoRoom(

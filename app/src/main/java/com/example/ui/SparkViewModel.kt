@@ -50,6 +50,7 @@ data class SparkUiState(
     val showSettings: Boolean = false,
     val showNotificationsSheet: Boolean = false,
     val activeVoiceCallMatch: MatchItem? = null,
+    val isClubVoiceChatActive: Boolean = false,
     val replyToMessage: ChatMessage? = null,
 
     // Clubs & Social Communities state
@@ -251,10 +252,19 @@ class SparkViewModel : ViewModel() {
         _uiState.update { it.copy(replyToMessage = message) }
     }
 
-    fun sendMessage(conversationId: String, text: String, gameCard: GameCardData? = null) {
+    fun sendMessage(
+        conversationId: String,
+        text: String,
+        gameCard: GameCardData? = null,
+        replyToText: String? = null,
+        replyToSender: String? = null
+    ) {
         if (text.isBlank() && gameCard == null) return
 
         val replyingTo = _uiState.value.replyToMessage
+        val resolvedReplyText = replyToText ?: replyingTo?.text?.take(60)
+        val resolvedReplySender = replyToSender ?: if (replyingTo != null) (if (replyingTo.isMine) "You" else "Partner") else null
+
         val newMessage = ChatMessage(
             id = "msg_${System.currentTimeMillis()}",
             conversationId = conversationId,
@@ -263,7 +273,8 @@ class SparkViewModel : ViewModel() {
             timestamp = "Just now",
             isMine = true,
             isRead = false,
-            replyToText = replyingTo?.text?.take(60),
+            replyToText = resolvedReplyText,
+            replyToSender = resolvedReplySender,
             gameCard = gameCard
         )
 
@@ -277,6 +288,52 @@ class SparkViewModel : ViewModel() {
                 it.copy(
                     lastMessage = if (gameCard != null) "Sent a ${gameCard.gameType} challenge 🎲" else text,
                     hasActiveGame = gameCard != null || it.hasActiveGame
+                )
+            } else it
+        }
+
+        _uiState.update {
+            it.copy(
+                messages = updatedMap,
+                matches = updatedMatches,
+                replyToMessage = null
+            )
+        }
+    }
+
+    fun sendVoiceMessage(
+        conversationId: String,
+        durationSeconds: Int = 5,
+        replyToText: String? = null,
+        replyToSender: String? = null
+    ) {
+        val replyingTo = _uiState.value.replyToMessage
+        val resolvedReplyText = replyToText ?: replyingTo?.text?.take(60)
+        val resolvedReplySender = replyToSender ?: if (replyingTo != null) (if (replyingTo.isMine) "You" else "Partner") else null
+
+        val newMessage = ChatMessage(
+            id = "msg_voice_${System.currentTimeMillis()}",
+            conversationId = conversationId,
+            senderId = "user_me",
+            text = "Voice message (0:0${durationSeconds})",
+            timestamp = "Just now",
+            isMine = true,
+            isRead = false,
+            replyToText = resolvedReplyText,
+            replyToSender = resolvedReplySender,
+            isVoiceMessage = true,
+            voiceDurationSeconds = durationSeconds
+        )
+
+        val currentList = _uiState.value.messages[conversationId] ?: emptyList()
+        val updatedMap = _uiState.value.messages.toMutableMap().apply {
+            put(conversationId, currentList + newMessage)
+        }
+
+        val updatedMatches = _uiState.value.matches.map {
+            if (it.id == conversationId) {
+                it.copy(
+                    lastMessage = "🎙️ Voice message (0:0${durationSeconds})"
                 )
             } else it
         }
@@ -330,14 +387,24 @@ class SparkViewModel : ViewModel() {
         )
     }
 
-    fun answerTruthOrDare(conversationId: String, messageId: String, answer: String) {
+    fun answerTruthOrDare(
+        conversationId: String,
+        messageId: String,
+        answer: String,
+        responseType: String = "TEXT",
+        photoResId: Int? = null,
+        voiceDurationSeconds: Int? = null
+    ) {
         val currentList = _uiState.value.messages[conversationId] ?: return
         val updatedList = currentList.map { msg ->
             if (msg.id == messageId && msg.gameCard != null) {
                 msg.copy(
                     gameCard = msg.gameCard.copy(
                         answerText = answer,
-                        isCompleted = true
+                        isCompleted = true,
+                        responseType = responseType,
+                        cameraPhotoResId = photoResId,
+                        voiceDurationSeconds = voiceDurationSeconds
                     )
                 )
             } else msg
@@ -356,12 +423,6 @@ class SparkViewModel : ViewModel() {
     }
 
     fun initiateVoiceCall(match: MatchItem) {
-        if (!_uiState.value.entitlements.isPremium && !_uiState.value.entitlements.hasVoiceChat) {
-            showToast("Voice Chat requires Quicky Premium.")
-            openPremiumStore()
-            return
-        }
-
         _uiState.update { it.copy(activeVoiceCallMatch = match) }
     }
 
@@ -369,9 +430,13 @@ class SparkViewModel : ViewModel() {
         _uiState.update {
             it.copy(
                 activeVoiceCallMatch = null,
-                toastMessage = "Call ended."
+                toastMessage = "Voice call ended."
             )
         }
+    }
+
+    fun toggleClubVoiceChat(active: Boolean) {
+        _uiState.update { it.copy(isClubVoiceChatActive = active) }
     }
 
     fun startVerificationChallenge() {
@@ -483,6 +548,30 @@ class SparkViewModel : ViewModel() {
             it.copy(
                 userProfile = updated,
                 toastMessage = "Profile updated successfully ✨"
+            )
+        }
+    }
+
+    fun updatePersonalInformation(
+        height: String,
+        occupation: String,
+        education: String,
+        intent: String,
+        fieldVisibility: Map<String, VisibilityLevel>
+    ) {
+        val updated = _uiState.value.userProfile.copy(
+            height = height,
+            occupation = occupation,
+            educationLevel = education,
+            education = education,
+            relationshipIntent = intent,
+            fieldVisibility = fieldVisibility
+        )
+        _uiState.update {
+            it.copy(
+                userProfile = updated,
+                showPersonalInformationSheet = false,
+                toastMessage = "Personal details & visibility updated ✨"
             )
         }
     }
@@ -695,6 +784,45 @@ class SparkViewModel : ViewModel() {
         }
     }
 
+    fun leaveAndJoinClub(newClubId: String) {
+        val currentClubId = _uiState.value.activeClubId
+        val targetClub = _uiState.value.clubs.find { it.id == newClubId } ?: return
+        if (targetClub.isFull) {
+            showToast("Club Full! Maximum capacity of 15 members reached.")
+            return
+        }
+
+        val myUserId = _uiState.value.userProfile.id
+        val newMember = ClubMember(
+            id = "cm_me_${System.currentTimeMillis()}",
+            userId = myUserId,
+            userName = _uiState.value.userProfile.name,
+            userAvatarRes = R.drawable.img_onboarding_hero,
+            characterBadge = _uiState.value.userProfile.characterBadge,
+            isVerified = _uiState.value.userProfile.isVerified,
+            role = "MEMBER",
+            status = "ACTIVE",
+            joinedAt = "Just now"
+        )
+
+        val updatedClubs = _uiState.value.clubs.map { club ->
+            when (club.id) {
+                currentClubId -> club.copy(members = club.members.filter { m -> m.userId != myUserId })
+                newClubId -> club.copy(members = club.members.filter { m -> m.userId != myUserId } + newMember)
+                else -> club
+            }
+        }
+
+        _uiState.update {
+            it.copy(
+                clubs = updatedClubs,
+                activeClubId = newClubId,
+                selectedClubForDetail = updatedClubs.find { c -> c.id == newClubId },
+                toastMessage = "Left previous club and joined ${targetClub.name}! Welcome 🎉"
+            )
+        }
+    }
+
     fun createClub(name: String, description: String, category: String, logoEmoji: String) {
         // Enforce 1 Club membership restriction (PRD Section 15)
         if (_uiState.value.activeClubId != null) {
@@ -746,7 +874,14 @@ class SparkViewModel : ViewModel() {
         }
     }
 
-    fun sendClubMessage(clubId: String, text: String, stickerEmoji: String? = null, isVoice: Boolean = false) {
+    fun sendClubMessage(
+        clubId: String,
+        text: String,
+        stickerEmoji: String? = null,
+        isVoice: Boolean = false,
+        replyToText: String? = null,
+        replyToSender: String? = null
+    ) {
         if (isVoice && !_uiState.value.entitlements.isPremium) {
             showToast("🔒 Voice messages are a Quicky Gold feature. Upgrade to unlock!")
             openPremiumStore()
@@ -770,12 +905,45 @@ class SparkViewModel : ViewModel() {
             stickerEmoji = stickerEmoji,
             voiceDurationSeconds = if (isVoice) 7 else null,
             timestamp = "Just now",
-            isMine = true
+            isMine = true,
+            replyToText = replyToText,
+            replyToSender = replyToSender
         )
         val updatedMap = _uiState.value.clubMessages.toMutableMap().apply {
             put(clubId, currentList + newMessage)
         }
         _uiState.update { it.copy(clubMessages = updatedMap) }
+    }
+
+    fun removeClubMember(clubId: String, memberUserId: String) {
+        val club = _uiState.value.clubs.find { it.id == clubId } ?: return
+        val memberToRemove = club.members.find { it.userId == memberUserId }
+        val memberName = memberToRemove?.userName ?: "Member"
+        val updatedMembers = club.members.filter { it.userId != memberUserId }
+        val updatedClubs = _uiState.value.clubs.map {
+            if (it.id == clubId) it.copy(members = updatedMembers) else it
+        }
+        val systemMsg = ClubMessage(
+            id = "cmsg_sys_${System.currentTimeMillis()}",
+            clubId = clubId,
+            senderId = "system",
+            senderName = "SYSTEM",
+            messageType = "SYSTEM",
+            text = "⚠️ $memberName was removed from the club by the Owner.",
+            timestamp = "Just now"
+        )
+        val currentMessages = _uiState.value.clubMessages[clubId] ?: emptyList()
+        val updatedMessages = _uiState.value.clubMessages.toMutableMap().apply {
+            put(clubId, currentMessages + systemMsg)
+        }
+        _uiState.update {
+            it.copy(
+                clubs = updatedClubs,
+                selectedClubForDetail = updatedClubs.find { c -> c.id == clubId },
+                clubMessages = updatedMessages,
+                toastMessage = "$memberName has been removed from the club."
+            )
+        }
     }
 
     // -------------------------------------------------------------
@@ -991,7 +1159,13 @@ class SparkViewModel : ViewModel() {
         }
     }
 
-    fun sendLudoChatMessage(text: String, stickerEmoji: String? = null, isVoice: Boolean = false) {
+    fun sendLudoChatMessage(
+        text: String,
+        stickerEmoji: String? = null,
+        isVoice: Boolean = false,
+        replyToText: String? = null,
+        replyToSender: String? = null
+    ) {
         if (isVoice && !_uiState.value.entitlements.isPremium) {
             showToast("Voice notes in Ludo require Quicky Gold. Upgrade to unlock!")
             openPremiumStore()
@@ -1009,7 +1183,9 @@ class SparkViewModel : ViewModel() {
             stickerEmoji = stickerEmoji,
             voiceDurationSeconds = if (isVoice) 5 else null,
             timestamp = "Just now",
-            isMine = true
+            isMine = true,
+            replyToText = replyToText,
+            replyToSender = replyToSender
         )
         _uiState.update {
             it.copy(
