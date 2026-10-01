@@ -1,9 +1,8 @@
 package com.example
 
-import com.example.data.MockDataProvider
-import com.example.model.DiscoveryFilter
 import com.example.model.PrivacySettings
 import com.example.model.TruthOrDarePrompt
+import com.example.model.UserProfile
 import com.example.ui.SparkTab
 import com.example.ui.SparkViewModel
 import kotlinx.coroutines.Dispatchers
@@ -33,13 +32,39 @@ class SparkViewModelTest {
         Dispatchers.resetMain()
     }
 
+    private fun testProfile(id: String = "user_test") = UserProfile(
+        id = id,
+        name = "Test User",
+        age = 25,
+        bio = "Test bio",
+        city = "Dubai, UAE",
+        distanceKm = 1,
+        relationshipIntent = "Long-term relationship"
+    )
+
     @Test
-    fun testInitialState() {
+    fun testInitialStateHasNoTestData() {
         val state = viewModel.uiState.value
         assertEquals(SparkTab.DISCOVER, state.currentTab)
-        assertTrue(state.discoveryDeck.isNotEmpty())
-        assertTrue(state.matches.isNotEmpty())
-        assertEquals(4, state.interactionInsights.size)
+
+        // All user-generated data starts EMPTY (served by Supabase later)
+        assertTrue(state.discoveryDeck.isEmpty())
+        assertTrue(state.matches.isEmpty())
+        assertTrue(state.messages.isEmpty())
+        assertTrue(state.clubs.isEmpty())
+        assertTrue(state.clubMessages.isEmpty())
+        assertTrue(state.notifications.isEmpty())
+        assertTrue(state.interactionInsights.isEmpty())
+        assertNull(state.activeClubId)
+        assertNull(state.ludoRoom)
+
+        // Bundled static catalogs are still available
+        assertTrue(state.gamesCatalog.isNotEmpty())
+        assertTrue(state.truthOrDarePrompts.isNotEmpty())
+        assertTrue(state.stickerPacks.isNotEmpty())
+        assertTrue(state.gamesCatalog.any { it.isFree })
+        // No fake ownership bundled — purchases are per-account
+        assertTrue(state.stickerPacks.none { it.isOwned })
     }
 
     @Test
@@ -55,28 +80,8 @@ class SparkViewModelTest {
     }
 
     @Test
-    fun testPassAndRewind() {
-        val initialDeck = viewModel.uiState.value.discoveryDeck
-        val firstCandidate = initialDeck.first()
-
-        // Pass candidate
-        viewModel.passProfile(firstCandidate)
-        val deckAfterPass = viewModel.uiState.value.discoveryDeck
-        assertFalse(deckAfterPass.contains(firstCandidate))
-        assertEquals(1, viewModel.uiState.value.passedHistory.size)
-
-        // Rewind
-        val rewindsBefore = viewModel.uiState.value.entitlements.rewindsRemaining
-        viewModel.rewindLastPass()
-        val deckAfterRewind = viewModel.uiState.value.discoveryDeck
-        assertEquals(firstCandidate.id, deckAfterRewind.first().id)
-        assertEquals(rewindsBefore - 1, viewModel.uiState.value.entitlements.rewindsRemaining)
-    }
-
-    @Test
-    fun testLikeTriggersMatch() {
-        val initialDeck = viewModel.uiState.value.discoveryDeck
-        val candidate = initialDeck.first()
+    fun testLikeCreatesMatch() {
+        val candidate = testProfile()
 
         viewModel.likeProfile(candidate, isSuperLike = false)
         testDispatcher.scheduler.advanceUntilIdle()
@@ -88,8 +93,28 @@ class SparkViewModelTest {
     }
 
     @Test
+    fun testPassAndRewind() {
+        val candidate = testProfile()
+
+        viewModel.passProfile(candidate)
+        val deckAfterPass = viewModel.uiState.value.discoveryDeck
+        assertFalse(deckAfterPass.contains(candidate))
+        assertEquals(1, viewModel.uiState.value.passedHistory.size)
+
+        val rewindsBefore = viewModel.uiState.value.entitlements.rewindsRemaining
+        viewModel.rewindLastPass()
+        val deckAfterRewind = viewModel.uiState.value.discoveryDeck
+        assertTrue(deckAfterRewind.any { it.id == candidate.id })
+        assertEquals(rewindsBefore - 1, viewModel.uiState.value.entitlements.rewindsRemaining)
+    }
+
+    @Test
     fun testSendTruthOrDareInChat() {
+        // Create a match first (no bundled matches anymore)
+        viewModel.likeProfile(testProfile(), isSuperLike = false)
+        testDispatcher.scheduler.advanceUntilIdle()
         val match = viewModel.uiState.value.matches.first()
+
         val prompt = TruthOrDarePrompt(
             id = "test_prompt",
             category = "Flirty",
@@ -146,14 +171,15 @@ class SparkViewModelTest {
 
     @Test
     fun testBlockUserRemovesFromDeckAndMatches() {
-        val match = viewModel.uiState.value.matches.first()
-        val userId = match.user.id
+        val candidate = testProfile()
+        viewModel.likeProfile(candidate, isSuperLike = false)
+        testDispatcher.scheduler.advanceUntilIdle()
 
-        viewModel.blockUser(userId)
+        viewModel.blockUser(candidate.id)
 
         val state = viewModel.uiState.value
-        assertFalse(state.discoveryDeck.any { it.id == userId })
-        assertFalse(state.matches.any { it.user.id == userId })
+        assertFalse(state.discoveryDeck.any { it.id == candidate.id })
+        assertFalse(state.matches.any { it.user.id == candidate.id })
     }
 
     @Test
@@ -162,15 +188,21 @@ class SparkViewModelTest {
         assertFalse(viewModel.uiState.value.entitlements.isPremium)
         viewModel.openLudoGame()
         assertFalse(viewModel.uiState.value.isLudoActive)
+        assertNull(viewModel.uiState.value.ludoRoom)
         assertTrue(viewModel.uiState.value.showPremiumStore)
 
         // Upgrade to premium
         viewModel.purchaseSubscription(isYearly = true)
         assertTrue(viewModel.uiState.value.entitlements.isPremium)
 
-        // Enter Ludo
+        // Enter Ludo — a fresh room is created (no pre-seeded game state)
         viewModel.openLudoGame()
         assertTrue(viewModel.uiState.value.isLudoActive)
+        assertNotNull(viewModel.uiState.value.ludoRoom)
+        val room = viewModel.uiState.value.ludoRoom!!
+        assertTrue(room.chatMessages.isEmpty())
+        assertTrue(room.player1.tokens.all { it.isHome })
+        assertTrue(room.player2.tokens.all { it.isHome })
     }
 
     @Test
@@ -182,7 +214,7 @@ class SparkViewModelTest {
         viewModel.rollLudoDice()
         testDispatcher.scheduler.advanceUntilIdle()
 
-        val room = viewModel.uiState.value.ludoRoom
+        val room = viewModel.uiState.value.ludoRoom!!
         assertTrue(room.diceValue in 1..6)
         assertTrue(room.chatMessages.any { it.isSystem })
 
@@ -190,31 +222,36 @@ class SparkViewModelTest {
         if (room.canMoveToken) {
             val scoreBefore = room.player2.score
             viewModel.moveLudoToken(0)
-            val updatedRoom = viewModel.uiState.value.ludoRoom
+            val updatedRoom = viewModel.uiState.value.ludoRoom!!
             assertTrue(updatedRoom.player2.score >= scoreBefore)
         }
     }
 
     @Test
-    fun testClubMembershipAndCapacityRules() {
-        // User starts in "club_gamers"
-        assertEquals("club_gamers", viewModel.uiState.value.activeClubId)
-
-        // Try to join another club while already in one -> blocked (PRD Section 15)
-        viewModel.joinClub("club_foodies")
-        assertEquals("club_gamers", viewModel.uiState.value.activeClubId)
-
-        // Leave club
-        viewModel.leaveClub("club_gamers")
+    fun testClubCreateAndLeaveRules() {
+        // Start with no club membership
         assertNull(viewModel.uiState.value.activeClubId)
 
-        // Try to join full club (15/15 members) -> blocked (PRD Section 13)
-        viewModel.joinClub("club_music")
-        assertNull(viewModel.uiState.value.activeClubId)
+        // Create a club -> becomes owner
+        viewModel.createClub(
+            name = "Test Club",
+            description = "A club created in tests",
+            category = "Gaming",
+            logoEmoji = "🎮"
+        )
+        val myClub = viewModel.uiState.value.clubs.first()
+        assertEquals(myClub.id, viewModel.uiState.value.activeClubId)
+        assertEquals(1, myClub.members.size)
+        assertEquals("OWNER", myClub.members.first().role)
 
-        // Join valid club
-        viewModel.joinClub("club_foodies")
-        assertEquals("club_foodies", viewModel.uiState.value.activeClubId)
+        // Cannot belong to two clubs at once (PRD Section 15)
+        viewModel.createClub("Second Club", "Should be blocked", "Music", "🎵")
+        assertEquals(1, viewModel.uiState.value.clubs.size)
+
+        // Leave the club
+        viewModel.leaveClub(myClub.id)
+        assertNull(viewModel.uiState.value.activeClubId)
+        assertTrue(viewModel.uiState.value.clubs.first().members.isEmpty())
     }
 
     @Test
@@ -258,29 +295,19 @@ class SparkViewModelTest {
     }
 
     @Test
-    fun testOwnerCanRemoveClubMemberAnytime() {
-        val club = viewModel.uiState.value.clubs.find { it.id == "club_gamers" }!!
-        val memberCountBefore = club.members.size
-        val memberToRemove = club.members.first { it.userId != "user_me" }
-
-        viewModel.removeClubMember("club_gamers", memberToRemove.userId)
-
-        val updatedClub = viewModel.uiState.value.clubs.find { it.id == "club_gamers" }!!
-        assertEquals(memberCountBefore - 1, updatedClub.members.size)
-        assertFalse(updatedClub.members.any { it.userId == memberToRemove.userId })
-    }
-
-    @Test
     fun testSendLudoMessageWithReply() {
+        viewModel.purchaseSubscription(isYearly = true)
+        viewModel.openLudoGame()
+
         viewModel.sendLudoChatMessage(
             text = "Nice move!",
-            replyToText = "Alex rolled a 6",
-            replyToSender = "Alex"
+            replyToText = "Opponent rolled a 6",
+            replyToSender = "Opponent"
         )
 
-        val lastMsg = viewModel.uiState.value.ludoRoom.chatMessages.last()
+        val lastMsg = viewModel.uiState.value.ludoRoom!!.chatMessages.last()
         assertEquals("Nice move!", lastMsg.text)
-        assertEquals("Alex rolled a 6", lastMsg.replyToText)
-        assertEquals("Alex", lastMsg.replyToSender)
+        assertEquals("Opponent rolled a 6", lastMsg.replyToText)
+        assertEquals("Opponent", lastMsg.replyToSender)
     }
 }

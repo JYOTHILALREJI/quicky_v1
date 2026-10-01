@@ -34,7 +34,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.R
-import com.example.data.MockDataProvider
+import com.example.data.AppContent
 import com.example.model.UserProfile
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
@@ -332,7 +332,7 @@ fun MatchCelebrationDialog(
                     val rightRotation = 14f * (1f - p) + 3f
 
                     // Left avatar: Current User
-                    val myPhoto = MockDataProvider.currentUser.photoResIds.firstOrNull() ?: R.drawable.img_onboarding_hero
+                    val myPhoto = AppContent.currentUser.photoResIds.firstOrNull() ?: R.drawable.img_onboarding_hero
                     Box(
                         modifier = Modifier
                             .offset(x = leftOffsetXDp)

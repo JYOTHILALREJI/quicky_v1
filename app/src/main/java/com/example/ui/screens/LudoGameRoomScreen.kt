@@ -142,7 +142,7 @@ fun LudoGameRoomScreen(
                     verticalArrangement = Arrangement.SpaceBetween,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // PLAYER 1 (Opposite Top Player - Alex)
+                    // PLAYER 1 (Opposite Top Player — Opponent)
                     LudoPlayerHeader(
                         player = room.player1,
                         isCurrentTurn = room.currentTurnPlayerId == room.player1.id,
@@ -187,7 +187,7 @@ fun LudoGameRoomScreen(
                         }
                     }
 
-                    // PLAYER 2 (Bottom Player - User "Jordan") & Interactive Dice
+                    // PLAYER 2 (Bottom Player — You) & Interactive Dice
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,

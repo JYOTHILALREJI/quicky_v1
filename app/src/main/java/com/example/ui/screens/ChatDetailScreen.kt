@@ -28,7 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
-import com.example.data.MockDataProvider
+import com.example.data.AppContent
 import com.example.model.*
 import com.example.ui.components.ChatBubble
 import com.example.ui.components.QuickyGamesIcon
@@ -294,7 +294,7 @@ fun ChatDetailScreen(
                         )
                     )
                 }
-                items(MockDataProvider.icebreakerSuggestions.take(2)) { suggestion ->
+                items(AppContent.icebreakerSuggestions.take(2)) { suggestion ->
                     val cleanText = suggestion.substringAfter("Ask: ").replace("\"", "")
                     SuggestionChip(
                         onClick = {

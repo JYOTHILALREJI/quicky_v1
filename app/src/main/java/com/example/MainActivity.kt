@@ -1,8 +1,10 @@
 package com.example
 
+import android.app.Activity
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -15,9 +17,10 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.data.MockDataProvider
 import com.example.model.DiscoveryFilter
 import com.example.ui.SparkTab
 import com.example.ui.SparkViewModel
@@ -29,7 +32,16 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Edge-to-edge with a transparent status bar. The app theme (LIGHT
+        // by default) uses dark status-bar icons so the clock and icons are
+        // always visible on the white background. SparkApp keeps the icon
+        // appearance in sync when the user toggles light/dark mode.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            )
+        )
         setContent {
             SparkApp()
         }
@@ -51,6 +63,17 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
         val snackbarHostState = remember { SnackbarHostState() }
         val scope = rememberCoroutineScope()
         var showEditProfileSheet by remember { mutableStateOf(false) }
+
+        // Keep the status bar icon appearance in sync with the app theme:
+        // dark icons (visible) on the light background, light icons on dark.
+        val view = LocalView.current
+        if (!view.isInEditMode) {
+            SideEffect {
+                val window = (view.context as? Activity)?.window ?: return@SideEffect
+                WindowCompat.getInsetsController(window, view)
+                    .isAppearanceLightStatusBars = !isDark
+            }
+        }
 
         // Toast and message notifications
         LaunchedEffect(state.toastMessage) {
@@ -76,10 +99,11 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
 
         if (!state.isOnboardingComplete) {
             OnboardingScreen(onComplete = { viewModel.completeOnboarding() })
-        } else if (state.isLudoActive) {
+        } else if (state.isLudoActive && state.ludoRoom != null) {
             // 2-PLAYER PREMIUM LUDO GAME ARENA (PRD Section 3 - 10)
+            val activeLudoRoom = state.ludoRoom!!
             LudoGameRoomScreen(
-                room = state.ludoRoom,
+                room = activeLudoRoom,
                 isPremium = state.entitlements.isPremium,
                 onBack = { viewModel.closeLudoGame() },
                 onRollDice = { viewModel.rollLudoDice() },
@@ -196,8 +220,8 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                                 onBoost = { viewModel.activateBoost() },
                                 onOpenDetail = { profile -> viewModel.openProfileDetail(profile) },
                                 onResetDeck = {
-                                    // Reset deck with sample candidate profiles
-                                    viewModel.likeProfile(MockDataProvider.candidateProfiles.first(), false)
+                                    // Deck refresh — served by Supabase once connected
+                                    viewModel.resetDiscoveryDeck()
                                 }
                             )
                         }

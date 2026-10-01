@@ -3,7 +3,8 @@ package com.example.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.R
-import com.example.data.MockDataProvider
+import com.example.data.AppContent
+import com.example.data.SupabaseRepository
 import com.example.model.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,20 +26,20 @@ data class SparkUiState(
     val isOnboardingComplete: Boolean = true,
     val currentTab: SparkTab = SparkTab.DISCOVER,
     val themeMode: AppThemeMode = AppThemeMode.LIGHT, // PRD Section 3: Default is LIGHT
-    val userProfile: UserProfile = MockDataProvider.currentUser,
-    val discoveryDeck: List<UserProfile> = MockDataProvider.candidateProfiles,
+    val userProfile: UserProfile = AppContent.currentUser,
+    val discoveryDeck: List<UserProfile> = emptyList(),
     val passedHistory: List<UserProfile> = emptyList(),
     val matchCelebration: UserProfile? = null,
-    val matches: List<MatchItem> = MockDataProvider.initialMatches,
+    val matches: List<MatchItem> = emptyList(),
     val selectedMatchForChat: MatchItem? = null,
-    val messages: Map<String, List<ChatMessage>> = mapOf("match_sarah" to MockDataProvider.initialSarahMessages),
-    val truthOrDarePrompts: List<TruthOrDarePrompt> = MockDataProvider.truthOrDarePrompts,
-    val gamesCatalog: List<GameDefinition> = MockDataProvider.gamesCatalog,
+    val messages: Map<String, List<ChatMessage>> = emptyMap(),
+    val truthOrDarePrompts: List<TruthOrDarePrompt> = AppContent.truthOrDarePrompts,
+    val gamesCatalog: List<GameDefinition> = AppContent.gamesCatalog,
     val entitlements: Entitlements = Entitlements(),
     val privacySettings: PrivacySettings = PrivacySettings(),
     val discoveryPreferences: DiscoveryPreferences = DiscoveryPreferences(),
-    val interactionInsights: List<InteractionInsight> = MockDataProvider.interactionInsights,
-    val notifications: List<NotificationItem> = MockDataProvider.initialNotifications,
+    val interactionInsights: List<InteractionInsight> = emptyList(),
+    val notifications: List<NotificationItem> = emptyList(),
     val toastMessage: String? = null,
     val selectedProfileDetail: UserProfile? = null,
     val showFilterSheet: Boolean = false,
@@ -54,19 +55,19 @@ data class SparkUiState(
     val replyToMessage: ChatMessage? = null,
 
     // Clubs & Social Communities state
-    val clubs: List<Club> = MockDataProvider.sampleClubs,
-    val activeClubId: String? = "club_gamers",
+    val clubs: List<Club> = emptyList(),
+    val activeClubId: String? = null,
     val selectedClubForDetail: Club? = null,
-    val clubMessages: Map<String, List<ClubMessage>> = MockDataProvider.sampleClubMessages,
+    val clubMessages: Map<String, List<ClubMessage>> = emptyMap(),
     val lastClubCreatedTimestamp: Long = 0L,
     val showCreateClubDialog: Boolean = false,
 
-    // 2-Player Ludo state
-    val ludoRoom: LudoRoom = MockDataProvider.initialLudoRoom,
+    // 2-Player Ludo state (created fresh in openLudoGame())
+    val ludoRoom: LudoRoom? = null,
     val isLudoActive: Boolean = false,
 
     // Sticker Store state
-    val stickerPacks: List<StickerPack> = MockDataProvider.sampleStickerPacks,
+    val stickerPacks: List<StickerPack> = AppContent.stickerPackCatalog,
     val showStickerStore: Boolean = false,
     val showStickerPicker: Boolean = false
 ) {
@@ -77,6 +78,23 @@ class SparkViewModel : ViewModel() {
 
     private val _uiState = MutableStateFlow(SparkUiState())
     val uiState: StateFlow<SparkUiState> = _uiState.asStateFlow()
+
+    init {
+        // Load remote content from Supabase when credentials are configured.
+        // Until then the app runs on the bundled static catalog in AppContent.
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                val remoteGames = SupabaseRepository.fetchGamesCatalog()
+                if (remoteGames.isNotEmpty()) {
+                    _uiState.update { it.copy(gamesCatalog = remoteGames) }
+                }
+                val remotePrompts = SupabaseRepository.fetchTruthOrDarePrompts()
+                if (remotePrompts.isNotEmpty()) {
+                    _uiState.update { it.copy(truthOrDarePrompts = remotePrompts) }
+                }
+            }
+        }
+    }
 
     fun setTab(tab: SparkTab) {
         _uiState.update { it.copy(currentTab = tab, selectedMatchForChat = null) }
@@ -148,6 +166,19 @@ class SparkViewModel : ViewModel() {
                 discoveryDeck = updatedDeck,
                 passedHistory = updatedPassed
             )
+        }
+    }
+
+    /**
+     * Refreshes the discovery deck.
+     * TODO(Supabase): fetch candidate profiles from the `profiles` table
+     * once remote image URLs replace local drawable res IDs.
+     */
+    fun resetDiscoveryDeck() {
+        if (!SupabaseRepository.isConfigured()) {
+            showToast("Connect your Supabase credentials in SupabaseConfig.kt to load real profiles.")
+        } else {
+            showToast("No more profiles to discover right now. Check back soon!")
         }
     }
 
@@ -298,6 +329,17 @@ class SparkViewModel : ViewModel() {
                 matches = updatedMatches,
                 replyToMessage = null
             )
+        }
+
+        // Persist to Supabase when configured (fire-and-forget)
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                SupabaseRepository.insertChatMessage(
+                    conversationId = conversationId,
+                    senderId = newMessage.senderId,
+                    text = text
+                )
+            }
         }
     }
 
@@ -913,6 +955,19 @@ class SparkViewModel : ViewModel() {
             put(clubId, currentList + newMessage)
         }
         _uiState.update { it.copy(clubMessages = updatedMap) }
+
+        // Persist to Supabase when configured (fire-and-forget)
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                SupabaseRepository.insertClubMessage(
+                    clubId = clubId,
+                    senderId = newMessage.senderId,
+                    senderName = newMessage.senderName,
+                    messageType = newMessage.messageType,
+                    text = text
+                )
+            }
+        }
     }
 
     fun removeClubMember(clubId: String, memberUserId: String) {
@@ -955,7 +1010,12 @@ class SparkViewModel : ViewModel() {
             openPremiumStore()
             return
         }
-        _uiState.update { it.copy(isLudoActive = true) }
+        _uiState.update {
+            it.copy(
+                isLudoActive = true,
+                ludoRoom = AppContent.freshLudoRoom(playerName = it.userProfile.name)
+            )
+        }
     }
 
     fun closeLudoGame() {
@@ -963,12 +1023,12 @@ class SparkViewModel : ViewModel() {
     }
 
     fun rollLudoDice() {
-        val currentRoom = _uiState.value.ludoRoom
+        val currentRoom = _uiState.value.ludoRoom ?: return
         if (currentRoom.currentTurnPlayerId != "user_me" || currentRoom.isRolling) return
 
         viewModelScope.launch {
             _uiState.update {
-                it.copy(ludoRoom = it.ludoRoom.copy(isRolling = true, canMoveToken = false))
+                it.copy(ludoRoom = it.ludoRoom?.copy(isRolling = true, canMoveToken = false))
             }
             delay(400) // Animated dice roll
 
@@ -995,13 +1055,13 @@ class SparkViewModel : ViewModel() {
                 // Pass turn to opponent
                 _uiState.update {
                     it.copy(
-                        ludoRoom = it.ludoRoom.copy(
+                        ludoRoom = it.ludoRoom?.copy(
                             diceValue = rolledValue,
                             isRolling = false,
                             canMoveToken = false,
                             currentTurnPlayerId = currentRoom.player1.id,
                             lastEventText = "You rolled $rolledValue, but no legal moves. Opponent's turn.",
-                            chatMessages = it.ludoRoom.chatMessages + systemMsg
+                            chatMessages = it.ludoRoom?.chatMessages.orEmpty() + systemMsg
                         )
                     )
                 }
@@ -1009,12 +1069,12 @@ class SparkViewModel : ViewModel() {
             } else {
                 _uiState.update {
                     it.copy(
-                        ludoRoom = it.ludoRoom.copy(
+                        ludoRoom = it.ludoRoom?.copy(
                             diceValue = rolledValue,
                             isRolling = false,
                             canMoveToken = true,
                             lastEventText = "🎲 You rolled a $rolledValue! Tap a glowing token to advance.",
-                            chatMessages = it.ludoRoom.chatMessages + systemMsg
+                            chatMessages = it.ludoRoom?.chatMessages.orEmpty() + systemMsg
                         )
                     )
                 }
@@ -1023,7 +1083,7 @@ class SparkViewModel : ViewModel() {
     }
 
     fun moveLudoToken(tokenId: Int) {
-        val currentRoom = _uiState.value.ludoRoom
+        val currentRoom = _uiState.value.ludoRoom ?: return
         if (!currentRoom.canMoveToken || currentRoom.currentTurnPlayerId != "user_me") return
 
         val token = currentRoom.player2.tokens.find { it.id == tokenId } ?: return
@@ -1076,17 +1136,17 @@ class SparkViewModel : ViewModel() {
             senderId = null,
             senderName = "SYSTEM",
             isSystem = true,
-            text = "🚀 You moved Token #${tokenId + 1} ${if (capturedOpponent) "💥 and CAPTURED Alex's token! (+25 pts)" else ""}"
+            text = "🚀 You moved Token #${tokenId + 1} ${if (capturedOpponent) "💥 and CAPTURED ${currentRoom.player1.name}'s token! (+25 pts)" else ""}"
         )
 
         val nextPlayerId = if (bonusTurn && !hasWon) "user_me" else currentRoom.player1.id
-        val nextText = if (hasWon) "🏆 VICTORY! Jordan won the Ludo match!"
+        val nextText = if (hasWon) "🏆 VICTORY! You won the Ludo match!"
         else if (bonusTurn) "⭐ Bonus roll awarded! Roll again."
-        else "Alex's turn to roll."
+        else "${currentRoom.player1.name}'s turn to roll."
 
         _uiState.update {
             it.copy(
-                ludoRoom = it.ludoRoom.copy(
+                ludoRoom = it.ludoRoom?.copy(
                     player1 = updatedP1,
                     player2 = updatedP2,
                     canMoveToken = false,
@@ -1094,7 +1154,7 @@ class SparkViewModel : ViewModel() {
                     winnerId = if (hasWon) "user_me" else null,
                     status = if (hasWon) "COMPLETED" else "IN_PROGRESS",
                     lastEventText = nextText,
-                    chatMessages = it.ludoRoom.chatMessages + moveMsg
+                    chatMessages = it.ludoRoom?.chatMessages.orEmpty() + moveMsg
                 )
             )
         }
@@ -1107,7 +1167,7 @@ class SparkViewModel : ViewModel() {
     private fun triggerOpponentTurn() {
         viewModelScope.launch {
             delay(1200)
-            val currentRoom = _uiState.value.ludoRoom
+            val currentRoom = _uiState.value.ludoRoom ?: return@launch
             if (currentRoom.status == "COMPLETED" || currentRoom.currentTurnPlayerId != currentRoom.player1.id) return@launch
 
             val rolled = (1..6).random()
@@ -1120,7 +1180,7 @@ class SparkViewModel : ViewModel() {
                 senderId = null,
                 senderName = "SYSTEM",
                 isSystem = true,
-                text = "🎲 Alex rolled a $rolled"
+                text = "🎲 ${currentRoom.player1.name} rolled a $rolled"
             )
 
             if (tokenToMove != null) {
@@ -1135,23 +1195,23 @@ class SparkViewModel : ViewModel() {
                 )
                 _uiState.update {
                     it.copy(
-                        ludoRoom = it.ludoRoom.copy(
+                        ludoRoom = it.ludoRoom?.copy(
                             player1 = updatedP1,
                             diceValue = rolled,
                             currentTurnPlayerId = "user_me",
-                            lastEventText = "Alex rolled $rolled and moved. Your turn!",
-                            chatMessages = it.ludoRoom.chatMessages + oppRollMsg
+                            lastEventText = "${currentRoom.player1.name} rolled $rolled and moved. Your turn!",
+                            chatMessages = it.ludoRoom?.chatMessages.orEmpty() + oppRollMsg
                         )
                     )
                 }
             } else {
                 _uiState.update {
                     it.copy(
-                        ludoRoom = it.ludoRoom.copy(
+                        ludoRoom = it.ludoRoom?.copy(
                             diceValue = rolled,
                             currentTurnPlayerId = "user_me",
-                            lastEventText = "Alex rolled $rolled with no moves. Your turn!",
-                            chatMessages = it.ludoRoom.chatMessages + oppRollMsg
+                            lastEventText = "${currentRoom.player1.name} rolled $rolled with no moves. Your turn!",
+                            chatMessages = it.ludoRoom?.chatMessages.orEmpty() + oppRollMsg
                         )
                     )
                 }
@@ -1172,7 +1232,7 @@ class SparkViewModel : ViewModel() {
             return
         }
 
-        val currentRoom = _uiState.value.ludoRoom
+        val currentRoom = _uiState.value.ludoRoom ?: return
         val newMsg = LudoChatMessage(
             id = "lmsg_user_${System.currentTimeMillis()}",
             roomId = currentRoom.id,
@@ -1189,8 +1249,8 @@ class SparkViewModel : ViewModel() {
         )
         _uiState.update {
             it.copy(
-                ludoRoom = it.ludoRoom.copy(
-                    chatMessages = it.ludoRoom.chatMessages + newMsg
+                ludoRoom = it.ludoRoom?.copy(
+                    chatMessages = it.ludoRoom?.chatMessages.orEmpty() + newMsg
                 )
             )
         }
