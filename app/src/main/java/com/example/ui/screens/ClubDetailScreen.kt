@@ -13,10 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material3.*
@@ -37,6 +34,7 @@ import com.example.model.Club
 import com.example.model.ClubMember
 import com.example.model.ClubMessage
 import com.example.model.UserProfile
+import com.example.ui.components.QuickyStickerIcon
 import com.example.ui.components.ReplyPreviewBanner
 import com.example.ui.components.SwipeToReplyContainer
 import com.example.ui.theme.*
@@ -66,6 +64,7 @@ fun ClubDetailScreen(
     var inputText by remember { mutableStateOf("") }
     var replyingToMessage by remember { mutableStateOf<ClubMessage?>(null) }
     var showMembersSheet by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
     var memberToRemove by remember { mutableStateOf<ClubMember?>(null) }
     var showLeaveConfirmDialog by remember { mutableStateOf(false) }
     var showSwitchClubConfirmDialog by remember { mutableStateOf(false) }
@@ -88,7 +87,8 @@ fun ClubDetailScreen(
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
+            // +1 because the welcome tile occupies index 0 of the list
+            listState.animateScrollToItem(messages.size)
         }
     }
 
@@ -129,11 +129,48 @@ fun ClubDetailScreen(
                     }
                 },
                 actions = {
+                    // Members of the club
                     IconButton(
                         onClick = { showMembersSheet = true },
                         modifier = Modifier.testTag("club_members_button")
                     ) {
                         Icon(imageVector = Icons.Outlined.People, contentDescription = "Members", tint = QuickyPurple)
+                    }
+
+                    // 3-dots options menu (with Leave the Club option)
+                    if (isMember) {
+                        Box {
+                            IconButton(
+                                onClick = { showMenu = true },
+                                modifier = Modifier.testTag("club_menu_button")
+                            ) {
+                                Icon(imageVector = Icons.Filled.MoreVert, contentDescription = "Options")
+                            }
+
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("View Members") },
+                                    onClick = {
+                                        showMenu = false
+                                        showMembersSheet = true
+                                    },
+                                    leadingIcon = { Icon(Icons.Outlined.People, contentDescription = null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Leave the Club", color = ActionPass, fontWeight = FontWeight.Bold) },
+                                    onClick = {
+                                        showMenu = false
+                                        showLeaveConfirmDialog = true
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.ExitToApp, contentDescription = null, tint = ActionPass)
+                                    }
+                                )
+                            }
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -146,15 +183,13 @@ fun ClubDetailScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Messages Feed
+            // Messages Feed — same bubble styling as the personal chat
             LazyColumn(
                 state = listState,
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(vertical = 12.dp)
+                    .fillMaxWidth(),
+                reverseLayout = false
             ) {
                 // Club welcome info tile
                 item {
@@ -186,8 +221,11 @@ fun ClubDetailScreen(
                 items(messages) { msg ->
                     SwipeToReplyContainer(onSwipeToReply = { replyingToMessage = msg }) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = if (msg.isMine) Arrangement.End else Arrangement.Start
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            horizontalArrangement = if (msg.isMine) Arrangement.End else Arrangement.Start,
+                            verticalAlignment = Alignment.Bottom
                         ) {
                             if (!msg.isMine) {
                                 Box(
@@ -211,12 +249,18 @@ fun ClubDetailScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                             }
 
+                            // Bubble styled exactly like the personal chat
                             Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = if (msg.isMine) QuickyPurple else MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier.widthIn(max = 270.dp)
+                                shape = RoundedCornerShape(
+                                    topStart = 18.dp,
+                                    topEnd = 18.dp,
+                                    bottomStart = if (msg.isMine) 18.dp else 4.dp,
+                                    bottomEnd = if (msg.isMine) 4.dp else 18.dp
+                                ),
+                                color = if (msg.isMine) SparkRose else MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.widthIn(max = 280.dp)
                             ) {
-                                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                                     if (!msg.isMine) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
@@ -272,8 +316,8 @@ fun ClubDetailScreen(
                                     if (msg.text.isNotBlank()) {
                                         Text(
                                             text = msg.text,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = if (msg.isMine) Color.White else MaterialTheme.colorScheme.onSurface
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = if (msg.isMine) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
 
@@ -291,16 +335,16 @@ fun ClubDetailScreen(
                                             )
                                             Text(
                                                 text = "Voice message • 0:0${msg.voiceDurationSeconds}",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = if (msg.isMine) Color.White else MaterialTheme.colorScheme.onSurface
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = if (msg.isMine) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
                                     }
 
                                     Text(
                                         text = msg.timestamp,
-                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-                                        color = if (msg.isMine) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (msg.isMine) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                                         modifier = Modifier.align(Alignment.End)
                                     )
                                 }
@@ -310,11 +354,12 @@ fun ClubDetailScreen(
                 }
             }
 
-            // Quick Banter Chips
+            // Quick Banter Chips (same bar styling as the personal chat)
             LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(listOf("🎲 Let's play Ludo!", "👋 Hey everyone", "🎉 GG WP", "🔥 Awesome")) { chip ->
@@ -405,24 +450,25 @@ fun ClubDetailScreen(
                     )
                 }
 
-                // Chat Input Bar
+                // Chat Input Bar — same layout as the personal chat
                 Surface(
                     color = MaterialTheme.colorScheme.surface,
                     tonalElevation = 6.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     if (isRecordingVoiceNote) {
-                        // In-chat Voice Recording Bar
+                        // Active In-Chat Voice Note Recording Bar (same as personal chat)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .navigationBarsPadding(),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Surface(
                                 shape = CircleShape,
-                                color = QuickyPurple.copy(alpha = 0.2f),
+                                color = SparkRose.copy(alpha = 0.2f),
                                 modifier = Modifier.size(36.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
@@ -430,16 +476,16 @@ fun ClubDetailScreen(
                                         modifier = Modifier
                                             .size(12.dp)
                                             .clip(CircleShape)
-                                            .background(ActionPass)
+                                            .background(SparkRose)
                                     )
                                 }
                             }
 
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Recording club voice note...",
+                                    text = "Recording club voice message...",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = QuickyPurple
+                                    color = SparkRose
                                 )
                                 Text(
                                     text = "0:0$voiceRecordSeconds",
@@ -454,7 +500,7 @@ fun ClubDetailScreen(
                                     isRecordingVoiceNote = false
                                     voiceRecordSeconds = 0
                                 },
-                                modifier = Modifier.testTag("club_voice_record_cancel")
+                                modifier = Modifier.testTag("club_voice_cancel_button")
                             ) {
                                 Icon(Icons.Filled.Close, contentDescription = "Discard", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
@@ -466,85 +512,104 @@ fun ClubDetailScreen(
                                     isRecordingVoiceNote = false
                                     voiceRecordSeconds = 0
                                 },
-                                colors = IconButtonDefaults.filledIconButtonColors(containerColor = QuickyPurple, contentColor = Color.White),
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = SparkRose,
+                                    contentColor = Color.White
+                                ),
                                 modifier = Modifier
-                                    .size(42.dp)
+                                    .size(44.dp)
                                     .testTag("club_voice_record_send")
                             ) {
-                                Icon(Icons.Filled.Send, contentDescription = "Send Voice Message", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Filled.Send, contentDescription = "Send Voice Message", modifier = Modifier.size(20.dp))
                             }
                         }
                     } else {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .navigationBarsPadding(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            // Sticker picker button
-                            IconButton(
-                                onClick = onOpenStickerPicker,
-                                modifier = Modifier.size(38.dp)
-                            ) {
-                                Text("🎮", fontSize = 20.sp)
-                            }
-
-                            // Voice Message Button (in-chat voice message)
-                            IconButton(
-                                onClick = {
-                                    isRecordingVoiceNote = true
-                                },
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .testTag("club_voice_message_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Mic,
-                                    contentDescription = "Voice note",
-                                    tint = QuickyPurple,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-
+                            // Message text input (Sticker picker INSIDE the composer, right end)
                             TextField(
                                 value = inputText,
                                 onValueChange = { inputText = it },
-                                placeholder = { Text("Chat with the club...", style = MaterialTheme.typography.bodyMedium) },
+                                placeholder = { Text("Message ${club.name}...", style = MaterialTheme.typography.bodyMedium) },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = onOpenStickerPicker,
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .testTag("club_sticker_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = QuickyStickerIcon,
+                                            contentDescription = "Stickers",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                },
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(46.dp)
                                     .testTag("club_message_input"),
-                                shape = RoundedCornerShape(23.dp),
+                                shape = RoundedCornerShape(24.dp),
                                 colors = TextFieldDefaults.colors(
                                     focusedIndicatorColor = Color.Transparent,
                                     unfocusedIndicatorColor = Color.Transparent,
                                     focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                                     unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
                                 ),
-                                singleLine = true
+                                maxLines = 4
                             )
 
+                            // Mic stays OUTSIDE the composer, on its right (voice message option)
                             IconButton(
                                 onClick = {
-                                    if (inputText.isNotBlank()) {
-                                        onSendMessage(
-                                            inputText,
-                                            replyingToMessage?.text?.take(60),
-                                            if (replyingToMessage != null) (if (replyingToMessage!!.isMine) "You" else replyingToMessage!!.senderName) else null
-                                        )
-                                        inputText = ""
-                                        replyingToMessage = null
-                                    }
+                                    isRecordingVoiceNote = true
                                 },
-                                enabled = inputText.isNotBlank(),
-                                modifier = Modifier.size(38.dp)
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .background(if (inputText.isBlank()) SparkPurple.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant)
+                                    .testTag("club_voice_message_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Send,
-                                    contentDescription = "Send",
-                                    tint = if (inputText.isNotBlank()) QuickyPurple else MaterialTheme.colorScheme.outlineVariant
+                                    imageVector = Icons.Filled.Mic,
+                                    contentDescription = "Record Voice Message",
+                                    tint = if (inputText.isBlank()) SparkPurple else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(22.dp)
                                 )
+                            }
+
+                            // Send Button (same as the personal chat)
+                            if (inputText.isNotBlank()) {
+                                FilledIconButton(
+                                    onClick = {
+                                        if (inputText.isNotBlank()) {
+                                            onSendMessage(
+                                                inputText,
+                                                replyingToMessage?.text?.ifBlank { replyingToMessage?.stickerEmoji }?.take(60),
+                                                if (replyingToMessage != null) (if (replyingToMessage!!.isMine) "You" else replyingToMessage!!.senderName) else null
+                                            )
+                                            inputText = ""
+                                            replyingToMessage = null
+                                        }
+                                    },
+                                    enabled = inputText.isNotBlank(),
+                                    colors = IconButtonDefaults.filledIconButtonColors(
+                                        containerColor = SparkRose,
+                                        contentColor = Color.White,
+                                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                                    ),
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .testTag("club_send_button")
+                                ) {
+                                    Icon(Icons.Filled.Send, contentDescription = "Send message", modifier = Modifier.size(20.dp))
+                                }
                             }
                         }
                     }

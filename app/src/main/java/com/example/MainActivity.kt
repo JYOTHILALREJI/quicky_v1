@@ -182,6 +182,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                         isPremium = state.entitlements.isPremium,
                         onOpenPremiumStore = { viewModel.openPremiumStore() },
                         onOpenLudo = { viewModel.openLudoGame() },
+                        onOpenStickerPicker = { viewModel.openStickerPicker() },
                         onSendVoiceMessage = { duration -> viewModel.sendVoiceMessage(selectedChat.id, duration) }
                     )
                 } else {

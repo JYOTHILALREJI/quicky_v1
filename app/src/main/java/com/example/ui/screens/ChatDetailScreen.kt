@@ -31,6 +31,8 @@ import com.example.R
 import com.example.data.MockDataProvider
 import com.example.model.*
 import com.example.ui.components.ChatBubble
+import com.example.ui.components.QuickyGamesIcon
+import com.example.ui.components.QuickyStickerIcon
 import com.example.ui.components.ReplyPreviewBanner
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
@@ -53,6 +55,7 @@ fun ChatDetailScreen(
     isPremium: Boolean = false,
     onOpenPremiumStore: () -> Unit = {},
     onOpenLudo: () -> Unit = {},
+    onOpenStickerPicker: () -> Unit = {},
     onSendVoiceMessage: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -145,14 +148,13 @@ fun ChatDetailScreen(
                 actions = {
                     val isDark = MaterialTheme.colorScheme.background == DarkBg || MaterialTheme.colorScheme.surface == DarkSurface
 
-                    // Games section in chat
+                    // Games section in chat (custom SVG gamepad icon, next to the 3-dots menu)
                     IconButton(
                         onClick = { showGamePicker = true },
                         modifier = Modifier.testTag("chat_top_game_button")
                     ) {
-                        // Vector SVG icon, color-neutral (White in dark theme, Black in light theme)
                         Icon(
-                            imageVector = Icons.Filled.SportsEsports,
+                            imageVector = QuickyGamesIcon,
                             contentDescription = "Chat Games Section",
                             tint = if (isDark) Color.White else Color.Black
                         )
@@ -398,11 +400,26 @@ fun ChatDetailScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Message text input
+                        // Message text input (Sticker picker INSIDE the composer, right end)
                         TextField(
                             value = inputText,
                             onValueChange = { inputText = it },
                             placeholder = { Text("Message ${match.user.name}...", style = MaterialTheme.typography.bodyMedium) },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = onOpenStickerPicker,
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .testTag("chat_sticker_button")
+                                ) {
+                                    Icon(
+                                        imageVector = QuickyStickerIcon,
+                                        contentDescription = "Stickers",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            },
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("chat_message_input"),
@@ -416,7 +433,7 @@ fun ChatDetailScreen(
                             maxLines = 4
                         )
 
-                        // Voice Message Option in Chat
+                        // Mic stays OUTSIDE the composer, on its right (voice message option)
                         IconButton(
                             onClick = {
                                 isRecordingVoiceNote = true
