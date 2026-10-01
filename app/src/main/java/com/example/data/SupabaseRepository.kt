@@ -45,21 +45,31 @@ object SupabaseRepository {
      */
     suspend fun fetchGamesCatalog(): List<GameDefinition> {
         if (!isConfigured()) return emptyList()
+
         return runCatching {
             val raw = SupabaseClient.rest(
                 method = "GET",
                 path = "/rest/v1/${SupabaseConfig.TABLE_GAMES}",
                 query = mapOf("select" to "*")
             )
-            SupabaseClient.parseArray(raw).map { row ->
-                GameDefinition(
-                    id = row.optString("id"),
-                    name = row.optString("name"),
-                    description = row.optString("description"),
-                    isFree = row.optBoolean("is_free", false),
-                    tag = row.optString("tag", "PREMIUM"),
-                    playersCount = row.optString("players_count", "2 Players")
-                )
+
+            val jsonArray = SupabaseClient.parseArray(raw)
+
+            buildList {
+                for (index in 0 until jsonArray.length()) {
+                    val row = jsonArray.optJSONObject(index) ?: continue
+
+                    add(
+                        GameDefinition(
+                            id = row.optString("id"),
+                            name = row.optString("name"),
+                            description = row.optString("description"),
+                            isFree = row.optBoolean("is_free", false),
+                            tag = row.optString("tag", "PREMIUM"),
+                            playersCount = row.optString("players_count", "2 Players")
+                        )
+                    )
+                }
             }
         }.getOrDefault(emptyList())
     }
@@ -71,20 +81,30 @@ object SupabaseRepository {
      */
     suspend fun fetchTruthOrDarePrompts(): List<TruthOrDarePrompt> {
         if (!isConfigured()) return emptyList()
+
         return runCatching {
             val raw = SupabaseClient.rest(
                 method = "GET",
                 path = "/rest/v1/${SupabaseConfig.TABLE_GAME_PROMPTS}",
                 query = mapOf("select" to "*")
             )
-            SupabaseClient.parseArray(raw).map { row ->
-                TruthOrDarePrompt(
-                    id = row.optString("id"),
-                    category = row.optString("category", "Flirty"),
-                    type = row.optString("type", "TRUTH"),
-                    text = row.optString("text"),
-                    difficulty = row.optString("difficulty", "Medium")
-                )
+
+            val jsonArray = SupabaseClient.parseArray(raw)
+
+            buildList {
+                for (index in 0 until jsonArray.length()) {
+                    val row = jsonArray.optJSONObject(index) ?: continue
+
+                    add(
+                        TruthOrDarePrompt(
+                            id = row.optString("id"),
+                            category = row.optString("category", "Flirty"),
+                            type = row.optString("type", "TRUTH"),
+                            text = row.optString("text"),
+                            difficulty = row.optString("difficulty", "Medium")
+                        )
+                    )
+                }
             }
         }.getOrDefault(emptyList())
     }

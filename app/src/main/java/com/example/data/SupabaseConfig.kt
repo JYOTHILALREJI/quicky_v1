@@ -20,10 +20,10 @@ package com.example.data
 object SupabaseConfig {
 
     /** e.g. "https://abcdefghij1234.supabase.co" */
-    const val SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co"
+    const val SUPABASE_URL = "https://orcukgfdwludlmfxgdpp.supabase.co"
 
     /** anon public key from Dashboard → Settings → API */
-    const val SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY"
+    const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9yY3VrZ2Zkd2x1ZGxtZnhnZHBwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA4NDY5NzAsImV4cCI6MjEwNjQyMjk3MH0.0NrH1eZmeMJjo77gZMJ_2PeLUAFWqMkPO7JX8GOpadA"
 
     // ------------------------------------------------------------
     // Storage buckets (create these in Supabase → Storage)
