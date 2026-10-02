@@ -511,7 +511,9 @@ private fun StageBasics(
         )
     }
 
-    if (draft.calculatedAge != null && draft.calculatedAge < 18) {
+    // calculatedAge has a custom getter — capture it in a local val so Kotlin can smart-cast.
+    val calculatedAge = draft.calculatedAge
+    if (calculatedAge != null && calculatedAge < 18) {
         InfoBanner(
             icon = Icons.Filled.WarningAmber,
             tint = ActionPass,
@@ -633,7 +635,7 @@ private fun StagePersonality(
             },
             enabled = customInterest.isNotBlank() &&
                     draft.interests.size < AppContent.MAX_INTERESTS,
-            colors = FilledTonalIconButtonDefaults.filledTonalIconButtonColors(
+            colors = IconButtonDefaults.filledTonalIconButtonColors(
                 containerColor = QuickyPurple,
                 contentColor = Color.White
             ),

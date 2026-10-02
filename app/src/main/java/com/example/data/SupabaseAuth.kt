@@ -236,7 +236,8 @@ object SupabaseAuth {
                     .url("${SupabaseConfig.SUPABASE_URL}/auth/v1/logout")
                     .header("apikey", SupabaseConfig.SUPABASE_ANON_KEY)
                     .header("Authorization", "Bearer ${stored.accessToken}")
-                    .post(okhttp3.RequestBody.EMPTY)
+                    // OkHttp 4.x has no prebuilt empty body — make one from an empty byte array.
+                    .post(ByteArray(0).toRequestBody(null))
                     .build()
                 http().newCall(request).execute().use { /* best effort */ }
             }
