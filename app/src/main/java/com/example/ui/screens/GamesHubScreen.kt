@@ -29,7 +29,6 @@ import com.example.R
 import com.example.model.GameDefinition
 import com.example.model.MatchItem
 import com.example.model.TruthOrDarePrompt
-import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -53,6 +52,10 @@ fun GamesHubScreen(
         if (selectedCategory == "All") prompts else prompts.filter { it.category == selectedCategory }
     }
 
+    // The glass nav bar is hidden on this screen; keep the list clear of
+    // the system gesture bar only.
+    val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -61,7 +64,7 @@ fun GamesHubScreen(
             start = 16.dp,
             top = 16.dp,
             end = 16.dp,
-            bottom = 16.dp + glassNavBarOverlayHeight()
+            bottom = 24.dp + navBarBottom
         ),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {

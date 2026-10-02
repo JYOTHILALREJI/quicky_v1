@@ -16,6 +16,35 @@ import androidx.compose.ui.unit.dp
  * other material icon.
  */
 
+/**
+ * iOS-style back chevron ("<") used in the top bar of the Games Hub and
+ * Clubs screens, placed before the Quicky logo. A single thin rounded
+ * stroke, mirroring SF Symbols' "chevron.left".
+ */
+val QuickyBackChevron: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "QuickyBackChevron",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        // A single elegant chevron stroke: down-right, then up-right,
+        // meeting at a crisp left point with rounded caps (iOS look).
+        path(
+            fill = null,
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 2.6f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        ) {
+            moveTo(14.75f, 4.75f)
+            lineTo(7.5f, 12f)
+            lineTo(14.75f, 19.25f)
+        }
+    }.build()
+}
+
 /** Gamepad icon used in the personal chat top bar (next to the 3-dots menu). */
 val QuickyGamesIcon: ImageVector by lazy {
     ImageVector.Builder(

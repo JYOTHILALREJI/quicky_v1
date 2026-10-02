@@ -174,7 +174,8 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                         onFilterClick = { viewModel.toggleFilterSheet(true) },
                         onBoostClick = { viewModel.activateBoost() },
                         onGamesClick = { viewModel.setTab(SparkTab.GAMES) },
-                        onClubsClick = { viewModel.setTab(SparkTab.CLUBS) }
+                        onClubsClick = { viewModel.setTab(SparkTab.CLUBS) },
+                        onBackClick = { viewModel.setTab(SparkTab.PROFILE) }
                     )
                 }
             },
@@ -312,14 +313,24 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             }
 
                 // Floating liquid-glass bottom navigation (drawn above the
-                // scrolling content so it frosts whatever passes beneath it)
-                if (state.selectedMatchForChat == null) {
+                // scrolling content so it frosts whatever passes beneath it).
+                // HIDDEN on the full-screen Games Hub & Clubs destinations —
+                // those screens use the iOS-style back chevron in the top
+                // bar to return to the Profile page instead.
+                val showGlassNavBar = state.selectedMatchForChat == null &&
+                        state.currentTab != SparkTab.GAMES &&
+                        state.currentTab != SparkTab.CLUBS
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showGlassNavBar,
+                    enter = fadeIn(),
+                    exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 3 }),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                ) {
                     SparkBottomNav(
                         currentTab = state.currentTab,
                         unreadMessagesCount = state.matches.sumOf { it.unreadCount },
                         newMatchesCount = state.matches.count { it.isNewMatch },
-                        onTabSelected = { tab -> viewModel.setTab(tab) },
-                        modifier = Modifier.align(Alignment.BottomCenter)
+                        onTabSelected = { tab -> viewModel.setTab(tab) }
                     )
                 }
             }

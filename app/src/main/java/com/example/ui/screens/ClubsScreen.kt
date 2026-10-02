@@ -28,7 +28,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.Club
-import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,10 +72,17 @@ fun ClubsScreen(
                     contentColor = Color.White,
                     icon = { Icon(Icons.Filled.Add, contentDescription = null) },
                     text = { Text("Create Club", fontWeight = FontWeight.Bold) },
-                    modifier = Modifier.testTag("create_club_fab")
+                    // Clear the system gesture bar so the button is always
+                    // fully visible (the glass nav bar is hidden here).
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .testTag("create_club_fab")
                 )
             }
         },
+        // Zero insets: the outer app-level Scaffold already handles the
+        // status bar — default insets here duplicated it as blank space.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         modifier = modifier.fillMaxSize()
     ) { paddingValues ->
         LazyColumn(
@@ -86,37 +92,38 @@ fun ClubsScreen(
                 .testTag("clubs_screen"),
             contentPadding = PaddingValues(
                 start = 16.dp,
-                top = 16.dp,
+                top = 8.dp,
                 end = 16.dp,
-                bottom = 16.dp + glassNavBarOverlayHeight()
+                bottom = 100.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             // Header / Hero Section (PRD Section 1, 11, 19: Friendship & Social Communities)
             item {
                 Surface(
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RoundedCornerShape(16.dp),
                     color = QuickyPurple.copy(alpha = 0.10f),
                     border = androidx.compose.foundation.BorderStroke(1.dp, QuickyPurple.copy(alpha = 0.3f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Text("🛡️", fontSize = 28.sp)
-                            Column {
-                                Text(
-                                    text = "Quicky Clubs & Communities",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                                )
-                                Text(
-                                    text = "Small 15-member groups for games, friendship & shared chats",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("🛡️", fontSize = 18.sp)
+                        Column {
+                            Text(
+                                text = "Quicky Clubs & Communities",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Small 15-member groups for games, friendship & shared chats",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }

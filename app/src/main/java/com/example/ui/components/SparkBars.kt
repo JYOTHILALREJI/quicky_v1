@@ -49,12 +49,34 @@ fun SparkTopBar(
     onBoostClick: () -> Unit,
     onGamesClick: () -> Unit = {},
     onClubsClick: () -> Unit = {},
+    onBackClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    // Games Hub & Clubs are now full-screen destinations reached from the
+    // Profile page — they show an iOS-style back chevron before the logo.
+    val showsBackChevron = currentTab == SparkTab.GAMES || currentTab == SparkTab.CLUBS
+
     TopAppBar(
         modifier = modifier
             .statusBarsPadding()
             .testTag("quicky_top_bar"),
+        navigationIcon = {
+            if (showsBackChevron) {
+                IconButton(
+                    onClick = onBackClick,
+                    modifier = Modifier
+                        .testTag("top_bar_back")
+                        .minimumInteractiveComponentSize()
+                ) {
+                    Icon(
+                        imageVector = QuickyBackChevron,
+                        contentDescription = "Back",
+                        tint = QuickyPurple,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+        },
         title = {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
