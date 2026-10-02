@@ -29,6 +29,7 @@ import com.example.R
 import com.example.model.GameDefinition
 import com.example.model.MatchItem
 import com.example.model.TruthOrDarePrompt
+import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,7 +57,12 @@ fun GamesHubScreen(
         modifier = modifier
             .fillMaxSize()
             .testTag("games_hub_screen"),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = 16.dp,
+            end = 16.dp,
+            bottom = 16.dp + glassNavBarOverlayHeight()
+        ),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // Hero Banner with Quicky logo

@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.UserProfile
 import com.example.ui.components.ProfileCard
+import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.DarkTextSecondary
 import com.example.ui.theme.SparkRose
 
@@ -38,6 +39,9 @@ fun DiscoverScreen(
     ) {
         if (deck.isNotEmpty()) {
             val topProfile = deck.first()
+            // The card photo keeps extending behind the floating liquid-glass
+            // nav bar; only the info column and action dock are lifted above it.
+            val navBarInset = glassNavBarOverlayHeight()
             ProfileCard(
                 profile = topProfile,
                 onLike = { onLike(topProfile, false) },
@@ -46,6 +50,7 @@ fun DiscoverScreen(
                 onRewind = onRewind,
                 onBoost = onBoost,
                 onOpenDetail = { onOpenDetail(topProfile) },
+                bottomContentInset = navBarInset,
                 modifier = Modifier.fillMaxSize()
             )
         } else {

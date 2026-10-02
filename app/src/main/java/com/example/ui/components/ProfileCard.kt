@@ -20,10 +20,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.UserProfile
+import com.example.model.VisibilityLevel
 import com.example.ui.theme.*
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -36,7 +38,11 @@ fun ProfileCard(
     onRewind: () -> Unit,
     onBoost: () -> Unit,
     onOpenDetail: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // Lifts the bottom info column (and the action dock) above the
+    // floating liquid-glass nav bar while the photo keeps extending
+    // behind the frosted translucent surface.
+    bottomContentInset: Dp = 0.dp
 ) {
     var currentPhotoIndex by remember(profile.id) { mutableIntStateOf(0) }
     val photoCount = profile.photoResIds.size.coerceAtLeast(1)
@@ -183,7 +189,7 @@ fun ProfileCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomStart)
-                    .padding(horizontal = 20.dp, vertical = 16.dp)
+                    .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 16.dp + bottomContentInset)
             ) {
                 // Name, Age and Detail Sheet Button
                 Row(
@@ -244,23 +250,29 @@ fun ProfileCard(
                 )
 
                 // Interest Badges arranged across multiple rows
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(top = 8.dp)
+                // (respecting the candidate's interests visibility setting)
+                if (profile.fieldVisibility["interests"] != VisibilityLevel.ONLY_ME &&
+                    profile.fieldVisibility["interests"] != VisibilityLevel.MATCHES_ONLY &&
+                    profile.interests.isNotEmpty()
                 ) {
-                    profile.interests.forEach { interest ->
-                        Surface(
-                            color = Color.Black.copy(alpha = 0.45f),
-                            shape = CircleShape,
-                            border = androidx.compose.foundation.BorderStroke(0.5.dp, Color.White.copy(alpha = 0.35f))
-                        ) {
-                            Text(
-                                text = interest,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        profile.interests.forEach { interest ->
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.45f),
+                                shape = CircleShape,
+                                border = androidx.compose.foundation.BorderStroke(0.5.dp, Color.White.copy(alpha = 0.35f))
+                            ) {
+                                Text(
+                                    text = interest,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
                         }
                     }
                 }

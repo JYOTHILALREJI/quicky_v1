@@ -132,10 +132,20 @@ class SparkViewModel : ViewModel() {
                 )
             } else _uiState.value.entitlements
 
+            // Shared-interest matching: profiles that love the same things
+            // surface their common interests on the match celebration and
+            // compatibility highlights.
+            val sharedInterests = sharedInterestsBetween(_uiState.value.userProfile, profile)
+            val matchedProfile = if (sharedInterests.isEmpty()) profile else profile.copy(
+                compatibilityHighlights = listOf(
+                    "You both love ${sharedInterests.take(3).joinToString(" · ")}"
+                )
+            )
+
             val isMutualMatch = true
             val newMatchItem = MatchItem(
                 id = "match_${profile.id}",
-                user = profile,
+                user = matchedProfile,
                 matchedAt = "Just now",
                 lastMessage = if (isSuperLike) "Super Liked your profile! ✨" else "You both liked each other! Start chatting.",
                 unreadCount = 0,
@@ -150,11 +160,22 @@ class SparkViewModel : ViewModel() {
                     discoveryDeck = updatedDeck,
                     entitlements = updatedEntitlements,
                     matches = updatedMatches,
-                    matchCelebration = if (isMutualMatch) profile else null,
-                    toastMessage = if (isSuperLike) "Super Liked ${profile.name}! 🌟" else "Liked ${profile.name} ❤️"
+                    matchCelebration = if (isMutualMatch) matchedProfile else null,
+                    toastMessage = when {
+                        isSuperLike -> "Super Liked ${profile.name}! 🌟"
+                        sharedInterests.isNotEmpty() ->
+                            "It's a match! You & ${profile.name} both love ${sharedInterests.take(2).joinToString(" & ")} ❤️"
+                        else -> "Liked ${profile.name} ❤️"
+                    }
                 )
             }
         }
+    }
+
+    /** Case-insensitive intersection of two profiles' interests. */
+    private fun sharedInterestsBetween(a: UserProfile, b: UserProfile): List<String> {
+        val bInterests = b.interests.map { it.trim().lowercase() }
+        return a.interests.filter { it.trim().lowercase() in bInterests }
     }
 
     fun passProfile(profile: UserProfile) {
@@ -599,15 +620,25 @@ class SparkViewModel : ViewModel() {
         occupation: String,
         education: String,
         intent: String,
+        interests: List<String>,
         fieldVisibility: Map<String, VisibilityLevel>
     ) {
-        val updated = _uiState.value.userProfile.copy(
+        val previous = _uiState.value.userProfile
+        val updated = previous.copy(
             height = height,
             occupation = occupation,
             educationLevel = education,
             education = education,
             relationshipIntent = intent,
-            fieldVisibility = fieldVisibility
+            interests = interests,
+            fieldVisibility = fieldVisibility,
+            // Adding interests strengthens the profile (and matching) —
+            // nudge the completion score upwards.
+            profileCompletionScore = if (interests.isNotEmpty()) {
+                previous.profileCompletionScore.coerceAtLeast(60)
+            } else {
+                previous.profileCompletionScore
+            }
         )
         _uiState.update {
             it.copy(
@@ -699,13 +730,36 @@ class SparkViewModel : ViewModel() {
     }
 
     fun updateDiscoveryPreferences(newPrefs: DiscoveryPreferences) {
+        // Apply the saved preferences (including shared-interest filters)
+        // to whatever is currently in the discovery deck.
+        val filteredDeck = applyDiscoveryFilters(_uiState.value.discoveryDeck, newPrefs)
+        val interestNote = if (newPrefs.interests.isEmpty()) ""
+            else " with ${newPrefs.interests.size} shared interest${if (newPrefs.interests.size == 1) "" else "s"}"
         _uiState.update {
             it.copy(
                 discoveryPreferences = newPrefs,
+                discoveryDeck = filteredDeck,
                 showFilterSheet = false,
-                toastMessage = "Discovery preferences saved"
+                toastMessage = "Discovery preferences saved$interestNote"
             )
         }
+    }
+
+    /**
+     * Filters a set of candidate profiles by the user's discovery
+     * preferences: age window, distance, verification and shared
+     * interests (a profile matches when it shares at least one).
+     */
+    private fun applyDiscoveryFilters(
+        deck: List<UserProfile>,
+        prefs: DiscoveryPreferences
+    ): List<UserProfile> = deck.filter { profile ->
+        profile.age in prefs.minAge..prefs.maxAge &&
+            profile.distanceKm <= prefs.distanceKm &&
+            (!prefs.verifiedOnly || profile.isVerified) &&
+            (prefs.interests.isEmpty() || profile.interests.any { candidate ->
+                candidate.trim().lowercase() in prefs.interests.map { it.trim().lowercase() }
+            })
     }
 
     fun updateFilters(newFilter: DiscoveryFilter) {

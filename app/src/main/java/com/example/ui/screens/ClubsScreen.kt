@@ -28,6 +28,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.Club
+import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -83,7 +84,12 @@ fun ClubsScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
                 .testTag("clubs_screen"),
-            contentPadding = PaddingValues(16.dp),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = 16.dp,
+                end = 16.dp,
+                bottom = 16.dp + glassNavBarOverlayHeight()
+            ),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
             // Header / Hero Section (PRD Section 1, 11, 19: Friendship & Social Communities)

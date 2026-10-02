@@ -1,9 +1,12 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -11,10 +14,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.data.AppContent
 import com.example.model.DiscoveryFilter
 import com.example.ui.theme.QuickyPink
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun FilterSheet(
     currentFilter: DiscoveryFilter,
@@ -27,6 +31,10 @@ fun FilterSheet(
     var verifiedOnly by remember { mutableStateOf(currentFilter.verifiedOnly) }
     var intent by remember { mutableStateOf(currentFilter.relationshipIntent) }
 
+    // Interest filters — show profiles sharing at least one of the
+    // selected interests (same catalog used on the profile).
+    var selectedInterests by remember { mutableStateOf(currentFilter.interests) }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surface,
@@ -35,6 +43,7 @@ fun FilterSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp, vertical = 16.dp)
         ) {
             Row(
@@ -117,6 +126,76 @@ fun FilterSheet(
                 )
             }
 
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // ---------------------------------------------------------
+            // INTERESTS FILTER
+            // ---------------------------------------------------------
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Shared Interests", style = MaterialTheme.typography.titleMedium)
+                if (selectedInterests.isNotEmpty()) {
+                    TextButton(
+                        onClick = { selectedInterests = emptyList() },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        modifier = Modifier.testTag("clear_interests_button")
+                    ) {
+                        Text("Clear (${selectedInterests.size})", color = QuickyPink, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            Text(
+                text = "Show profiles that love at least one of your selected interests.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 10.dp)
+            )
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                AppContent.interestCatalog.forEach { interest ->
+                    val isSelected = interest.lowercase() in selectedInterests.map { it.lowercase() }
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = {
+                            selectedInterests = if (isSelected) {
+                                selectedInterests.filter { it.lowercase() != interest.lowercase() }
+                            } else {
+                                selectedInterests + interest
+                            }
+                        },
+                        label = {
+                            Text(
+                                text = interest,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        leadingIcon = if (isSelected) {
+                            {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        } else null,
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = QuickyPink.copy(alpha = 0.14f),
+                            selectedLabelColor = QuickyPink,
+                            selectedLeadingIconColor = QuickyPink
+                        ),
+                        border = null,
+                        modifier = Modifier.testTag("filter_interest_chip_${interest.replace(" ", "_").lowercase()}")
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(28.dp))
 
             // Apply Button
@@ -128,7 +207,8 @@ fun FilterSheet(
                             maxAge = maxAge.toInt(),
                             distanceKm = distance.toInt(),
                             relationshipIntent = intent,
-                            verifiedOnly = verifiedOnly
+                            verifiedOnly = verifiedOnly,
+                            interests = selectedInterests
                         )
                     )
                 },

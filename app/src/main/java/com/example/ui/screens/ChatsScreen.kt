@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.MatchItem
+import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
 
 @Composable
@@ -44,7 +45,14 @@ fun ChatsScreen(
         modifier = modifier
             .fillMaxSize()
             .testTag("chats_screen"),
-        contentPadding = PaddingValues(16.dp),
+        // Extra bottom padding so the last chat can scroll clear above
+        // the floating liquid-glass navigation bar.
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = 16.dp,
+            end = 16.dp,
+            bottom = 16.dp + glassNavBarOverlayHeight()
+        ),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         // Search Conversations Input (PRD Section 53)

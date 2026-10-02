@@ -285,6 +285,7 @@ class SparkViewModelTest {
             occupation = "Senior Engineer",
             education = "Master's Degree",
             intent = "Long-term relationship",
+            interests = listOf("Music", "Travel"),
             fieldVisibility = mapOf("height" to com.example.model.VisibilityLevel.EVERYONE)
         )
 
@@ -292,6 +293,7 @@ class SparkViewModelTest {
         assertEquals("180 cm", viewModel.uiState.value.userProfile.height)
         assertEquals("Senior Engineer", viewModel.uiState.value.userProfile.occupation)
         assertEquals("Master's Degree", viewModel.uiState.value.userProfile.educationLevel)
+        assertEquals(listOf("Music", "Travel"), viewModel.uiState.value.userProfile.interests)
     }
 
     @Test

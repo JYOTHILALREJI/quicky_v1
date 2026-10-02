@@ -164,7 +164,8 @@ data class DiscoveryPreferences(
     val educationPreference: String = "Any",
     val relationshipIntent: String = "Any",
     val verifiedOnly: Boolean = false,
-    val withPhotosOnly: Boolean = true
+    val withPhotosOnly: Boolean = true,
+    val interests: List<String> = emptyList() // Match profiles sharing at least one of these interests
 )
 
 // Backward compatibility alias for DiscoveryFilter

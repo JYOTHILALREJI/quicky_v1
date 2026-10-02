@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.MatchItem
 import com.example.model.UserProfile
+import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
 
 @Composable
@@ -49,7 +50,14 @@ fun MatchesScreen(
         modifier = modifier
             .fillMaxSize()
             .testTag("matches_screen"),
-        contentPadding = PaddingValues(16.dp),
+        // Extra bottom padding so the last card can scroll clear above
+        // the floating liquid-glass navigation bar.
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = 16.dp,
+            end = 16.dp,
+            bottom = 16.dp + glassNavBarOverlayHeight()
+        ),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // Section 1: New Matches Stories Tray

@@ -9,12 +9,15 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.*
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -85,7 +88,9 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             }
         }
 
-        // Back button handling per requirements
+        // Back button handling per requirements. Games Hub & Clubs are now
+        // reached from the Profile page, so system back returns to Profile
+        // instead of Discover.
         BackHandler(enabled = state.selectedProfileDetail != null || state.selectedMatchForChat != null || state.selectedClubForDetail != null || state.isLudoActive || state.showPersonalInformationSheet || state.currentTab != SparkTab.DISCOVER) {
             when {
                 state.isLudoActive -> viewModel.closeLudoGame()
@@ -93,7 +98,10 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 state.showPersonalInformationSheet -> viewModel.togglePersonalInformation(false)
                 state.selectedProfileDetail != null -> viewModel.closeProfileDetail()
                 state.selectedMatchForChat != null -> viewModel.closeChat()
-                state.currentTab != SparkTab.DISCOVER -> viewModel.setTab(SparkTab.DISCOVER)
+                state.currentTab != SparkTab.DISCOVER -> viewModel.setTab(
+                    if (state.currentTab == SparkTab.GAMES || state.currentTab == SparkTab.CLUBS) SparkTab.PROFILE
+                    else SparkTab.DISCOVER
+                )
             }
         }
 
@@ -155,6 +163,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
         } else {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             topBar = {
                 if (state.selectedMatchForChat == null) {
                     SparkTopBar(
@@ -163,28 +172,27 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                         isBoostActive = state.entitlements.isBoostActive,
                         onNotificationsClick = { viewModel.toggleNotificationsSheet(true) },
                         onFilterClick = { viewModel.toggleFilterSheet(true) },
-                        onBoostClick = { viewModel.activateBoost() }
-                    )
-                }
-            },
-            bottomBar = {
-                if (state.selectedMatchForChat == null) {
-                    SparkBottomNav(
-                        currentTab = state.currentTab,
-                        unreadMessagesCount = state.matches.sumOf { it.unreadCount },
-                        newMatchesCount = state.matches.count { it.isNewMatch },
-                        onTabSelected = { tab -> viewModel.setTab(tab) }
+                        onBoostClick = { viewModel.activateBoost() },
+                        onGamesClick = { viewModel.setTab(SparkTab.GAMES) },
+                        onClubsClick = { viewModel.setTab(SparkTab.CLUBS) }
                     )
                 }
             },
             snackbarHost = { SnackbarHost(snackbarHostState) }
         ) { innerPadding ->
+            // The liquid-glass nav bar is OVERLAID on top of the content
+            // (instead of the Scaffold bottomBar slot) so cards and lists
+            // visibly glide underneath the frosted translucent surface.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = innerPadding.calculateTopPadding())
+            ) {
             AnimatedContent(
                 targetState = Pair(state.currentTab, state.selectedMatchForChat),
                 label = "screen_transition",
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding)
             ) { (currentTab, selectedChat) ->
                 if (selectedChat != null) {
                     val activeMessages = state.messages[selectedChat.id] ?: emptyList()
@@ -302,6 +310,19 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                     }
                 }
             }
+
+                // Floating liquid-glass bottom navigation (drawn above the
+                // scrolling content so it frosts whatever passes beneath it)
+                if (state.selectedMatchForChat == null) {
+                    SparkBottomNav(
+                        currentTab = state.currentTab,
+                        unreadMessagesCount = state.matches.sumOf { it.unreadCount },
+                        newMatchesCount = state.matches.count { it.isNewMatch },
+                        onTabSelected = { tab -> viewModel.setTab(tab) },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+            }
         }
     }
 
@@ -401,8 +422,8 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
     if (state.showPersonalInformationSheet) {
         PersonalInformationSheet(
             profile = state.userProfile,
-            onSave = { height, occupation, education, intent, fieldVisibility ->
-                viewModel.updatePersonalInformation(height, occupation, education, intent, fieldVisibility)
+            onSave = { height, occupation, education, intent, interests, fieldVisibility ->
+                viewModel.updatePersonalInformation(height, occupation, education, intent, interests, fieldVisibility)
             },
             onDismiss = { viewModel.togglePersonalInformation(false) }
         )

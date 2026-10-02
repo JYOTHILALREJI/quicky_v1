@@ -42,6 +42,22 @@ object AppContent {
     )
 
     // -------------------------------------------------------------
+    // INTEREST CATALOG (system-given, selectable interests)
+    // Used by: Personal Information & Visibility sheet (profile
+    // interests), the matching engine (shared interests) and the
+    // Discovery filters sheet. Users may also add custom interests.
+    // -------------------------------------------------------------
+    val interestCatalog = listOf(
+        "Music", "Movies", "Travel", "Fitness", "Cooking", "Gaming",
+        "Photography", "Art", "Dancing", "Reading", "Hiking", "Coffee",
+        "Pets", "Sports", "Fashion", "Technology", "Yoga", "Cycling",
+        "Foodie", "Volunteering", "Comedy", "Theatre", "Writing", "Singing",
+        "Swimming", "Running", "Camping", "Astrology", "Board Games",
+        "Anime", "Podcasts", "Wine & Dine", "Motorcycles", "Gardening",
+        "Startups", "DIY & Crafts"
+    )
+
+    // -------------------------------------------------------------
     // GAME CATALOG (product content — can also be served from
     // Supabase via SupabaseRepository.fetchGamesCatalog())
     // -------------------------------------------------------------

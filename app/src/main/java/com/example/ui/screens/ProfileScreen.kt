@@ -31,6 +31,7 @@ import com.example.model.AppThemeMode
 import com.example.model.Entitlements
 import com.example.model.InteractionInsight
 import com.example.model.UserProfile
+import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
 
 @Composable
@@ -59,7 +60,9 @@ fun ProfileScreen(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp)
+            // Extra bottom padding so the last settings row can scroll
+            // clear above the floating liquid-glass navigation bar.
+            .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + glassNavBarOverlayHeight())
             .testTag("my_profile_screen"),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -538,7 +541,7 @@ fun ProfileScreen(
                 // Personal Information & Field Visibility
                 ListItem(
                     headlineContent = { Text("Personal Information & Visibility", fontWeight = FontWeight.SemiBold) },
-                    supportingContent = { Text("Height, education, occupation, lifestyle visibility") },
+                    supportingContent = { Text("Height, education, occupation, interests & visibility") },
                     leadingContent = { Icon(Icons.Outlined.Badge, contentDescription = null, tint = QuickyPink) },
                     trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),

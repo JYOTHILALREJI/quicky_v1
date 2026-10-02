@@ -256,30 +256,33 @@ fun ProfileDetailSheet(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Interests (arranged correctly across multiple rows)
-                Text(
-                    text = "Interests",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                )
-                FlowRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    profile.interests.forEach { interest ->
-                        SuggestionChip(
-                            onClick = {},
-                            label = { Text(interest) },
-                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                // Interests (arranged correctly across multiple rows,
+                // respecting the interests field visibility setting)
+                if (profile.fieldVisibility["interests"] != VisibilityLevel.ONLY_ME && profile.interests.isNotEmpty()) {
+                    Text(
+                        text = "Interests",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    FlowRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        profile.interests.forEach { interest ->
+                            SuggestionChip(
+                                onClick = {},
+                                label = { Text(interest) },
+                                colors = SuggestionChipDefaults.suggestionChipColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                )
                             )
-                        )
+                        }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
 
                 // Personal Details (Respecting field-level privacy visibility)
                 val isVisibleToViewer = true // Public/Matches view
