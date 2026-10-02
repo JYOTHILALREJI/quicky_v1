@@ -82,8 +82,16 @@ create table if not exists public.user_interests (
     primary key (user_id, interest)
 );
 
+-- B-tree index: shared-interest matching and filter joins run on exact
+-- text equality, which B-tree handles natively (GIN requires an operator
+-- class for plain text and is meant for arrays/full-text/trigrams).
 create index if not exists user_interests_interest_idx
-    on public.user_interests using gin (interest);
+    on public.user_interests (interest);
+
+-- Optional: fuzzy search on interests (LIKE '%phot%') — uncomment to enable.
+-- create extension if not exists pg_trgm;
+-- create index if not exists user_interests_interest_trgm_idx
+--     on public.user_interests using gin (interest gin_trgm_ops);
 
 
 -- ============================================================================
@@ -298,55 +306,85 @@ alter table public.games          enable row level security;
 alter table public.game_prompts   enable row level security;
 
 -- profiles: everyone logged-in can browse candidates; you only edit yours
+drop policy if exists "profiles_select" on public.profiles;
 create policy "profiles_select" on public.profiles      for select using (auth.role() = 'authenticated');
+drop policy if exists "profiles_insert" on public.profiles;
 create policy "profiles_insert" on public.profiles      for insert with check (auth.uid() = id);
+drop policy if exists "profiles_update" on public.profiles;
 create policy "profiles_update" on public.profiles      for update using (auth.uid() = id);
+drop policy if exists "profiles_delete" on public.profiles;
 create policy "profiles_delete" on public.profiles      for delete using (auth.uid() = id);
 
 -- user_interests (matching / filters): public read, self-manage
+drop policy if exists "interests_select" on public.user_interests;
 create policy "interests_select" on public.user_interests for select using (auth.role() = 'authenticated');
+drop policy if exists "interests_insert" on public.user_interests;
 create policy "interests_insert" on public.user_interests for insert with check (auth.uid() = user_id);
+drop policy if exists "interests_delete" on public.user_interests;
 create policy "interests_delete" on public.user_interests for delete using (auth.uid() = user_id);
 
 -- likes: you see who YOU liked; others stay private (see_who_liked_you is a premium feature)
+drop policy if exists "likes_select" on public.likes;
 create policy "likes_select"  on public.likes  for select using (auth.uid() = user_id or (auth.uid() = target_user_id and action = 'LIKE'));
+drop policy if exists "likes_insert" on public.likes;
 create policy "likes_insert" on public.likes  for insert with check (auth.uid() = user_id);
+drop policy if exists "likes_delete" on public.likes;
 create policy "likes_delete" on public.likes  for delete using (auth.uid() = user_id);
 
 -- matches: only the two participants
+drop policy if exists "matches_select" on public.matches;
 create policy "matches_select" on public.matches for select using (auth.uid() = user_a_id or auth.uid() = user_b_id);
+drop policy if exists "matches_update" on public.matches;
 create policy "matches_update" on public.matches for update using (auth.uid() = user_a_id or auth.uid() = user_b_id);
+drop policy if exists "matches_delete" on public.matches;
 create policy "matches_delete" on public.matches for delete using (auth.uid() = user_a_id or auth.uid() = user_b_id);
 
 -- messages: only conversation participants read/write
 -- (tighten with a participant lookup once the conversations table lands)
+drop policy if exists "messages_select" on public.messages;
 create policy "messages_select" on public.messages for select using (auth.role() = 'authenticated');
+drop policy if exists "messages_insert" on public.messages;
 create policy "messages_insert" on public.messages for insert with check (auth.role() = 'authenticated');
 
 -- clubs: readable by all authenticated (needed for discovery)
+drop policy if exists "clubs_select" on public.clubs;
 create policy "clubs_select" on public.clubs for select using (auth.role() = 'authenticated');
+drop policy if exists "clubs_insert" on public.clubs;
 create policy "clubs_insert" on public.clubs for insert with check (auth.role() = 'authenticated');
+drop policy if exists "clubs_update" on public.clubs;
 create policy "clubs_update" on public.clubs for update using (auth.role() = 'authenticated');
+drop policy if exists "clubs_delete" on public.clubs;
 create policy "clubs_delete" on public.clubs for delete using (auth.role() = 'authenticated');
 
 -- club_members: public read (member lists), members/owners manage rows
+drop policy if exists "club_members_select" on public.club_members;
 create policy "club_members_select" on public.club_members for select using (auth.role() = 'authenticated');
+drop policy if exists "club_members_insert" on public.club_members;
 create policy "club_members_insert" on public.club_members for insert with check (auth.role() = 'authenticated');
+drop policy if exists "club_members_delete" on public.club_members;
 create policy "club_members_delete" on public.club_members for delete using (auth.role() = 'authenticated');
 
 -- club_messages: club chat is open to authenticated users
 -- (tighten with a club-membership EXISTS check when auth users are wired)
+drop policy if exists "club_messages_select" on public.club_messages;
 create policy "club_messages_select" on public.club_messages for select using (auth.role() = 'authenticated');
+drop policy if exists "club_messages_insert" on public.club_messages;
 create policy "club_messages_insert" on public.club_messages for insert with check (auth.role() = 'authenticated');
 
 -- notifications: strictly private per user
+drop policy if exists "notifications_select" on public.notifications;
 create policy "notifications_select" on public.notifications for select using (auth.uid()::text = user_id);
+drop policy if exists "notifications_insert" on public.notifications;
 create policy "notifications_insert" on public.notifications for insert with check (auth.uid()::text = user_id);
+drop policy if exists "notifications_update" on public.notifications;
 create policy "notifications_update" on public.notifications for update using (auth.uid()::text = user_id);
+drop policy if exists "notifications_delete" on public.notifications;
 create policy "notifications_delete" on public.notifications for delete using (auth.uid()::text = user_id);
 
 -- games & prompts: read-only content catalog for everyone
+drop policy if exists "games_select"        on public.games;
 create policy "games_select"        on public.games       for select using (auth.role() = 'authenticated');
+drop policy if exists "game_prompts_select" on public.game_prompts;
 create policy "game_prompts_select" on public.game_prompts for select using (auth.role() = 'authenticated');
 
 
@@ -366,16 +404,20 @@ values ('stickers', 'stickers', true)
 on conflict (id) do nothing;
 
 -- Public read for the public buckets; authenticated users can upload
+drop policy if exists "profile_photos_public_read" on storage.objects;
 create policy "profile_photos_public_read" on storage.objects
     for select using (bucket_id = 'profile-photos');
 
+drop policy if exists "profile_photos_authenticated_upload" on storage.objects;
 create policy "profile_photos_authenticated_upload" on storage.objects
     for insert with check (bucket_id = 'profile-photos' and auth.role() = 'authenticated');
 
+drop policy if exists "stickers_public_read" on storage.objects;
 create policy "stickers_public_read" on storage.objects
     for select using (bucket_id = 'stickers');
 
 -- voice notes stay private to their owner path (<user_id>/...)
+drop policy if exists "voice_notes_owner_all" on storage.objects;
 create policy "voice_notes_owner_all" on storage.objects
     for all using (
         bucket_id = 'voice-notes'
