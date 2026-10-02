@@ -82,6 +82,7 @@ alter table public.profiles add column if not exists hobbies              text[]
 alter table public.profiles add column if not exists height_cm            int;
 alter table public.profiles add column if not exists weight_kg           real;                      -- optional, private by default
 alter table public.profiles add column if not exists qualification        text           not null default '';
+alter table public.profiles add column if not exists occupation           text           not null default '';
 alter table public.profiles add column if not exists latitude             double precision;
 alter table public.profiles add column if not exists longitude            double precision;
 

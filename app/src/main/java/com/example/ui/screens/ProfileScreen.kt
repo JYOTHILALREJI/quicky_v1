@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -40,6 +44,7 @@ fun ProfileScreen(
     entitlements: Entitlements,
     insights: List<InteractionInsight>,
     isInsightsEnabled: Boolean,
+    isProcessingPhoto: Boolean,
     themeMode: AppThemeMode,
     onThemeChange: (AppThemeMode) -> Unit,
     onEditProfileClick: () -> Unit,
@@ -48,7 +53,7 @@ fun ProfileScreen(
     onStartVerificationClick: () -> Unit,
     onSetPrimaryPhoto: (Int) -> Unit,
     onDeletePhoto: (Int) -> Unit,
-    onAddPhoto: (Int) -> Unit,
+    onAddPhoto: (Uri) -> Unit,
     onPremiumStoreClick: () -> Unit,
     onStickerStoreClick: () -> Unit,
     onSafetyCenterClick: () -> Unit,
@@ -56,6 +61,14 @@ fun ProfileScreen(
     onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Real photo picker for the empty slots — uploads go through the
+    // ViewModel (face check + Supabase Storage + profiles.photo_urls).
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) onAddPhoto(uri)
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -274,25 +287,31 @@ fun ProfileScreen(
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                     Text(
-                        text = "${maxOf(userProfile.photoResIds.size, userProfile.photoUris.size)}/3",
+                        text = "${
+                            if (userProfile.photoUris.isNotEmpty()) userProfile.photoUris.size
+                            else userProfile.photoResIds.size
+                        }/3",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                         color = QuickyPink
                     )
                 }
 
                 Text(
-                    text = "Stored securely in Supabase Storage. Tap to set as primary.",
+                    text = "Tap a photo to make it your main photo.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
                 )
 
-                // 3 Photo Slots Grid
+                // 3 Photo Slots Grid — uploaded (Supabase Storage) photos
+                // take priority; bundled assets only show as a fallback.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    val photoCount = maxOf(userProfile.photoResIds.size, userProfile.photoUris.size)
+                    val useUploadedPhotos = userProfile.photoUris.isNotEmpty()
+                    val photoCount = if (useUploadedPhotos) userProfile.photoUris.size
+                    else userProfile.photoResIds.size
                     for (i in 0 until 3) {
                         val hasPhoto = i < photoCount
                         Box(
@@ -310,22 +329,24 @@ fun ProfileScreen(
                                     if (hasPhoto && i != 0) {
                                         onSetPrimaryPhoto(i)
                                     } else if (!hasPhoto) {
-                                        onAddPhoto(R.drawable.img_truth_dare_banner)
+                                        photoPicker.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
                                     }
                                 },
                             contentAlignment = Alignment.Center
                         ) {
                             if (hasPhoto) {
-                                if (i < userProfile.photoResIds.size) {
-                                    Image(
-                                        painter = painterResource(id = userProfile.photoResIds[i]),
+                                if (useUploadedPhotos) {
+                                    coil.compose.AsyncImage(
+                                        model = userProfile.photoUris[i],
                                         contentDescription = "Photo ${i + 1}",
                                         modifier = Modifier.fillMaxSize(),
                                         contentScale = ContentScale.Crop
                                     )
                                 } else {
-                                    coil.compose.AsyncImage(
-                                        model = userProfile.photoUris[i],
+                                    Image(
+                                        painter = painterResource(id = userProfile.photoResIds[i]),
                                         contentDescription = "Photo ${i + 1}",
                                         modifier = Modifier.fillMaxSize(),
                                         contentScale = ContentScale.Crop
@@ -363,8 +384,22 @@ fun ProfileScreen(
                                 }
                             } else {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(imageVector = Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", tint = QuickyPink)
-                                    Text("Add", style = MaterialTheme.typography.labelSmall, color = QuickyPink, modifier = Modifier.padding(top = 4.dp))
+                                    if (isProcessingPhoto) {
+                                        CircularProgressIndicator(
+                                            strokeWidth = 2.dp,
+                                            color = QuickyPink,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Text(
+                                            "Uploading…",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        )
+                                    } else {
+                                        Icon(imageVector = Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", tint = QuickyPink)
+                                        Text("Add", style = MaterialTheme.typography.labelSmall, color = QuickyPink, modifier = Modifier.padding(top = 4.dp))
+                                    }
                                 }
                             }
                         }

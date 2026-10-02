@@ -189,6 +189,8 @@ object SupabaseRepository {
                     lookingFor = row.optJSONArray("looking_for").toStringList(),
                     heightCm = if (row.isNull("height_cm")) null else row.optInt("height_cm").takeIf { it > 0 },
                     weightKg = if (row.isNull("weight_kg")) null else row.optDouble("weight_kg").takeIf { it > 0 }?.toFloat(),
+                    latitude = if (row.isNull("latitude")) null else row.optDouble("latitude").takeIf { !it.isNaN() },
+                    longitude = if (row.isNull("longitude")) null else row.optDouble("longitude").takeIf { !it.isNaN() },
                     dateOfBirth = row.optString("date_of_birth").takeIf { it.isNotBlank() },
                     lifestyle = buildMap {
                         row.optJSONObject("lifestyle")?.let { obj ->
@@ -321,6 +323,7 @@ object SupabaseRepository {
                 .put("relationship_intent", draft.lookingFor.firstOrNull() ?: "")
                 .put("education_level", draft.qualification)
                 .put("qualification", draft.qualification)
+                .put("occupation", draft.occupation.trim())
                 .put("interests", JSONArray(draft.interests))
                 .put("hobbies", JSONArray(draft.hobbies))
                 .put("looking_for", JSONArray(draft.lookingFor))
@@ -349,33 +352,108 @@ object SupabaseRepository {
             )
 
             // Sync the normalized per-interest rows that power matching.
-            SupabaseClient.rest(
-                method = "DELETE",
-                path = "/rest/v1/${SupabaseConfig.TABLE_USER_INTERESTS}",
-                query = mapOf("user_id" to "eq.${session.userId}"),
+            syncUserInterestRows(
+                userId = session.userId,
+                interests = draft.interests,
+                systemInterests = systemInterests,
                 accessToken = session.accessToken
             )
-            if (draft.interests.isNotEmpty()) {
-                val rows = JSONArray()
-                draft.interests.forEach { interest ->
-                    rows.put(
-                        JSONObject()
-                            .put("user_id", session.userId)
-                            .put("interest", interest.trim())
-                            .put(
-                                "source",
-                                if (isCustomInterest(interest, systemInterests)) "CUSTOM" else "SYSTEM"
-                            )
-                    )
-                }
-                SupabaseClient.rest(
-                    method = "POST",
-                    path = "/rest/v1/${SupabaseConfig.TABLE_USER_INTERESTS}",
-                    prefer = "return=minimal",
-                    body = rows.toString(),
-                    accessToken = session.accessToken
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Persists the signed-in user's interest selection everywhere it lives:
+     * the denormalized `profiles.interests` array plus the normalized
+     * `user_interests` rows that power shared-interest matching and filters.
+     *
+     * Called when interests are edited post-onboarding (Discovery
+     * Preferences sheet, Personal Information sheet).
+     */
+    suspend fun saveUserInterests(
+        session: SupabaseAuth.AuthSession,
+        interests: List<String>,
+        systemInterests: List<String> = emptyList()
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "PATCH",
+                path = "/rest/v1/${SupabaseConfig.TABLE_PROFILES}",
+                query = mapOf("id" to "eq.${session.userId}"),
+                prefer = "return=minimal",
+                body = JSONObject().put("interests", JSONArray(interests)).toString(),
+                accessToken = session.accessToken
+            )
+            syncUserInterestRows(
+                userId = session.userId,
+                interests = interests,
+                systemInterests = systemInterests,
+                accessToken = session.accessToken
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Replaces the user's normalized `user_interests` rows with the given
+     * selection (delete-then-insert, both scoped to the owning user).
+     */
+    private suspend fun syncUserInterestRows(
+        userId: String,
+        interests: List<String>,
+        systemInterests: List<String>,
+        accessToken: String?
+    ) {
+        SupabaseClient.rest(
+            method = "DELETE",
+            path = "/rest/v1/${SupabaseConfig.TABLE_USER_INTERESTS}",
+            query = mapOf("user_id" to "eq.$userId"),
+            accessToken = accessToken
+        )
+        if (interests.isNotEmpty()) {
+            val rows = JSONArray()
+            interests.forEach { interest ->
+                rows.put(
+                    JSONObject()
+                        .put("user_id", userId)
+                        .put("interest", interest.trim())
+                        .put(
+                            "source",
+                            if (isCustomInterest(interest, systemInterests)) "CUSTOM" else "SYSTEM"
+                        )
                 )
             }
+            SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/${SupabaseConfig.TABLE_USER_INTERESTS}",
+                prefer = "return=minimal",
+                body = rows.toString(),
+                accessToken = accessToken
+            )
+        }
+    }
+
+    /**
+     * Patches a subset of the signed-in user's `profiles` columns
+     * (e.g. photo_urls after add/remove/reorder, occupation after an edit).
+     * Fire-and-forget: returns false instead of throwing.
+     */
+    suspend fun updateProfileFields(
+        userId: String,
+        fields: JSONObject,
+        accessToken: String?
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "PATCH",
+                path = "/rest/v1/${SupabaseConfig.TABLE_PROFILES}",
+                query = mapOf("id" to "eq.$userId"),
+                prefer = "return=minimal",
+                body = fields.toString(),
+                accessToken = accessToken
+            )
             true
         }.getOrDefault(false)
     }

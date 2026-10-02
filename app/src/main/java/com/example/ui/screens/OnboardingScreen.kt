@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -8,6 +10,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -18,17 +22,20 @@ import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -68,11 +75,13 @@ fun OnboardingScreen(
     hobbyCatalog: List<String>,
     isUploading: Boolean,
     isProcessingPhoto: Boolean,
+    isLocating: Boolean,
     error: String?,
     onSaveDraft: (OnboardingDraft) -> Unit,
     onStageChanged: (Int) -> Unit,
     onAddPhoto: (Uri) -> Unit,
     onRemovePhoto: (String) -> Unit,
+    onCaptureLocation: () -> Unit,
     onComplete: () -> Unit
 ) {
     // Resume directly into the saved stage; a fresh draft starts at the
@@ -140,6 +149,8 @@ fun OnboardingScreen(
                         3 -> StageBackground(
                             draft = draft,
                             hobbyCatalog = hobbyCatalog,
+                            isLocating = isLocating,
+                            onCaptureLocation = onCaptureLocation,
                             onSave = onSaveDraft
                         )
                         else -> StagePhotos(
@@ -715,11 +726,13 @@ private fun StagePersonality(
 // STAGE 3 — BACKGROUND
 // ================================================================
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun StageBackground(
     draft: OnboardingDraft,
     hobbyCatalog: List<String>,
+    isLocating: Boolean,
+    onCaptureLocation: () -> Unit,
     onSave: (OnboardingDraft) -> Unit
 ) {
     var heightInput by remember(draft.heightCm) {
@@ -744,6 +757,19 @@ private fun StageBackground(
             )
         }
     }
+
+    SectionLabel("OCCUPATION")
+    OutlinedTextField(
+        value = draft.occupation,
+        onValueChange = { onSave(draft.copy(occupation = it.take(40))) },
+        placeholder = { Text("e.g. Software Engineer") },
+        singleLine = true,
+        colors = lightFieldColors(),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("onboarding_occupation_field")
+    )
 
     SectionLabel("HOBBIES  ·  pick any")
     FlowRow(
@@ -812,17 +838,92 @@ private fun StageBackground(
         )
     }
 
-    SectionLabel("CITY")
+    // -------------------------------------------------------------
+    // LOCATION / STREET NAME — tapping the field (or the locator
+    // icon) asks for the location permission and auto-fills from the
+    // user's current GPS position. The coordinates power the
+    // distance-based discovery filter.
+    // -------------------------------------------------------------
+    val context = LocalContext.current
+    val locationFieldInteractions = remember { MutableInteractionSource() }
+    var locationPermissionAsked by rememberSaveable { mutableStateOf(false) }
+
+    fun hasLocationPermission(): Boolean =
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED ||
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.ACCESS_COARSE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants.values.any { it }) onCaptureLocation()
+    }
+
+    fun requestCurrentLocation() {
+        if (hasLocationPermission()) onCaptureLocation()
+        else locationPermissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        )
+    }
+
+    // First tap on the field itself asks for permission + captures the
+    // location once; after that the field behaves as a normal input.
+    LaunchedEffect(locationFieldInteractions) {
+        locationFieldInteractions.interactions.collect { interaction ->
+            if (interaction is PressInteraction.Press && !locationPermissionAsked) {
+                locationPermissionAsked = true
+                requestCurrentLocation()
+            }
+        }
+    }
+
+    val locationCaptured = draft.latitude != null && draft.longitude != null
+    SectionLabel("LOCATION / STREET NAME")
     OutlinedTextField(
         value = draft.city,
         onValueChange = { onSave(draft.copy(city = it.take(60))) },
-        placeholder = { Text("Where are you based?") },
+        placeholder = { Text("Street / area, city") },
         singleLine = true,
+        interactionSource = locationFieldInteractions,
+        trailingIcon = {
+            if (isLocating) {
+                CircularProgressIndicator(
+                    strokeWidth = 2.dp,
+                    color = QuickyPink,
+                    modifier = Modifier.size(18.dp)
+                )
+            } else {
+                IconButton(
+                    onClick = { requestCurrentLocation() },
+                    modifier = Modifier.testTag("onboarding_locate_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.MyLocation,
+                        contentDescription = "Use my current location",
+                        tint = QuickyPurple
+                    )
+                }
+            }
+        },
+        supportingText = {
+            Text(
+                text = if (locationCaptured) "Location captured — used for distance-based matching."
+                else "Tap to auto-fill from your current location.",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (locationCaptured) ActionLike else LightTextMuted
+            )
+        },
         colors = lightFieldColors(),
         shape = RoundedCornerShape(16.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("onboarding_city_field")
+            .testTag("onboarding_location_field")
     )
 }
 
@@ -963,7 +1064,7 @@ private fun StagePhotos(
     }
 
     Text(
-        text = "Your date of birth stays private. Photos are stored in your private Supabase space.",
+        text = "Your date of birth stays private — only your age is shown to others.",
         style = MaterialTheme.typography.labelSmall,
         color = LightTextMuted
     )

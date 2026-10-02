@@ -1,7 +1,12 @@
 package com.example.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.location.Location
 import android.net.Uri
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.R
@@ -9,9 +14,13 @@ import com.example.data.AppContent
 import com.example.data.SupabaseAuth
 import com.example.data.SupabaseRepository
 import com.example.model.*
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,8 +28,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 import kotlin.coroutines.resume
 
 enum class SparkTab {
@@ -49,6 +60,8 @@ data class SparkUiState(
     val onboardingUploading: Boolean = false,
     val onboardingError: String? = null,
     val isProcessingPhoto: Boolean = false,
+    /** True while the onboarding location field is resolving the user's GPS position. */
+    val isLocating: Boolean = false,
 
     // ---- Admin-manageable catalogs (Supabase `interests` / `hobbies`) ----
     val interestCatalog: List<String> = AppContent.interestCatalog,
@@ -301,6 +314,7 @@ class SparkViewModel : ViewModel() {
                     onboardingUploading = false,
                     onboardingError = null,
                     isProcessingPhoto = false,
+                    isLocating = false,
                     userProfile = AppContent.currentUser,
                     currentTab = SparkTab.DISCOVER,
                     discoveryDeck = emptyList(),
@@ -366,6 +380,11 @@ class SparkViewModel : ViewModel() {
                     authNeedsOtp = false,
                     userProfile = remote.profile,
                     isOnboardingComplete = remote.onboardingCompleted,
+                    // The shared-interest filter follows the user's own
+                    // (onboarding-chosen) interests — one source of truth.
+                    discoveryPreferences = it.discoveryPreferences.copy(
+                        interests = remote.profile.interests
+                    ),
                     onboardingDraft = if (remote.onboardingCompleted) OnboardingDraft()
                     else appContext?.let { ctx -> readPersistedDraft(ctx) } ?: OnboardingDraft()
                 )
@@ -446,6 +465,97 @@ class SparkViewModel : ViewModel() {
             )
         }
     }
+
+    /**
+     * Captures the user's current GPS position for the onboarding
+     * location/street-name field. Requires the location permission to be
+     * granted (the UI launches the permission request before calling).
+     * The resolved coordinates feed the distance-based discovery filter;
+     * a reverse-geocoded "Street, City" label fills the field itself.
+     */
+    fun captureOnboardingLocation(context: Context) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLocating = true) }
+            val location = fetchCurrentLocation(context)
+            if (location == null) {
+                _uiState.update {
+                    it.copy(
+                        isLocating = false,
+                        onboardingError = "Couldn't get your location. Make sure location is " +
+                                "on and the permission is granted, then tap the locator again."
+                    )
+                }
+                return@launch
+            }
+            val label = reverseGeocode(context, location.latitude, location.longitude)
+            _uiState.update {
+                it.copy(
+                    isLocating = false,
+                    onboardingError = null,
+                    onboardingDraft = it.onboardingDraft.copy(
+                        latitude = location.latitude,
+                        longitude = location.longitude,
+                        city = label ?: it.onboardingDraft.city
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * One-shot GPS fix via Google Play services (FusedLocationProvider).
+     * Returns null when the permission is missing or no fix is available.
+     */
+    private suspend fun fetchCurrentLocation(context: Context): Location? {
+        val fineGranted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarseGranted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!fineGranted && !coarseGranted) return null
+
+        return runCatching {
+            val client = LocationServices.getFusedLocationProviderClient(context)
+            val cancellationToken = CancellationTokenSource().token
+            suspendCancellableCoroutine<Location?> { cont ->
+                client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancellationToken)
+                    .addOnSuccessListener { location -> cont.resume(location) }
+                    .addOnFailureListener { cont.resume(null) }
+                    .addOnCanceledListener { cont.resume(null) }
+            }
+        }.getOrNull()
+    }
+
+    /**
+     * Reverse-geocodes coordinates into a "Street, City" label for the
+     * location field. Best-effort: returns null when the geocoder has no
+     * answer so the existing text is kept.
+     */
+    @Suppress("DEPRECATION") // sync Geocoder is fine on older APIs and still works on 33+
+    private suspend fun reverseGeocode(context: Context, latitude: Double, longitude: Double): String? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val addresses = Geocoder(context, Locale.getDefault())
+                    .getFromLocation(latitude, longitude, 1)
+                val address = addresses?.firstOrNull()
+                when {
+                    address == null -> null
+                    else -> {
+                        val parts = listOfNotNull(
+                            address.thoroughfare?.takeIf { it.isNotBlank() },
+                            (address.locality ?: address.subAdminArea ?: address.adminArea)
+                                ?.takeIf { it.isNotBlank() }
+                        )
+                        val combined = parts.joinToString(", ")
+                        when {
+                            combined.isNotBlank() -> combined
+                            else -> address.getAddressLine(0)?.takeIf { it.isNotBlank() }
+                        }
+                    }
+                }
+            }.getOrNull()
+        }
 
     /**
      * On-device face validation with ML Kit. Returns false when no
@@ -556,6 +666,7 @@ class SparkViewModel : ViewModel() {
                 .putString("interestedIn", draft.interestedIn)
                 .putString("lookingFor", JSONArray(draft.lookingFor).toString())
                 .putString("qualification", draft.qualification)
+                .putString("occupation", draft.occupation)
                 .putString("hobbies", JSONArray(draft.hobbies).toString())
                 .putInt("heightCm", draft.heightCm ?: -1)
                 .putFloat("weightKg", draft.weightKg ?: -1f)
@@ -585,6 +696,7 @@ class SparkViewModel : ViewModel() {
             interestedIn = prefs.getString("interestedIn", "").orEmpty(),
             lookingFor = stringList("lookingFor"),
             qualification = prefs.getString("qualification", "").orEmpty(),
+            occupation = prefs.getString("occupation", "").orEmpty(),
             hobbies = stringList("hobbies"),
             heightCm = prefs.getInt("heightCm", -1).takeIf { it > 0 },
             weightKg = prefs.getFloat("weightKg", -1f).takeIf { it > 0f },
@@ -1035,17 +1147,19 @@ class SparkViewModel : ViewModel() {
         val profile = _uiState.value.userProfile
 
         // Uploaded (remote/local uri) photos — the post-onboarding case.
-        if (profile.photoResIds.isEmpty() && profile.photoUris.isNotEmpty()) {
+        if (profile.photoUris.isNotEmpty()) {
             val uris = profile.photoUris.toMutableList()
-            if (photoIndex in uris.indices) {
+            if (photoIndex in uris.indices && photoIndex != 0) {
                 val selected = uris.removeAt(photoIndex)
                 uris.add(0, selected)
+                val ordered = uris.take(3)
                 _uiState.update {
                     it.copy(
-                        userProfile = it.userProfile.copy(photoUris = uris.take(3)),
+                        userProfile = it.userProfile.copy(photoUris = ordered),
                         toastMessage = "Main profile photo updated! ★"
                     )
                 }
+                persistProfileFields(JSONObject().put("photo_urls", JSONArray(ordered)))
             }
             return
         }
@@ -1068,7 +1182,7 @@ class SparkViewModel : ViewModel() {
         val profile = _uiState.value.userProfile
 
         // Uploaded (remote/local uri) photos — the post-onboarding case.
-        if (profile.photoResIds.isEmpty() && profile.photoUris.isNotEmpty()) {
+        if (profile.photoUris.isNotEmpty()) {
             if (profile.photoUris.size <= 1) {
                 showToast("At least one profile photo is required.")
                 return
@@ -1082,6 +1196,7 @@ class SparkViewModel : ViewModel() {
                         toastMessage = "Photo removed."
                     )
                 }
+                persistProfileFields(JSONObject().put("photo_urls", JSONArray(uris)))
             }
             return
         }
@@ -1101,21 +1216,91 @@ class SparkViewModel : ViewModel() {
         }
     }
 
-    fun addPhoto(photoResId: Int) {
-        val photos = _uiState.value.userProfile.photoResIds.toMutableList()
-        if (photos.size >= 3) {
-            showToast("Maximum 3 profile photos allowed.")
+    /**
+     * Adds a real profile photo from the system picker: reads the bytes,
+     * runs the on-device face check, uploads to Supabase Storage and
+     * appends the public URL to the user's `profiles.photo_urls` (max 3).
+     */
+    fun addProfilePhoto(context: Context, uri: Uri) {
+        val current = _uiState.value
+        if (current.userProfile.photoUris.size >= 3) {
+            showToast("You can add up to 3 photos.")
             return
         }
-        photos.add(photoResId)
-        val updatedUser = _uiState.value.userProfile.copy(
-            photoResIds = photos,
-            profileCompletionScore = (_uiState.value.userProfile.profileCompletionScore + 5).coerceAtMost(100)
-        )
-        _uiState.update {
-            it.copy(
-                userProfile = updatedUser,
-                toastMessage = "Photo uploaded to Supabase Storage! (${photos.size}/3)"
+        if (current.userProfile.photoUris.any { it == uri.toString() }) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isProcessingPhoto = true) }
+            val bytes = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { stream -> stream.readBytes() }
+            }.getOrNull()
+
+            if (bytes == null || bytes.isEmpty()) {
+                _uiState.update {
+                    it.copy(isProcessingPhoto = false, toastMessage = "Couldn't read that photo — try another one.")
+                }
+                return@launch
+            }
+            if (bytes.size > 10 * 1024 * 1024) {
+                _uiState.update {
+                    it.copy(isProcessingPhoto = false, toastMessage = "That photo is too large (max 10 MB).")
+                }
+                return@launch
+            }
+
+            val faceValidated = detectFace(context, uri)
+
+            val session = _uiState.value.authSession
+            val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+            val remoteUrl = if (session != null && SupabaseRepository.isConfigured()) {
+                SupabaseRepository.uploadProfilePhoto(
+                    userId = session.userId,
+                    bytes = bytes,
+                    contentType = mime.ifEmpty { "image/jpeg" },
+                    accessToken = session.accessToken
+                )
+            } else null
+
+            val updatedUris = _uiState.value.userProfile.photoUris + (remoteUrl ?: uri.toString())
+            if (remoteUrl != null && session != null) {
+                SupabaseRepository.updateProfileFields(
+                    userId = session.userId,
+                    fields = JSONObject().put("photo_urls", JSONArray(updatedUris.take(3))),
+                    accessToken = session.accessToken
+                )
+            }
+
+            _uiState.update {
+                it.copy(
+                    isProcessingPhoto = false,
+                    userProfile = it.userProfile.copy(
+                        photoUris = updatedUris.take(3),
+                        profileCompletionScore = (it.userProfile.profileCompletionScore + 5).coerceAtMost(100)
+                    ),
+                    toastMessage = when {
+                        remoteUrl == null ->
+                            "Photo added — will upload when you're back online. (${updatedUris.size}/3)"
+                        !faceValidated ->
+                            "Photo uploaded, but no clear face was found — consider a clearer one. (${updatedUris.size}/3)"
+                        else -> "Photo uploaded! (${updatedUris.size}/3)"
+                    }
+                )
+            }
+        }
+    }
+
+    /**
+     * Fire-and-forget PATCH of the signed-in user's `profiles` columns so
+     * profile edits (photos, occupation, bio…) survive a re-login.
+     */
+    private fun persistProfileFields(fields: JSONObject) {
+        val session = _uiState.value.authSession ?: return
+        if (!SupabaseRepository.isConfigured()) return
+        viewModelScope.launch {
+            SupabaseRepository.updateProfileFields(
+                userId = session.userId,
+                fields = fields,
+                accessToken = session.accessToken
             )
         }
     }
@@ -1159,6 +1344,15 @@ class SparkViewModel : ViewModel() {
                 toastMessage = "Profile updated successfully ✨"
             )
         }
+        // Keep the database row in sync so edits survive a re-login.
+        persistProfileFields(
+            JSONObject()
+                .put("name", name.trim())
+                .put("bio", bio.trim())
+                .put("relationship_intent", relationshipIntent)
+                .put("occupation", occupation.trim())
+                .put("height", height)
+        )
     }
 
     fun updatePersonalInformation(
@@ -1192,6 +1386,18 @@ class SparkViewModel : ViewModel() {
                 showPersonalInformationSheet = false,
                 toastMessage = "Personal details & visibility updated ✨"
             )
+        }
+        // Persist the editable fields to Supabase (fire-and-forget).
+        persistProfileFields(
+            JSONObject()
+                .put("height", height)
+                .put("occupation", occupation.trim())
+                .put("education", education)
+                .put("education_level", education)
+                .put("relationship_intent", intent)
+        )
+        if (interests != previous.interests) {
+            syncInterestsToDatabase(interests)
         }
     }
 
@@ -1276,36 +1482,64 @@ class SparkViewModel : ViewModel() {
     }
 
     fun updateDiscoveryPreferences(newPrefs: DiscoveryPreferences) {
-        // Apply the saved preferences (including shared-interest filters)
-        // to whatever is currently in the discovery deck.
-        val filteredDeck = applyDiscoveryFilters(_uiState.value.discoveryDeck, newPrefs)
+        val state = _uiState.value
+        // The shared-interest selection IS the user's own interest set —
+        // keep the profile, the filter and the database in lock-step.
+        val interestsChanged = newPrefs.interests != state.userProfile.interests
+
+        val filteredDeck = applyDiscoveryFilters(state.discoveryDeck, newPrefs)
         val interestNote = if (newPrefs.interests.isEmpty()) ""
             else " with ${newPrefs.interests.size} shared interest${if (newPrefs.interests.size == 1) "" else "s"}"
         _uiState.update {
             it.copy(
+                userProfile = if (interestsChanged) {
+                    it.userProfile.copy(interests = newPrefs.interests)
+                } else it.userProfile,
                 discoveryPreferences = newPrefs,
                 discoveryDeck = filteredDeck,
                 showFilterSheet = false,
                 toastMessage = "Discovery preferences saved$interestNote"
             )
         }
+        if (interestsChanged) {
+            syncInterestsToDatabase(newPrefs.interests)
+        }
+    }
+
+    /** Writes the interest selection to profiles.interests + user_interests. */
+    private fun syncInterestsToDatabase(interests: List<String>) {
+        val session = _uiState.value.authSession ?: return
+        if (!SupabaseRepository.isConfigured()) return
+        viewModelScope.launch {
+            SupabaseRepository.saveUserInterests(
+                session = session,
+                interests = interests,
+                systemInterests = _uiState.value.interestCatalog
+            )
+        }
     }
 
     /**
      * Filters a set of candidate profiles by the user's discovery
-     * preferences: age window, distance, verification and shared
-     * interests (a profile matches when it shares at least one).
+     * preferences: age window, distance, occupation keyword,
+     * verification and shared interests (a profile matches when it
+     * shares at least one).
      */
     private fun applyDiscoveryFilters(
         deck: List<UserProfile>,
         prefs: DiscoveryPreferences
-    ): List<UserProfile> = deck.filter { profile ->
-        profile.age in prefs.minAge..prefs.maxAge &&
-            profile.distanceKm <= prefs.distanceKm &&
-            (!prefs.verifiedOnly || profile.isVerified) &&
-            (prefs.interests.isEmpty() || profile.interests.any { candidate ->
-                candidate.trim().lowercase() in prefs.interests.map { it.trim().lowercase() }
-            })
+    ): List<UserProfile> {
+        val occupationQuery = prefs.occupation.trim()
+        return deck.filter { profile ->
+            profile.age in prefs.minAge..prefs.maxAge &&
+                profile.distanceKm <= prefs.distanceKm &&
+                (occupationQuery.isBlank() ||
+                        profile.occupation.contains(occupationQuery, ignoreCase = true)) &&
+                (!prefs.verifiedOnly || profile.isVerified) &&
+                (prefs.interests.isEmpty() || profile.interests.any { candidate ->
+                    candidate.trim().lowercase() in prefs.interests.map { it.trim().lowercase() }
+                })
+        }
     }
 
     fun updateFilters(newFilter: DiscoveryFilter) {

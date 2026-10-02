@@ -177,11 +177,13 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                     hobbyCatalog = state.hobbyCatalog,
                     isUploading = state.onboardingUploading,
                     isProcessingPhoto = state.isProcessingPhoto,
+                    isLocating = state.isLocating,
                     error = state.onboardingError,
                     onSaveDraft = { updated -> viewModel.updateOnboardingDraft { updated } },
                     onStageChanged = { stage -> viewModel.goToOnboardingStage(context, stage) },
                     onAddPhoto = { uri -> viewModel.addOnboardingPhoto(context, uri) },
                     onRemovePhoto = { uri -> viewModel.removeOnboardingPhoto(uri) },
+                    onCaptureLocation = { viewModel.captureOnboardingLocation(context) },
                     onComplete = { viewModel.completeOnboarding(context) }
                 )
             }
@@ -375,6 +377,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                                 entitlements = state.entitlements,
                                 insights = state.interactionInsights,
                                 isInsightsEnabled = state.privacySettings.interactionInsightsEnabled,
+                                isProcessingPhoto = state.isProcessingPhoto,
                                 themeMode = state.themeMode,
                                 onThemeChange = { mode -> viewModel.setThemeMode(mode) },
                                 onEditProfileClick = { showEditProfileSheet = true },
@@ -383,7 +386,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                                 onStartVerificationClick = { viewModel.startVerificationChallenge() },
                                 onSetPrimaryPhoto = { photoRes -> viewModel.setPrimaryPhoto(photoRes) },
                                 onDeletePhoto = { photoRes -> viewModel.deletePhoto(photoRes) },
-                                onAddPhoto = { photoRes -> viewModel.addPhoto(photoRes) },
+                                onAddPhoto = { uri -> viewModel.addProfilePhoto(context, uri) },
                                 onPremiumStoreClick = { viewModel.openPremiumStore() },
                                 onStickerStoreClick = { viewModel.openStickerStore() },
                                 onSafetyCenterClick = { viewModel.toggleSafetyCenter(true) },
@@ -458,6 +461,8 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
     if (state.showFilterSheet) {
         FilterSheet(
             currentFilter = state.filter,
+            userInterests = state.userProfile.interests,
+            interestCatalog = state.interestCatalog,
             onApply = { newFilter -> viewModel.updateFilters(newFilter) },
             onDismiss = { viewModel.toggleFilterSheet(false) }
         )

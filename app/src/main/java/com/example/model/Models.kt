@@ -47,6 +47,7 @@ data class OnboardingDraft(
     val interestedIn: String = "",
     val lookingFor: List<String> = emptyList(),
     val qualification: String = "",
+    val occupation: String = "",
     val hobbies: List<String> = emptyList(),
     val heightCm: Int? = null,
     val weightKg: Float? = null,
@@ -99,6 +100,7 @@ fun OnboardingDraft.toUserProfile(userId: String, photoUrls: List<String>): User
     gender = displayGender.ifEmpty { "Prefer not to say" },
     interestedIn = interestedIn.ifEmpty { "Everyone" },
     educationLevel = qualification,
+    occupation = occupation.trim(),
     height = heightCm?.let { "$it cm" } ?: "",
     isVerified = false,
     isOnline = true,
@@ -109,6 +111,8 @@ fun OnboardingDraft.toUserProfile(userId: String, photoUrls: List<String>): User
     lookingFor = lookingFor,
     heightCm = heightCm,
     weightKg = weightKg,
+    latitude = latitude,
+    longitude = longitude,
     dateOfBirth = dateOfBirthEpochDay?.let { java.time.LocalDate.ofEpochDay(it).toString() },
     profileCompletionScore = 100,
     missingCompletionItems = emptyList(),
@@ -143,6 +147,10 @@ data class UserProfile(
     val lookingFor: List<String> = emptyList(),
     val heightCm: Int? = null,
     val weightKg: Float? = null, // Optional, independent visibility control
+    // Last captured GPS coordinates — used by the distance-based discovery
+    // filter, never displayed raw on the profile.
+    val latitude: Double? = null,
+    val longitude: Double? = null,
     val dateOfBirth: String? = null, // ISO date — NEVER exposed publicly
     val lifestyle: Map<String, String> = emptyMap(),
     val fieldVisibility: Map<String, VisibilityLevel> = mapOf(
@@ -278,6 +286,8 @@ data class DiscoveryPreferences(
     val distanceKm: Int = 50, // 5, 10, 25, 50, 100
     val educationPreference: String = "Any",
     val relationshipIntent: String = "Any",
+    /** Occupation keyword filter — blank means "any occupation". */
+    val occupation: String = "",
     val verifiedOnly: Boolean = false,
     val withPhotosOnly: Boolean = true,
     val interests: List<String> = emptyList() // Match profiles sharing at least one of these interests
