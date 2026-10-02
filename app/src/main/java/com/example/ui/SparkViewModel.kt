@@ -41,6 +41,8 @@ data class SparkUiState(
     val isAuthLoading: Boolean = false,
     val authError: String? = null,
     val authNotice: String? = null,
+    /** True while the account exists but its email is still unverified — the sign-in form then asks for the 6-digit emailed OTP alongside the credentials. */
+    val authNeedsOtp: Boolean = false,
 
     // ---- Progressive onboarding draft (PRD stages 1-4) ----
     val onboardingDraft: OnboardingDraft = OnboardingDraft(),
@@ -172,11 +174,71 @@ class SparkViewModel : ViewModel() {
         }
     }
 
-    /** Signs in with email + password. */
-    fun signIn(context: Context, email: String, password: String) {
+    /**
+     * Signs in with email + password. When the account's email is not
+     * verified yet, the optional [otp] (the 6-digit code from the
+     * "Quicky account creation" email) is redeemed right after the
+     * credentials check — a freshly created account can therefore only
+     * sign in with credentials AND the emailed OTP.
+     */
+    fun signIn(context: Context, email: String, password: String, otp: String? = null) {
         viewModelScope.launch {
             _uiState.update { it.copy(isAuthLoading = true, authError = null, authNotice = null) }
-            handleAuthResult(SupabaseAuth.signIn(context, email, password))
+            val result = SupabaseAuth.signIn(context, email, password)
+            when {
+                // Credentials OK and email already verified.
+                result.success && result.session != null -> adoptSession(result.session)
+
+                // Credentials OK but email unverified, and the user typed
+                // the emailed code — verify the account and adopt the
+                // session the verify endpoint returns.
+                !result.success && result.isEmailNotConfirmed && !otp.isNullOrBlank() -> {
+                    val verified = SupabaseAuth.verifyOtp(context, email, otp)
+                    if (verified.success && verified.session != null) {
+                        adoptSession(verified.session)
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                authError = verified.errorMessage
+                                    ?: "That code didn't match — double-check the 6 digits and try again."
+                            )
+                        }
+                    }
+                }
+
+                // Credentials OK but email unverified and no code given —
+                // ask for the OTP (kept on screen until verification or a
+                // different account is used).
+                !result.success && result.isEmailNotConfirmed ->
+                    _uiState.update {
+                        it.copy(
+                            authNeedsOtp = true,
+                            authNotice = "Your email isn't verified yet. Enter the 6-digit code " +
+                                    "from your Quicky account-creation email together with your " +
+                                    "password to sign in."
+                        )
+                    }
+
+                else ->
+                    _uiState.update { it.copy(authError = result.errorMessage ?: "Authentication failed.") }
+            }
+            _uiState.update { it.copy(isAuthLoading = false) }
+        }
+    }
+
+    /** Re-sends the signup verification email with a fresh 6-digit OTP. */
+    fun resendSignupOtp(email: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isAuthLoading = true, authError = null, authNotice = null) }
+            val result = SupabaseAuth.resendOtp(email)
+            _uiState.update {
+                it.copy(
+                    isAuthLoading = false,
+                    authNotice = if (result.success)
+                        "A fresh 6-digit code is on its way to your inbox — it may take a minute to arrive."
+                    else result.errorMessage
+                )
+            }
         }
     }
 
@@ -232,6 +294,7 @@ class SparkViewModel : ViewModel() {
                     authSession = null,
                     authError = null,
                     authNotice = null,
+                    authNeedsOtp = false,
                     isAuthLoading = false,
                     isOnboardingComplete = false,
                     onboardingDraft = OnboardingDraft(),
@@ -266,8 +329,10 @@ class SparkViewModel : ViewModel() {
             result.success && result.needsEmailConfirmation ->
                 _uiState.update {
                     it.copy(
-                        authNotice = "Account created! Check your email to confirm " +
-                                "your address, then log in."
+                        authNeedsOtp = true,
+                        authNotice = "Account created! We emailed a 6-digit verification code " +
+                                "to your inbox. Enter it on the Log In tab together with your " +
+                                "password to activate your account."
                     )
                 }
             else ->
@@ -288,6 +353,7 @@ class SparkViewModel : ViewModel() {
                 it.copy(
                     authGate = AuthGate.SIGNED_IN,
                     authSession = session,
+                    authNeedsOtp = false,
                     isOnboardingComplete = false,
                     onboardingDraft = appContext?.let { ctx -> readPersistedDraft(ctx) } ?: OnboardingDraft()
                 )
@@ -297,6 +363,7 @@ class SparkViewModel : ViewModel() {
                 it.copy(
                     authGate = AuthGate.SIGNED_IN,
                     authSession = session,
+                    authNeedsOtp = false,
                     userProfile = remote.profile,
                     isOnboardingComplete = remote.onboardingCompleted,
                     onboardingDraft = if (remote.onboardingCompleted) OnboardingDraft()

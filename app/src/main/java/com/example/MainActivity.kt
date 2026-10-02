@@ -72,14 +72,17 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
         val scope = rememberCoroutineScope()
         var showEditProfileSheet by remember { mutableStateOf(false) }
 
-        // Keep the status bar icon appearance in sync with the app theme:
-        // dark icons (visible) on the light background, light icons on dark.
+        // Keep the status bar icon appearance in sync with what is
+        // actually on screen: the auth + onboarding flows are always
+        // light-themed, so they need dark status-bar icons regardless of
+        // the in-app light/dark mode setting.
         val view = LocalView.current
         if (!view.isInEditMode) {
             SideEffect {
                 val window = (view.context as? Activity)?.window ?: return@SideEffect
+                val inAuthFlow = state.authGate != AuthGate.SIGNED_IN || !state.isOnboardingComplete
                 WindowCompat.getInsetsController(window, view)
-                    .isAppearanceLightStatusBars = !isDark
+                    .isAppearanceLightStatusBars = inAuthFlow || !isDark
             }
         }
 
@@ -143,14 +146,19 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             }
 
             // No valid session — email/password + Google OAuth entry.
+            // Fresh accounts must verify their email with the 6-digit
+            // OTP from the "Quicky account creation" email, entered
+            // together with the login credentials.
             state.authGate == AuthGate.SIGNED_OUT -> {
                 AuthScreen(
                     isLoading = state.isAuthLoading,
                     error = state.authError,
                     notice = state.authNotice,
+                    needsOtp = state.authNeedsOtp,
                     onSignUp = { email, password -> viewModel.signUp(context, email, password) },
-                    onSignIn = { email, password -> viewModel.signIn(context, email, password) },
+                    onSignIn = { email, password, otp -> viewModel.signIn(context, email, password, otp) },
                     onForgotPassword = { email -> viewModel.requestPasswordReset(email) },
+                    onResendOtp = { email -> viewModel.resendSignupOtp(email) },
                     onGoogleSignIn = {
                         runCatching {
                             context.startActivity(

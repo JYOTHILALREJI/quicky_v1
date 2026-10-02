@@ -51,7 +51,13 @@ object SupabaseAuth {
         /** Human-readable error for the UI; null on success. */
         val errorMessage: String? = null,
         /** True when signup succeeded but an email confirmation is required. */
-        val needsEmailConfirmation: Boolean = false
+        val needsEmailConfirmation: Boolean = false,
+        /**
+         * True when a login attempt failed specifically because the email
+         * has not been verified yet — the UI then asks for the 6-digit
+         * OTP (emailed on signup) alongside the credentials.
+         */
+        val isEmailNotConfirmed: Boolean = false
     )
 
     private const val PREFS = "quicky_auth"
@@ -151,6 +157,17 @@ object SupabaseAuth {
         }.getOrElse { AuthResult(false, errorMessage = parseThrowable(it)) }
     }
 
+    /**
+     * True when a failed request was rejected because the account's email
+     * has not been verified yet (password grant returns "Email not
+     * confirmed" / "email_not_confirmed" while Confirm email is on).
+     */
+    private fun isEmailNotConfirmedError(message: String?): Boolean {
+        if (message == null) return false
+        val normalized = message.lowercase().replace('_', ' ')
+        return "email not confirmed" in normalized || "email not verified" in normalized
+    }
+
     /** Logs in with email + password and persists the session. */
     suspend fun signIn(context: Context, email: String, password: String): AuthResult {
         if (!SupabaseConfig.isConfigured) {
@@ -165,6 +182,63 @@ object SupabaseAuth {
             val parsed = sessionFromJson(JSONObject(raw))
             writeSession(context, parsed)
             AuthResult(true, session = parsed)
+        }.getOrElse {
+            val message = parseThrowable(it)
+            AuthResult(
+                success = false,
+                errorMessage = message,
+                isEmailNotConfirmed = isEmailNotConfirmedError(message)
+            )
+        }
+    }
+
+    /**
+     * Verifies the freshly created account with the 6-digit OTP from the
+     * "Quicky account creation" email and returns the live session.
+     *
+     * POST /auth/v1/verify  { "type": "signup", "email": …, "token": … }
+     *
+     * A successful verification returns a full session JSON (access +
+     * refresh token, user with email_confirmed_at set) exactly like the
+     * password grant, so the caller can adopt it directly.
+     */
+    suspend fun verifyOtp(context: Context, email: String, otp: String): AuthResult {
+        if (!SupabaseConfig.isConfigured) {
+            return AuthResult(false, errorMessage = "Supabase is not configured yet.")
+        }
+        return runCatching {
+            val body = JSONObject()
+                .put("type", "signup")
+                .put("email", email.trim())
+                .put("token", otp.trim())
+                .toString()
+            val raw = httpCall("/auth/v1/verify", body)
+            val parsed = sessionFromJson(JSONObject(raw.ifEmpty { "{}" }))
+            if (parsed.accessToken.isEmpty()) {
+                throw IllegalStateException("That code didn't match — double-check the 6 digits and try again.")
+            }
+            writeSession(context, parsed)
+            initializeProfileRecord(parsed)
+            AuthResult(true, session = parsed)
+        }.getOrElse { AuthResult(false, errorMessage = parseThrowable(it)) }
+    }
+
+    /**
+     * Re-sends the signup verification email with a fresh 6-digit OTP.
+     *
+     * POST /auth/v1/resend  { "type": "signup", "email": … }
+     */
+    suspend fun resendOtp(email: String): AuthResult {
+        if (!SupabaseConfig.isConfigured) {
+            return AuthResult(false, errorMessage = "Supabase is not configured yet.")
+        }
+        return runCatching {
+            val body = JSONObject()
+                .put("type", "signup")
+                .put("email", email.trim())
+                .toString()
+            httpCall("/auth/v1/resend", body)
+            AuthResult(true)
         }.getOrElse { AuthResult(false, errorMessage = parseThrowable(it)) }
     }
 

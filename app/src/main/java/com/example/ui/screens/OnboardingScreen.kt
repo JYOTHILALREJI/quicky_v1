@@ -96,11 +96,14 @@ fun OnboardingScreen(
     // System back moves back one stage (disabled on the welcome step).
     BackHandler(enabled = stage > 0) { goToStage(stage - 1) }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(DarkBg)
-    ) {
+    // The onboarding flow always renders in the light Quicky theme,
+    // independent of the in-app light/dark mode setting.
+    QuickyTheme(darkTheme = false) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(LightBg)
+        ) {
         if (stage == 0) {
             WelcomeStage(
                 isAgeConfirmed = isAgeConfirmed,
@@ -161,6 +164,7 @@ fun OnboardingScreen(
             }
         }
     }
+    }
 }
 
 // ================================================================
@@ -192,9 +196,9 @@ private fun WelcomeStage(
                     Brush.verticalGradient(
                         colors = listOf(
                             Color.Transparent,
-                            DarkBg.copy(alpha = 0.85f),
-                            DarkBg,
-                            DarkBg
+                            LightBg.copy(alpha = 0.85f),
+                            LightBg,
+                            LightBg
                         )
                     )
                 )
@@ -227,13 +231,13 @@ private fun WelcomeStage(
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = (-0.5).sp
                 ),
-                color = Color.White
+                color = LightTextPrimary
             )
 
             Text(
                 text = "Fast, fun dating with interactive Truth or Dare chat games, deep personality matching, and spontaneous connections.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = DarkTextSecondary,
+                color = LightTextSecondary,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
             )
@@ -241,7 +245,7 @@ private fun WelcomeStage(
             Spacer(modifier = Modifier.height(16.dp))
 
             Surface(
-                color = DarkSurface,
+                color = LightSurface,
                 shape = RoundedCornerShape(16.dp),
                 border = androidx.compose.foundation.BorderStroke(
                     1.dp,
@@ -278,14 +282,14 @@ private fun WelcomeStage(
                             Text(
                                 text = "Adult-Only Platform (18+)",
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = Color.White
+                                color = LightTextPrimary
                             )
                         }
 
                         Text(
                             text = "I certify that I am at least 18 years of age and agree to the Terms of Service & Community Guidelines.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = DarkTextSecondary
+                            color = LightTextSecondary
                         )
                     }
                 }
@@ -303,7 +307,7 @@ private fun WelcomeStage(
                 shape = RoundedCornerShape(26.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = QuickyPink,
-                    disabledContainerColor = DarkSurfaceHighlight
+                    disabledContainerColor = LightSurfaceHighlight
                 )
             ) {
                 Text(
@@ -336,7 +340,7 @@ private fun OnboardingHeader(stage: Int, onBack: () -> Unit) {
                 Icon(
                     imageVector = Icons.Filled.ArrowBack,
                     contentDescription = "Back",
-                    tint = Color.White
+                    tint = LightTextPrimary
                 )
             }
             Column {
@@ -348,12 +352,12 @@ private fun OnboardingHeader(stage: Int, onBack: () -> Unit) {
                         else -> "Add your photos"
                     },
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White
+                    color = LightTextPrimary
                 )
                 Text(
                     text = "Step $stage of 4",
                     style = MaterialTheme.typography.labelMedium,
-                    color = DarkTextSecondary
+                    color = LightTextSecondary
                 )
             }
         }
@@ -361,7 +365,7 @@ private fun OnboardingHeader(stage: Int, onBack: () -> Unit) {
         LinearProgressIndicator(
             progress = { stage / 4f },
             color = QuickyPink,
-            trackColor = DarkSurfaceHighlight,
+            trackColor = LightSurfaceHighlight,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(6.dp)
@@ -379,7 +383,7 @@ private fun OnboardingFooter(
     error: String?,
     onNext: () -> Unit
 ) {
-    Surface(color = DarkBg) {
+    Surface(color = LightBg) {
         Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
             if (error != null) {
                 Text(
@@ -395,7 +399,7 @@ private fun OnboardingFooter(
                 shape = RoundedCornerShape(26.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = QuickyPink,
-                    disabledContainerColor = DarkSurfaceHighlight
+                    disabledContainerColor = LightSurfaceHighlight
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -437,7 +441,7 @@ private fun StageBasics(
         onValueChange = { onSave(draft.copy(fullName = it.take(60))) },
         placeholder = { Text("e.g. Jyothi Lal") },
         singleLine = true,
-        colors = darkFieldColors(),
+        colors = lightFieldColors(),
         shape = RoundedCornerShape(16.dp),
         modifier = Modifier
             .fillMaxWidth()
@@ -448,7 +452,7 @@ private fun StageBasics(
     Surface(
         onClick = { showDatePicker = true },
         shape = RoundedCornerShape(16.dp),
-        color = DarkSurface,
+        color = LightSurface,
         modifier = Modifier
             .fillMaxWidth()
             .testTag("onboarding_dob_field")
@@ -465,12 +469,12 @@ private fun StageBasics(
                         }
                     } ?: "Select your date of birth",
                     style = MaterialTheme.typography.bodyLarge,
-                    color = if (draft.dateOfBirthEpochDay != null) Color.White else DarkTextSecondary
+                    color = if (draft.dateOfBirthEpochDay != null) LightTextPrimary else LightTextSecondary
                 )
                 Text(
                     text = "Your age is calculated automatically and never shown exactly",
                     style = MaterialTheme.typography.labelSmall,
-                    color = DarkTextMuted
+                    color = LightTextMuted
                 )
             }
             Text(
@@ -503,7 +507,7 @@ private fun StageBasics(
             onValueChange = { onSave(draft.copy(customGender = it.take(30))) },
             placeholder = { Text("How do you identify?") },
             singleLine = true,
-            colors = darkFieldColors(),
+            colors = lightFieldColors(),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
@@ -540,7 +544,7 @@ private fun StageBasics(
             },
             dismissButton = {
                 TextButton(onClick = { showDatePicker = false }) {
-                    Text("Cancel", color = DarkTextSecondary)
+                    Text("Cancel", color = LightTextSecondary)
                 }
             }
         ) {
@@ -568,7 +572,7 @@ private fun StagePersonality(
         onValueChange = { if (it.length <= 280) onSave(draft.copy(bio = it)) },
         placeholder = { Text("Tell people what makes you, you…") },
         minLines = 3,
-        colors = darkFieldColors(),
+        colors = lightFieldColors(),
         shape = RoundedCornerShape(16.dp),
         modifier = Modifier
             .fillMaxWidth()
@@ -579,7 +583,7 @@ private fun StagePersonality(
     Text(
         text = "Pick the things you genuinely love — these power your matches.",
         style = MaterialTheme.typography.labelSmall,
-        color = DarkTextMuted
+        color = LightTextMuted
     )
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -617,7 +621,7 @@ private fun StagePersonality(
             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                 imeAction = ImeAction.Done
             ),
-            colors = darkFieldColors(),
+            colors = lightFieldColors(),
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier
                 .weight(1f)
@@ -662,8 +666,8 @@ private fun StagePersonality(
                         )
                     },
                     colors = InputChipDefaults.inputChipColors(
-                        containerColor = QuickyPurple.copy(alpha = 0.25f),
-                        labelColor = Color.White
+                        containerColor = QuickyPurple.copy(alpha = 0.12f),
+                        labelColor = QuickyPurple
                     )
                 )
             }
@@ -778,7 +782,7 @@ private fun StageBackground(
                 keyboardType = KeyboardType.Number,
                 imeAction = ImeAction.Next
             ),
-            colors = darkFieldColors(),
+            colors = lightFieldColors(),
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier
                 .weight(1f)
@@ -800,7 +804,7 @@ private fun StageBackground(
                 keyboardType = KeyboardType.Decimal,
                 imeAction = ImeAction.Done
             ),
-            colors = darkFieldColors(),
+            colors = lightFieldColors(),
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier
                 .weight(1f)
@@ -814,7 +818,7 @@ private fun StageBackground(
         onValueChange = { onSave(draft.copy(city = it.take(60))) },
         placeholder = { Text("Where are you based?") },
         singleLine = true,
-        colors = darkFieldColors(),
+        colors = lightFieldColors(),
         shape = RoundedCornerShape(16.dp),
         modifier = Modifier
             .fillMaxWidth()
@@ -844,7 +848,7 @@ private fun StagePhotos(
     Text(
         text = "Add up to three photos. At least one must have a clearly visible face — this keeps Quicky authentic.",
         style = MaterialTheme.typography.labelSmall,
-        color = DarkTextMuted
+        color = LightTextMuted
     )
 
     Row(
@@ -891,7 +895,7 @@ private fun StagePhotos(
                             modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Checking…", style = MaterialTheme.typography.labelSmall, color = DarkTextSecondary)
+                        Text("Checking…", style = MaterialTheme.typography.labelSmall, color = LightTextSecondary)
                     } else if (photo.faceValidated) {
                         Icon(
                             Icons.Filled.Verified,
@@ -923,8 +927,8 @@ private fun StagePhotos(
                     )
                 },
                 shape = RoundedCornerShape(18.dp),
-                color = DarkSurface,
-                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+                color = LightSurface,
+                border = androidx.compose.foundation.BorderStroke(1.dp, LightBorder),
                 modifier = Modifier
                     .size(96.dp)
                     .testTag("onboarding_photo_add_tile")
@@ -943,7 +947,7 @@ private fun StagePhotos(
                     Text(
                         "Add Photo",
                         style = MaterialTheme.typography.labelSmall,
-                        color = DarkTextSecondary
+                        color = LightTextSecondary
                     )
                 }
             }
@@ -961,7 +965,7 @@ private fun StagePhotos(
     Text(
         text = "Your date of birth stays private. Photos are stored in your private Supabase space.",
         style = MaterialTheme.typography.labelSmall,
-        color = DarkTextMuted
+        color = LightTextMuted
     )
 }
 
@@ -977,7 +981,7 @@ private fun SectionLabel(text: String) {
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.sp
         ),
-        color = DarkTextSecondary,
+        color = LightTextSecondary,
         modifier = Modifier.padding(top = 4.dp)
     )
 }
@@ -1005,22 +1009,24 @@ private fun InfoBanner(icon: androidx.compose.ui.graphics.vector.ImageVector, ti
 }
 
 @Composable
-private fun darkFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedTextColor = Color.White,
-    unfocusedTextColor = Color.White,
+private fun lightFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = LightTextPrimary,
+    unfocusedTextColor = LightTextPrimary,
     focusedBorderColor = QuickyPink,
-    unfocusedBorderColor = DarkBorder,
-    focusedContainerColor = DarkSurface,
-    unfocusedContainerColor = DarkSurface,
+    unfocusedBorderColor = LightBorder,
+    focusedContainerColor = LightSurface,
+    unfocusedContainerColor = LightSurface,
     focusedLabelColor = QuickyPink,
-    unfocusedLabelColor = DarkTextSecondary,
+    unfocusedLabelColor = LightTextSecondary,
+    focusedPlaceholderColor = LightTextMuted,
+    unfocusedPlaceholderColor = LightTextMuted,
     cursorColor = QuickyPink
 )
 
 @Composable
 private fun chipColors() = FilterChipDefaults.filterChipColors(
-    containerColor = DarkSurface,
-    labelColor = DarkTextSecondary,
+    containerColor = LightSurfaceElevated,
+    labelColor = LightTextSecondary,
     selectedContainerColor = QuickyPink,
     selectedLabelColor = Color.White
 )
