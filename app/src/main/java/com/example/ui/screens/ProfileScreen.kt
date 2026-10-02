@@ -79,12 +79,29 @@ fun ProfileScreen(
                     .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally // Mandatory center alignment
             ) {
-                // Centered Profile Avatar
+                // Centered Profile Avatar (prefers the uploaded onboarding
+                // photos, falls back to bundled assets)
+                val avatarUri = userProfile.photoUris.firstOrNull()
                 val avatarRes = userProfile.photoResIds.firstOrNull() ?: R.drawable.img_onboarding_hero
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier.size(116.dp)
                 ) {
+                    if (avatarUri != null) {
+                        coil.compose.AsyncImage(
+                            model = avatarUri,
+                            contentDescription = "My profile photo",
+                            modifier = Modifier
+                                .size(108.dp)
+                                .clip(CircleShape)
+                                .border(
+                                    3.dp,
+                                    Brush.linearGradient(listOf(QuickyPink, QuickyPurple)),
+                                    CircleShape
+                                ),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
                     Image(
                         painter = painterResource(id = avatarRes),
                         contentDescription = "My profile photo",
@@ -98,6 +115,7 @@ fun ProfileScreen(
                             ),
                         contentScale = ContentScale.Crop
                     )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -256,7 +274,7 @@ fun ProfileScreen(
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                     Text(
-                        text = "${userProfile.photoResIds.size}/3",
+                        text = "${maxOf(userProfile.photoResIds.size, userProfile.photoUris.size)}/3",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                         color = QuickyPink
                     )
@@ -274,8 +292,9 @@ fun ProfileScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    val photoCount = maxOf(userProfile.photoResIds.size, userProfile.photoUris.size)
                     for (i in 0 until 3) {
-                        val hasPhoto = i < userProfile.photoResIds.size
+                        val hasPhoto = i < photoCount
                         Box(
                             modifier = Modifier
                                 .weight(1f)
@@ -297,12 +316,21 @@ fun ProfileScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             if (hasPhoto) {
-                                Image(
-                                    painter = painterResource(id = userProfile.photoResIds[i]),
-                                    contentDescription = "Photo ${i + 1}",
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
-                                )
+                                if (i < userProfile.photoResIds.size) {
+                                    Image(
+                                        painter = painterResource(id = userProfile.photoResIds[i]),
+                                        contentDescription = "Photo ${i + 1}",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    coil.compose.AsyncImage(
+                                        model = userProfile.photoUris[i],
+                                        contentDescription = "Photo ${i + 1}",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                }
 
                                 if (i == 0) {
                                     Surface(
@@ -321,7 +349,7 @@ fun ProfileScreen(
                                     }
                                 }
 
-                                if (userProfile.photoResIds.size > 1) {
+                                if (photoCount > 1) {
                                     IconButton(
                                         onClick = { onDeletePhoto(i) },
                                         modifier = Modifier

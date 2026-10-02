@@ -36,6 +36,9 @@ object SupabaseConfig {
     // Database table names (public schema, accessed via PostgREST)
     // ------------------------------------------------------------
     const val TABLE_PROFILES = "profiles"
+    const val TABLE_USER_INTERESTS = "user_interests"
+    const val TABLE_INTEREST_CATALOG = "interests"
+    const val TABLE_HOBBY_CATALOG = "hobbies"
     const val TABLE_MATCHES = "matches"
     const val TABLE_MESSAGES = "messages"
     const val TABLE_CLUBS = "clubs"

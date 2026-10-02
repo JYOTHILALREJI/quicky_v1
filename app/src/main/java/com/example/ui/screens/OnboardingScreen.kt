@@ -1,14 +1,26 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.AddAPhoto
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,25 +32,148 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.R
+import com.example.data.AppContent
+import com.example.model.OnboardingDraft
 import com.example.ui.theme.*
 
+/**
+ * ============================================================
+ *  ONBOARDING — Welcome + four progressive profile stages
+ *  (Auth & Onboarding PRD)
+ * ============================================================
+ *
+ *  Step 0  Welcome & 18+ eligibility confirmation
+ *  Stage 1 The basics: full name, date of birth, gender
+ *  Stage 2 Personality: bio, interests, interested in, looking for
+ *  Stage 3 Background: qualification, hobbies, body, city
+ *  Stage 4 Photos: up to 3, at least one face-validated
+ *
+ *  Every stage is validated before the Next button unlocks, and the
+ *  draft is pushed to the ViewModel (which persists it) whenever the
+ *  stage advances — so an interrupted onboarding resumes exactly
+ *  where it stopped.
+ */
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun OnboardingScreen(
+    draft: OnboardingDraft,
+    interestCatalog: List<String>,
+    hobbyCatalog: List<String>,
+    isUploading: Boolean,
+    isProcessingPhoto: Boolean,
+    error: String?,
+    onSaveDraft: (OnboardingDraft) -> Unit,
+    onStageChanged: (Int) -> Unit,
+    onAddPhoto: (Uri) -> Unit,
+    onRemovePhoto: (String) -> Unit,
     onComplete: () -> Unit
 ) {
+    // Resume directly into the saved stage; a fresh draft starts at the
+    // welcome step.
+    var stage by remember { mutableIntStateOf(if (draft.step > 1) draft.step else 0) }
     var isAgeConfirmed by remember { mutableStateOf(false) }
-    var selectedIntent by remember { mutableStateOf("Long-term relationship") }
+
+    fun goToStage(next: Int) {
+        stage = next.coerceIn(0, 4)
+        onStageChanged(stage)
+    }
+
+    val stageValid = when (stage) {
+        0 -> isAgeConfirmed
+        1 -> draft.isStage1Valid
+        2 -> draft.isStage2Valid
+        3 -> draft.isStage3Valid
+        else -> draft.isStage4Valid
+    }
+
+    // System back moves back one stage (disabled on the welcome step).
+    BackHandler(enabled = stage > 0) { goToStage(stage - 1) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(DarkBg)
     ) {
-        // Hero Background Image with Overlay
+        if (stage == 0) {
+            WelcomeStage(
+                isAgeConfirmed = isAgeConfirmed,
+                onAgeConfirmed = { isAgeConfirmed = it },
+                onGetStarted = { goToStage(1) }
+            )
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+            ) {
+                OnboardingHeader(
+                    stage = stage,
+                    onBack = { goToStage(stage - 1) }
+                )
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    when (stage) {
+                        1 -> StageBasics(draft = draft, onSave = onSaveDraft)
+                        2 -> StagePersonality(
+                            draft = draft,
+                            interestCatalog = interestCatalog,
+                            onSave = onSaveDraft
+                        )
+                        3 -> StageBackground(
+                            draft = draft,
+                            hobbyCatalog = hobbyCatalog,
+                            onSave = onSaveDraft
+                        )
+                        else -> StagePhotos(
+                            draft = draft,
+                            isProcessingPhoto = isProcessingPhoto,
+                            onAddPhoto = onAddPhoto,
+                            onRemovePhoto = onRemovePhoto
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
+                OnboardingFooter(
+                    stage = stage,
+                    enabled = stageValid && !isUploading,
+                    isUploading = isUploading,
+                    error = error,
+                    onNext = {
+                        if (stage < 4) goToStage(stage + 1) else onComplete()
+                    }
+                )
+            }
+        }
+    }
+}
+
+// ================================================================
+// STEP 0 — WELCOME & 18+ ELIGIBILITY
+// ================================================================
+
+@Composable
+private fun WelcomeStage(
+    isAgeConfirmed: Boolean,
+    onAgeConfirmed: (Boolean) -> Unit,
+    onGetStarted: () -> Unit
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
         Image(
             painter = painterResource(id = R.drawable.img_onboarding_hero),
             contentDescription = "Welcome to Quicky",
@@ -70,11 +205,11 @@ fun OnboardingScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(24.dp),
+                .padding(24.dp)
+                .testTag("onboarding_welcome"),
             verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // App Branding Icon - Quicky Logo
             Image(
                 painter = painterResource(id = R.drawable.quicky_logo),
                 contentDescription = "Quicky Logo",
@@ -105,9 +240,8 @@ fun OnboardingScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // 18+ Age & Eligibility Confirmation (PRD Section 2.1)
             Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
+                color = DarkSurface,
                 shape = RoundedCornerShape(16.dp),
                 border = androidx.compose.foundation.BorderStroke(
                     1.dp,
@@ -122,7 +256,7 @@ fun OnboardingScreen(
                 ) {
                     Checkbox(
                         checked = isAgeConfirmed,
-                        onCheckedChange = { isAgeConfirmed = it },
+                        onCheckedChange = onAgeConfirmed,
                         colors = CheckboxDefaults.colors(
                             checkedColor = QuickyPink,
                             checkmarkColor = Color.White
@@ -160,7 +294,7 @@ fun OnboardingScreen(
             Spacer(modifier = Modifier.height(20.dp))
 
             Button(
-                onClick = onComplete,
+                onClick = onGetStarted,
                 enabled = isAgeConfirmed,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -180,3 +314,711 @@ fun OnboardingScreen(
         }
     }
 }
+
+// ================================================================
+// HEADER / FOOTER CHROME
+// ================================================================
+
+@Composable
+private fun OnboardingHeader(stage: Int, onBack: () -> Unit) {
+    Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .size(40.dp)
+                    .testTag("onboarding_back_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = Color.White
+                )
+            }
+            Column {
+                Text(
+                    text = when (stage) {
+                        1 -> "Let's start with the basics"
+                        2 -> "Show off your personality"
+                        3 -> "A bit of background"
+                        else -> "Add your photos"
+                    },
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White
+                )
+                Text(
+                    text = "Step $stage of 4",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = DarkTextSecondary
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        LinearProgressIndicator(
+            progress = { stage / 4f },
+            color = QuickyPink,
+            trackColor = DarkSurfaceHighlight,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(RoundedCornerShape(3.dp))
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun OnboardingFooter(
+    stage: Int,
+    enabled: Boolean,
+    isUploading: Boolean,
+    error: String?,
+    onNext: () -> Unit
+) {
+    Surface(color = DarkBg) {
+        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
+            if (error != null) {
+                Text(
+                    text = error,
+                    color = ActionPass,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            }
+            Button(
+                onClick = onNext,
+                enabled = enabled,
+                shape = RoundedCornerShape(26.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = QuickyPink,
+                    disabledContainerColor = DarkSurfaceHighlight
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .testTag("onboarding_next_button")
+            ) {
+                if (isUploading) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        strokeWidth = 2.5.dp,
+                        modifier = Modifier.size(22.dp)
+                    )
+                } else {
+                    Text(
+                        text = if (stage == 4) "Finish & Enter Quicky" else "Continue",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ================================================================
+// STAGE 1 — THE BASICS
+// ================================================================
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun StageBasics(
+    draft: OnboardingDraft,
+    onSave: (OnboardingDraft) -> Unit
+) {
+    var showDatePicker by remember { mutableStateOf(false) }
+
+    SectionLabel("FULL NAME")
+    OutlinedTextField(
+        value = draft.fullName,
+        onValueChange = { onSave(draft.copy(fullName = it.take(60))) },
+        placeholder = { Text("e.g. Jyothi Lal") },
+        singleLine = true,
+        colors = darkFieldColors(),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("onboarding_name_field")
+    )
+
+    SectionLabel("DATE OF BIRTH")
+    Surface(
+        onClick = { showDatePicker = true },
+        shape = RoundedCornerShape(16.dp),
+        color = DarkSurface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("onboarding_dob_field")
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = draft.dateOfBirthEpochDay?.let {
+                        java.time.LocalDate.ofEpochDay(it).let { d ->
+                            "%02d %s %d".format(d.dayOfMonth, d.month.name.lowercase().replaceFirstChar { c -> c.uppercase() }, d.year)
+                        }
+                    } ?: "Select your date of birth",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (draft.dateOfBirthEpochDay != null) Color.White else DarkTextSecondary
+                )
+                Text(
+                    text = "Your age is calculated automatically and never shown exactly",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = DarkTextMuted
+                )
+            }
+            Text(
+                text = draft.calculatedAge?.let { "$it yrs" } ?: "",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = QuickyGold
+            )
+        }
+    }
+
+    SectionLabel("GENDER")
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        AppContent.genderOptions.forEach { option ->
+            FilterChip(
+                selected = draft.gender == option,
+                onClick = { onSave(draft.copy(gender = if (draft.gender == option) "" else option)) },
+                label = { Text(option) },
+                colors = chipColors(),
+                modifier = Modifier.testTag("onboarding_gender_chip")
+            )
+        }
+    }
+
+    if (draft.gender == "Other") {
+        OutlinedTextField(
+            value = draft.customGender,
+            onValueChange = { onSave(draft.copy(customGender = it.take(30))) },
+            placeholder = { Text("How do you identify?") },
+            singleLine = true,
+            colors = darkFieldColors(),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("onboarding_custom_gender_field")
+        )
+    }
+
+    if (draft.calculatedAge != null && draft.calculatedAge < 18) {
+        InfoBanner(
+            icon = Icons.Filled.WarningAmber,
+            tint = ActionPass,
+            text = "You must be at least 18 years old to use Quicky."
+        )
+    }
+
+    if (showDatePicker) {
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = draft.dateOfBirthEpochDay?.let { it * 86_400_000L }
+                ?: (System.currentTimeMillis() - 18L * 365L * 86_400_000L)
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pickerState.selectedDateMillis?.let { millis ->
+                            onSave(draft.copy(dateOfBirthEpochDay = millis / 86_400_000L))
+                        }
+                        showDatePicker = false
+                    }
+                ) { Text("OK", color = QuickyPink) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) {
+                    Text("Cancel", color = DarkTextSecondary)
+                }
+            }
+        ) {
+            DatePicker(state = pickerState)
+        }
+    }
+}
+
+// ================================================================
+// STAGE 2 — PERSONALITY
+// ================================================================
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StagePersonality(
+    draft: OnboardingDraft,
+    interestCatalog: List<String>,
+    onSave: (OnboardingDraft) -> Unit
+) {
+    var customInterest by remember { mutableStateOf("") }
+
+    SectionLabel("ABOUT YOU  ·  ${draft.bio.trim().length}/10 min")
+    OutlinedTextField(
+        value = draft.bio,
+        onValueChange = { if (it.length <= 280) onSave(draft.copy(bio = it)) },
+        placeholder = { Text("Tell people what makes you, you…") },
+        minLines = 3,
+        colors = darkFieldColors(),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("onboarding_bio_field")
+    )
+
+    SectionLabel("INTERESTS  ·  ${draft.interests.size}/${AppContent.MAX_INTERESTS}")
+    Text(
+        text = "Pick the things you genuinely love — these power your matches.",
+        style = MaterialTheme.typography.labelSmall,
+        color = DarkTextMuted
+    )
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        interestCatalog.forEach { interest ->
+            FilterChip(
+                selected = interest in draft.interests,
+                onClick = {
+                    val current = draft.interests
+                    val next = if (interest in current) current - interest
+                    else if (current.size >= AppContent.MAX_INTERESTS) current
+                    else current + interest
+                    if (next != current) onSave(draft.copy(interests = next))
+                },
+                label = { Text(interest) },
+                colors = chipColors(),
+                modifier = Modifier.testTag("onboarding_interest_chip")
+            )
+        }
+    }
+
+    // Custom interest input — becomes a chip on Add.
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OutlinedTextField(
+            value = customInterest,
+            onValueChange = {
+                if (it.length <= 30) customInterest = it
+            },
+            placeholder = { Text("Add your own…") },
+            singleLine = true,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                imeAction = ImeAction.Done
+            ),
+            colors = darkFieldColors(),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .weight(1f)
+                .testTag("onboarding_custom_interest_field")
+        )
+        FilledTonalIconButton(
+            onClick = {
+                val name = customInterest.trim()
+                if (name.isNotEmpty() && name !in draft.interests &&
+                    draft.interests.size < AppContent.MAX_INTERESTS
+                ) {
+                    onSave(draft.copy(interests = draft.interests + name))
+                }
+                customInterest = ""
+            },
+            enabled = customInterest.isNotBlank() &&
+                    draft.interests.size < AppContent.MAX_INTERESTS,
+            colors = FilledTonalIconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = QuickyPurple,
+                contentColor = Color.White
+            ),
+            modifier = Modifier.testTag("onboarding_add_custom_interest_button")
+        ) {
+            Icon(Icons.Filled.Verified, contentDescription = "Add custom interest")
+        }
+    }
+    if (draft.interests.isNotEmpty()) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            draft.interests.forEach { interest ->
+                InputChip(
+                    selected = true,
+                    onClick = { onSave(draft.copy(interests = draft.interests - interest)) },
+                    label = { Text(interest) },
+                    trailingIcon = {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Remove $interest",
+                            modifier = Modifier.size(14.dp)
+                        )
+                    },
+                    colors = InputChipDefaults.inputChipColors(
+                        containerColor = QuickyPurple.copy(alpha = 0.25f),
+                        labelColor = Color.White
+                    )
+                )
+            }
+        }
+    }
+
+    SectionLabel("INTERESTED IN")
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        AppContent.interestedInOptions.forEach { option ->
+            FilterChip(
+                selected = draft.interestedIn == option,
+                onClick = { onSave(draft.copy(interestedIn = if (draft.interestedIn == option) "" else option)) },
+                label = { Text(option) },
+                colors = chipColors(),
+                modifier = Modifier.testTag("onboarding_interested_in_chip")
+            )
+        }
+    }
+
+    SectionLabel("LOOKING FOR  ·  pick any")
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        AppContent.lookingForOptions.forEach { option ->
+            FilterChip(
+                selected = option in draft.lookingFor,
+                onClick = {
+                    val next = if (option in draft.lookingFor) draft.lookingFor - option
+                    else draft.lookingFor + option
+                    onSave(draft.copy(lookingFor = next))
+                },
+                label = { Text(option) },
+                colors = chipColors(),
+                modifier = Modifier.testTag("onboarding_looking_for_chip")
+            )
+        }
+    }
+}
+
+// ================================================================
+// STAGE 3 — BACKGROUND
+// ================================================================
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StageBackground(
+    draft: OnboardingDraft,
+    hobbyCatalog: List<String>,
+    onSave: (OnboardingDraft) -> Unit
+) {
+    var heightInput by remember(draft.heightCm) {
+        mutableStateOf(draft.heightCm?.toString().orEmpty())
+    }
+    var weightInput by remember(draft.weightKg) {
+        mutableStateOf(draft.weightKg?.let { if (it % 1f == 0f) it.toInt().toString() else it.toString() }.orEmpty())
+    }
+
+    SectionLabel("HIGHEST QUALIFICATION")
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        AppContent.qualificationOptions.forEach { option ->
+            FilterChip(
+                selected = draft.qualification == option,
+                onClick = { onSave(draft.copy(qualification = if (draft.qualification == option) "" else option)) },
+                label = { Text(option) },
+                colors = chipColors(),
+                modifier = Modifier.testTag("onboarding_qualification_chip")
+            )
+        }
+    }
+
+    SectionLabel("HOBBIES  ·  pick any")
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        hobbyCatalog.forEach { hobby ->
+            FilterChip(
+                selected = hobby in draft.hobbies,
+                onClick = {
+                    val next = if (hobby in draft.hobbies) draft.hobbies - hobby
+                    else draft.hobbies + hobby
+                    onSave(draft.copy(hobbies = next))
+                },
+                label = { Text(hobby) },
+                colors = chipColors(),
+                modifier = Modifier.testTag("onboarding_hobby_chip")
+            )
+        }
+    }
+
+    SectionLabel("BODY  ·  optional, visibility controlled later")
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        OutlinedTextField(
+            value = heightInput,
+            onValueChange = { raw ->
+                heightInput = raw.filter { it.isDigit() }.take(3)
+                onSave(draft.copy(heightCm = heightInput.toIntOrNull()?.takeIf { it in 90..250 }))
+            },
+            label = { Text("Height (cm)") },
+            singleLine = true,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = ImeAction.Next
+            ),
+            colors = darkFieldColors(),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .weight(1f)
+                .testTag("onboarding_height_field")
+        )
+        OutlinedTextField(
+            value = weightInput,
+            onValueChange = { raw ->
+                weightInput = raw.filter { it.isDigit() || it == '.' }.take(6)
+                onSave(
+                    draft.copy(
+                        weightKg = weightInput.toFloatOrNull()?.takeIf { it in 25f..350f }
+                    )
+                )
+            },
+            label = { Text("Weight (kg)") },
+            singleLine = true,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                keyboardType = KeyboardType.Decimal,
+                imeAction = ImeAction.Done
+            ),
+            colors = darkFieldColors(),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .weight(1f)
+                .testTag("onboarding_weight_field")
+        )
+    }
+
+    SectionLabel("CITY")
+    OutlinedTextField(
+        value = draft.city,
+        onValueChange = { onSave(draft.copy(city = it.take(60))) },
+        placeholder = { Text("Where are you based?") },
+        singleLine = true,
+        colors = darkFieldColors(),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("onboarding_city_field")
+    )
+}
+
+// ================================================================
+// STAGE 4 — PHOTOS (max 3, at least one face-validated)
+// ================================================================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StagePhotos(
+    draft: OnboardingDraft,
+    isProcessingPhoto: Boolean,
+    onAddPhoto: (Uri) -> Unit,
+    onRemovePhoto: (String) -> Unit
+) {
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) onAddPhoto(uri)
+    }
+
+    SectionLabel("PHOTOS  ·  ${draft.photos.size}/3")
+    Text(
+        text = "Add up to three photos. At least one must have a clearly visible face — this keeps Quicky authentic.",
+        style = MaterialTheme.typography.labelSmall,
+        color = DarkTextMuted
+    )
+
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("onboarding_photos_row")
+    ) {
+        draft.photos.take(3).forEach { photo ->
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box {
+                    AsyncImage(
+                        model = photo.uri,
+                        contentDescription = "Your photo",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(96.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                    )
+                    IconButton(
+                        onClick = { onRemovePhoto(photo.uri) },
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = Color.Black.copy(alpha = 0.65f),
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(28.dp)
+                            .testTag("onboarding_photo_remove_button")
+                    ) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Remove photo",
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isProcessingPhoto && photo == draft.photos.lastOrNull() && !photo.faceValidated) {
+                        CircularProgressIndicator(
+                            strokeWidth = 2.dp,
+                            color = QuickyPink,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Checking…", style = MaterialTheme.typography.labelSmall, color = DarkTextSecondary)
+                    } else if (photo.faceValidated) {
+                        Icon(
+                            Icons.Filled.Verified,
+                            contentDescription = null,
+                            tint = ActionLike,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Face ✓", style = MaterialTheme.typography.labelSmall, color = ActionLike)
+                    } else {
+                        Icon(
+                            Icons.Filled.WarningAmber,
+                            contentDescription = null,
+                            tint = QuickyGold,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("No face", style = MaterialTheme.typography.labelSmall, color = QuickyGold)
+                    }
+                }
+            }
+        }
+
+        if (draft.photos.size < 3) {
+            Surface(
+                onClick = {
+                    photoPicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
+                shape = RoundedCornerShape(18.dp),
+                color = DarkSurface,
+                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+                modifier = Modifier
+                    .size(96.dp)
+                    .testTag("onboarding_photo_add_tile")
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        Icons.Filled.AddAPhoto,
+                        contentDescription = "Add photo",
+                        tint = QuickyPink,
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Add Photo",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = DarkTextSecondary
+                    )
+                }
+            }
+        }
+    }
+
+    if (draft.photos.isNotEmpty() && draft.photos.none { it.faceValidated }) {
+        InfoBanner(
+            icon = Icons.Filled.WarningAmber,
+            tint = QuickyGold,
+            text = "None of your photos shows a clearly visible face. Add one to continue — face checks run automatically on your device."
+        )
+    }
+
+    Text(
+        text = "Your date of birth stays private. Photos are stored in your private Supabase space.",
+        style = MaterialTheme.typography.labelSmall,
+        color = DarkTextMuted
+    )
+}
+
+// ================================================================
+// SHARED SMALL PIECES
+// ================================================================
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall.copy(
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp
+        ),
+        color = DarkTextSecondary,
+        modifier = Modifier.padding(top = 4.dp)
+    )
+}
+
+@Composable
+private fun InfoBanner(icon: androidx.compose.ui.graphics.vector.ImageVector, tint: Color, text: String) {
+    Surface(
+        color = tint.copy(alpha = 0.10f),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = tint
+            )
+        }
+    }
+}
+
+@Composable
+private fun darkFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = Color.White,
+    unfocusedTextColor = Color.White,
+    focusedBorderColor = QuickyPink,
+    unfocusedBorderColor = DarkBorder,
+    focusedContainerColor = DarkSurface,
+    unfocusedContainerColor = DarkSurface,
+    focusedLabelColor = QuickyPink,
+    unfocusedLabelColor = DarkTextSecondary,
+    cursorColor = QuickyPink
+)
+
+@Composable
+private fun chipColors() = FilterChipDefaults.filterChipColors(
+    containerColor = DarkSurface,
+    labelColor = DarkTextSecondary,
+    selectedContainerColor = QuickyPink,
+    selectedLabelColor = Color.White
+)

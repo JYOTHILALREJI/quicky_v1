@@ -1,6 +1,8 @@
 package com.example
 
 import android.app.Activity
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -21,9 +23,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.core.util.Consumer
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.SupabaseAuth
+import com.example.model.AuthGate
 import com.example.model.DiscoveryFilter
 import com.example.ui.SparkTab
 import com.example.ui.SparkViewModel
@@ -88,10 +93,36 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             }
         }
 
+        // ---- Authentication session bootstrap (Auth PRD) ----
+        // Restore the persisted Supabase session on cold start, then
+        // route to the auth screen / onboarding / main app.
+        val activity = context as? ComponentActivity
+        LaunchedEffect(Unit) {
+            viewModel.onAppStart(context)
+            // Cold-start Google OAuth return (quicky://auth-callback#…)
+            activity?.intent?.data?.let { uri ->
+                if (uri.scheme == "quicky") viewModel.handleOAuthRedirect(context, uri)
+            }
+        }
+        // Warm OAuth returns while the activity is already running
+        // (singleTask launchMode reuses this instance).
+        DisposableEffect(activity) {
+            val listener = Consumer<Intent> { intent ->
+                intent?.data?.let { uri ->
+                    if (uri.scheme == "quicky") viewModel.handleOAuthRedirect(context, uri)
+                }
+            }
+            activity?.addOnNewIntentListener(listener)
+            onDispose { activity?.removeOnNewIntentListener(listener) }
+        }
+
         // Back button handling per requirements. Games Hub & Clubs are now
         // reached from the Profile page, so system back returns to Profile
-        // instead of Discover.
-        BackHandler(enabled = state.selectedProfileDetail != null || state.selectedMatchForChat != null || state.selectedClubForDetail != null || state.isLudoActive || state.showPersonalInformationSheet || state.currentTab != SparkTab.DISCOVER) {
+        // instead of Discover. Disabled entirely while signed out or
+        // mid-onboarding — those flows own their back navigation.
+        BackHandler(enabled = state.authGate == AuthGate.SIGNED_IN &&
+                state.isOnboardingComplete &&
+                (state.selectedProfileDetail != null || state.selectedMatchForChat != null || state.selectedClubForDetail != null || state.isLudoActive || state.showPersonalInformationSheet || state.currentTab != SparkTab.DISCOVER)) {
             when {
                 state.isLudoActive -> viewModel.closeLudoGame()
                 state.selectedClubForDetail != null -> viewModel.closeClubDetail()
@@ -105,9 +136,49 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             }
         }
 
-        if (!state.isOnboardingComplete) {
-            OnboardingScreen(onComplete = { viewModel.completeOnboarding() })
-        } else if (state.isLudoActive && state.ludoRoom != null) {
+        when {
+            // Restoring / validating the persisted Supabase session.
+            state.authGate == AuthGate.CHECKING -> {
+                AuthCheckingScreen()
+            }
+
+            // No valid session — email/password + Google OAuth entry.
+            state.authGate == AuthGate.SIGNED_OUT -> {
+                AuthScreen(
+                    isLoading = state.isAuthLoading,
+                    error = state.authError,
+                    notice = state.authNotice,
+                    onSignUp = { email, password -> viewModel.signUp(context, email, password) },
+                    onSignIn = { email, password -> viewModel.signIn(context, email, password) },
+                    onForgotPassword = { email -> viewModel.requestPasswordReset(email) },
+                    onGoogleSignIn = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(SupabaseAuth.googleOAuthUrl()))
+                            )
+                        }
+                    }
+                )
+            }
+
+            // Progressive 4-stage onboarding (welcome + profile creation).
+            !state.isOnboardingComplete -> {
+                OnboardingScreen(
+                    draft = state.onboardingDraft,
+                    interestCatalog = state.interestCatalog,
+                    hobbyCatalog = state.hobbyCatalog,
+                    isUploading = state.onboardingUploading,
+                    isProcessingPhoto = state.isProcessingPhoto,
+                    error = state.onboardingError,
+                    onSaveDraft = { updated -> viewModel.updateOnboardingDraft { updated } },
+                    onStageChanged = { stage -> viewModel.goToOnboardingStage(context, stage) },
+                    onAddPhoto = { uri -> viewModel.addOnboardingPhoto(context, uri) },
+                    onRemovePhoto = { uri -> viewModel.removeOnboardingPhoto(uri) },
+                    onComplete = { viewModel.completeOnboarding(context) }
+                )
+            }
+
+            state.isLudoActive && state.ludoRoom != null -> {
             // 2-PLAYER PREMIUM LUDO GAME ARENA (PRD Section 3 - 10)
             val activeLudoRoom = state.ludoRoom!!
             LudoGameRoomScreen(
@@ -124,7 +195,9 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 onOpenStickerPicker = { viewModel.openStickerPicker() },
                 onOpenPremiumStore = { viewModel.openPremiumStore() }
             )
-        } else if (state.selectedClubForDetail != null) {
+            }
+
+            state.selectedClubForDetail != null -> {
             // CLUB DETAIL & COMMON CHAT (PRD Section 18 & 28)
             val club = state.selectedClubForDetail!!
             val clubMessages = state.clubMessages[club.id] ?: emptyList()
@@ -160,7 +233,9 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                     viewModel.leaveClub(clubId)
                 }
             )
-        } else {
+            }
+
+            else -> {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -335,6 +410,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 }
             }
         }
+        }
     }
 
     // Match Celebration Modal Overlay
@@ -419,6 +495,9 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
         SettingsSheet(
             currentTheme = state.themeMode,
             onThemeChange = { mode -> viewModel.setThemeMode(mode) },
+            onLogout = {
+                viewModel.signOut(context)
+            },
             onDownloadData = {
                 viewModel.showToast("Data export initiated. Download link sent to your verified email.")
             },

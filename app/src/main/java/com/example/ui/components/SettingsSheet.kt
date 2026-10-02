@@ -6,6 +6,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -28,9 +29,11 @@ fun SettingsSheet(
     onThemeChange: (AppThemeMode) -> Unit = {},
     onDownloadData: () -> Unit,
     onDeleteAccount: () -> Unit,
+    onLogout: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var showLogoutConfirmDialog by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -122,7 +125,6 @@ fun SettingsSheet(
             // Account & Data Section
             Text("DATA & PRIVACY", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(modifier = Modifier.height(6.dp))
-
             ListItem(
                 headlineContent = { Text("Download My Data") },
                 supportingContent = { Text("Export a copy of your profile and interaction history") },
@@ -132,6 +134,25 @@ fun SettingsSheet(
                     .clip(RoundedCornerShape(12.dp))
                     .clickable { onDownloadData() }
             )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Log Out (Auth PRD): revokes the Supabase session and returns
+            // to the authentication screen. Account data stays safe in the
+            // database and reloads on the next sign-in.
+            OutlinedButton(
+                onClick = { showLogoutConfirmDialog = true },
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickyPurple),
+                border = androidx.compose.foundation.BorderStroke(1.dp, QuickyPurple),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("logout_button")
+            ) {
+                Icon(imageVector = Icons.AutoMirrored.Filled.Logout, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Log Out")
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -186,6 +207,31 @@ fun SettingsSheet(
 
             Spacer(modifier = Modifier.height(32.dp))
         }
+    }
+
+    if (showLogoutConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showLogoutConfirmDialog = false },
+            title = { Text("Log Out?") },
+            text = { Text("You'll be signed out on this device. Your profile, matches and chats stay safe and reload when you log back in.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showLogoutConfirmDialog = false
+                        onLogout()
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = QuickyPurple)
+                ) {
+                    Text("Log Out")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutConfirmDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     if (showDeleteConfirmDialog) {

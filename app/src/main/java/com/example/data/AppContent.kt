@@ -58,6 +58,36 @@ object AppContent {
     )
 
     // -------------------------------------------------------------
+    // ONBOARDING CATALOGS (Auth & Onboarding PRD stages 1-3).
+    // All lists can be overridden by the Supabase `interests` and
+    // `hobbies` catalog tables so admins can extend them without an
+    // app release (see SupabaseRepository.fetchInterestCatalog).
+    // -------------------------------------------------------------
+
+    /** Stage 2 — maximum selectable interests (custom ones included). */
+    const val MAX_INTERESTS = 20
+
+    val genderOptions = listOf("Male", "Female", "Non-binary", "Prefer not to say", "Other")
+
+    val interestedInOptions = listOf("Men", "Women", "Everyone")
+
+    val lookingForOptions = listOf(
+        "Friendship", "Dating", "Relationship", "Casual Connection",
+        "Long-term Relationship", "Networking", "Gaming Friends",
+        "Socializing", "Open to Anything"
+    )
+
+    val hobbyCatalog = listOf(
+        "Photography", "Playing Cricket", "Painting", "Hiking", "Cooking",
+        "Playing Musical Instruments", "Reading", "Football", "Dancing", "Gaming"
+    )
+
+    val qualificationOptions = listOf(
+        "High School", "Diploma", "Bachelor's Degree", "Master's Degree",
+        "Doctorate", "Professional Qualification", "Other", "Prefer Not to Say"
+    )
+
+    // -------------------------------------------------------------
     // GAME CATALOG (product content — can also be served from
     // Supabase via SupabaseRepository.fetchGamesCatalog())
     // -------------------------------------------------------------

@@ -6,6 +6,115 @@ enum class VisibilityLevel {
     ONLY_ME
 }
 
+// -------------------------------------------------------------
+// AUTHENTICATION & ONBOARDING (Appearance/Auth/Logout PRD)
+// -------------------------------------------------------------
+
+/** Top-level routing gate driven by the Supabase Auth session. */
+enum class AuthGate {
+    /** Restoring / validating a persisted session on cold start. */
+    CHECKING,
+    /** No valid session — show the authentication screen. */
+    SIGNED_OUT,
+    /** Valid session — route by onboarding state. */
+    SIGNED_IN
+}
+
+/** A photo picked during onboarding with its client-side validation state. */
+data class OnboardingPhoto(
+    val uri: String,
+    val mimeType: String = "image/jpeg",
+    val fileSizeBytes: Long = 0L,
+    /** True when ML Kit detected a clearly visible face in this photo. */
+    val faceValidated: Boolean = false,
+    /** Public Storage URL once uploaded to Supabase (null until uploaded). */
+    val remoteUrl: String? = null
+)
+
+/**
+ * Progressive four-stage onboarding draft (PRD stages 1-4).
+ * Persisted locally after every completed stage so an interrupted
+ * onboarding can resume exactly where it stopped.
+ */
+data class OnboardingDraft(
+    val step: Int = 1,
+    val fullName: String = "",
+    val dateOfBirthEpochDay: Long? = null,
+    val gender: String = "",
+    val customGender: String = "",
+    val bio: String = "",
+    val interests: List<String> = emptyList(),
+    val interestedIn: String = "",
+    val lookingFor: List<String> = emptyList(),
+    val qualification: String = "",
+    val hobbies: List<String> = emptyList(),
+    val heightCm: Int? = null,
+    val weightKg: Float? = null,
+    val city: String = "",
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val photos: List<OnboardingPhoto> = emptyList()
+) {
+    /** Calculated age from the picked date of birth (never manually editable). */
+    val calculatedAge: Int?
+        get() = dateOfBirthEpochDay?.let { epochDay ->
+            java.time.LocalDate.ofEpochDay(epochDay).until(java.time.LocalDate.now()).years
+        }
+
+    val displayGender: String
+        get() = if (gender == "Other") customGender.trim().ifEmpty { "Other" } else gender
+
+    // --- Stage validation gates (Next button enabled only when valid) ---
+    val isStage1Valid: Boolean
+        get() = fullName.trim().length in 2..60 &&
+                calculatedAge != null && calculatedAge!! >= 18 &&
+                (gender.isNotEmpty() && (gender != "Other" || customGender.trim().isNotEmpty()))
+
+    val isStage2Valid: Boolean
+        get() = bio.trim().length >= 10 &&
+                interests.isNotEmpty() &&
+                interestedIn.isNotEmpty() &&
+                lookingFor.isNotEmpty()
+
+    val isStage3Valid: Boolean
+        get() = qualification.isNotEmpty()
+
+    val isStage4Valid: Boolean
+        get() = photos.isNotEmpty() && photos.any { it.faceValidated }
+}
+
+/**
+ * Builds the locally rendered [UserProfile] from a completed onboarding
+ * draft. [photoUrls] are the Storage URLs when the upload succeeded, or
+ * the local content uris as an offline fallback.
+ */
+fun OnboardingDraft.toUserProfile(userId: String, photoUrls: List<String>): UserProfile = UserProfile(
+    id = userId,
+    name = fullName.trim(),
+    age = calculatedAge ?: 18,
+    bio = bio.trim(),
+    city = city.trim(),
+    distanceKm = 0,
+    relationshipIntent = lookingFor.firstOrNull() ?: "Open to Anything",
+    gender = displayGender.ifEmpty { "Prefer not to say" },
+    interestedIn = interestedIn.ifEmpty { "Everyone" },
+    educationLevel = qualification,
+    height = heightCm?.let { "$it cm" } ?: "",
+    isVerified = false,
+    isOnline = true,
+    photoResIds = emptyList(),
+    photoUris = photoUrls,
+    interests = interests,
+    hobbies = hobbies,
+    lookingFor = lookingFor,
+    heightCm = heightCm,
+    weightKg = weightKg,
+    dateOfBirth = dateOfBirthEpochDay?.let { java.time.LocalDate.ofEpochDay(it).toString() },
+    profileCompletionScore = 100,
+    missingCompletionItems = emptyList(),
+    compatibilityHighlights = emptyList()
+)
+
 data class UserProfile(
     val id: String,
     val name: String,
@@ -27,8 +136,14 @@ data class UserProfile(
     val characterBadge: String = "The Explorer", // Exactly ONE character badge per user
     val characterDescription: String = "Driven by curiosity, finding unique experiences and spontaneous adventures.",
     val showCharacterBadge: Boolean = true,
-    val photoResIds: List<Int> = emptyList(), // Maximum 3 photos
+    val photoResIds: List<Int> = emptyList(), // Maximum 3 photos (bundled assets)
+    val photoUris: List<String> = emptyList(), // Uploaded/local photo URLs (max 3)
     val interests: List<String> = emptyList(),
+    val hobbies: List<String> = emptyList(),
+    val lookingFor: List<String> = emptyList(),
+    val heightCm: Int? = null,
+    val weightKg: Float? = null, // Optional, independent visibility control
+    val dateOfBirth: String? = null, // ISO date — NEVER exposed publicly
     val lifestyle: Map<String, String> = emptyMap(),
     val fieldVisibility: Map<String, VisibilityLevel> = mapOf(
         "height" to VisibilityLevel.MATCHES_ONLY,

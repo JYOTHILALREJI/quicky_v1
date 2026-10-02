@@ -1,17 +1,27 @@
 package com.example.ui
 
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.R
 import com.example.data.AppContent
+import com.example.data.SupabaseAuth
 import com.example.data.SupabaseRepository
 import com.example.model.*
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlin.coroutines.resume
 
 enum class SparkTab {
     DISCOVER,
@@ -24,6 +34,24 @@ enum class SparkTab {
 
 data class SparkUiState(
     val isOnboardingComplete: Boolean = true,
+
+    // ---- Authentication (Auth & Onboarding PRD) ----
+    val authGate: AuthGate = AuthGate.CHECKING,
+    val authSession: SupabaseAuth.AuthSession? = null,
+    val isAuthLoading: Boolean = false,
+    val authError: String? = null,
+    val authNotice: String? = null,
+
+    // ---- Progressive onboarding draft (PRD stages 1-4) ----
+    val onboardingDraft: OnboardingDraft = OnboardingDraft(),
+    val onboardingUploading: Boolean = false,
+    val onboardingError: String? = null,
+    val isProcessingPhoto: Boolean = false,
+
+    // ---- Admin-manageable catalogs (Supabase `interests` / `hobbies`) ----
+    val interestCatalog: List<String> = AppContent.interestCatalog,
+    val hobbyCatalog: List<String> = AppContent.hobbyCatalog,
+
     val currentTab: SparkTab = SparkTab.DISCOVER,
     val themeMode: AppThemeMode = AppThemeMode.LIGHT, // PRD Section 3: Default is LIGHT
     val userProfile: UserProfile = AppContent.currentUser,
@@ -104,8 +132,420 @@ class SparkViewModel : ViewModel() {
         _uiState.update { it.copy(themeMode = mode, toastMessage = "Theme set to ${mode.name.lowercase().replaceFirstChar { c -> c.uppercase() }}") }
     }
 
-    fun completeOnboarding() {
-        _uiState.update { it.copy(isOnboardingComplete = true) }
+    // ================================================================
+    // AUTHENTICATION & ONBOARDING (Auth & Onboarding PRD)
+    // ================================================================
+
+    /** Application context for draft persistence (never leaks an Activity). */
+    private var appContext: Context? = null
+
+    /** Raw bytes of picked onboarding photos, keyed by content uri. */
+    private val onboardingPhotoBytes = mutableMapOf<String, ByteArray>()
+
+    private val onboardingPrefs = "quicky_onboarding"
+
+    /**
+     * Cold-start entry point: restores the persisted Supabase session
+     * (validating/refreshing tokens in the background) and routes the
+     * app to the auth screen, onboarding or the main experience.
+     * Call exactly once from the UI.
+     */
+    fun onAppStart(context: Context) {
+        if (appContext != null) return
+        appContext = context.applicationContext
+        viewModelScope.launch {
+            if (SupabaseRepository.isConfigured()) {
+                // Admins can extend the catalogs without an app release.
+                SupabaseRepository.fetchInterestCatalog().takeIf { it.isNotEmpty() }?.let { remote ->
+                    _uiState.update { it.copy(interestCatalog = remote) }
+                }
+                SupabaseRepository.fetchHobbyCatalog().takeIf { it.isNotEmpty() }?.let { remote ->
+                    _uiState.update { it.copy(hobbyCatalog = remote) }
+                }
+            }
+            val session = SupabaseAuth.restoreSession(context)
+            if (session == null) {
+                _uiState.update { it.copy(authGate = AuthGate.SIGNED_OUT) }
+            } else {
+                adoptSession(session)
+            }
+        }
+    }
+
+    /** Signs in with email + password. */
+    fun signIn(context: Context, email: String, password: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isAuthLoading = true, authError = null, authNotice = null) }
+            handleAuthResult(SupabaseAuth.signIn(context, email, password))
+        }
+    }
+
+    /** Creates a Supabase Auth account with email + password. */
+    fun signUp(context: Context, email: String, password: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isAuthLoading = true, authError = null, authNotice = null) }
+            handleAuthResult(SupabaseAuth.signUp(context, email, password))
+        }
+    }
+
+    /** Sends the password-recovery email. */
+    fun requestPasswordReset(email: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(authError = null, authNotice = null) }
+            val result = SupabaseAuth.requestPasswordReset(email)
+            _uiState.update {
+                it.copy(
+                    authNotice = if (result.success)
+                        "Reset link sent — check your inbox (and spam folder)."
+                    else result.errorMessage
+                )
+            }
+        }
+    }
+
+    /**
+     * Handles the Google OAuth return deep link
+     * (quicky://auth-callback#access_token=…). Returns true when the
+     * link carried a session.
+     */
+    fun handleOAuthRedirect(context: Context, uri: Uri): Boolean {
+        val session = SupabaseAuth.parseOAuthRedirect(uri) ?: return false
+        viewModelScope.launch {
+            SupabaseAuth.writeSession(context, session)
+            adoptSession(session)
+        }
+        return true
+    }
+
+    /**
+     * Signs out: revokes the session server-side, clears local tokens
+     * and resets all in-memory app state. Profile, matches and chat
+     * history live in the database and reload on the next sign-in.
+     */
+    fun signOut(context: Context) {
+        viewModelScope.launch {
+            SupabaseAuth.signOut(context)
+            onboardingPhotoBytes.clear()
+            _uiState.update {
+                it.copy(
+                    authGate = AuthGate.SIGNED_OUT,
+                    authSession = null,
+                    authError = null,
+                    authNotice = null,
+                    isAuthLoading = false,
+                    isOnboardingComplete = false,
+                    onboardingDraft = OnboardingDraft(),
+                    onboardingUploading = false,
+                    onboardingError = null,
+                    isProcessingPhoto = false,
+                    userProfile = AppContent.currentUser,
+                    currentTab = SparkTab.DISCOVER,
+                    discoveryDeck = emptyList(),
+                    passedHistory = emptyList(),
+                    matchCelebration = null,
+                    matches = emptyList(),
+                    selectedMatchForChat = null,
+                    messages = emptyMap(),
+                    selectedProfileDetail = null,
+                    clubs = emptyList(),
+                    activeClubId = null,
+                    selectedClubForDetail = null,
+                    clubMessages = emptyMap(),
+                    notifications = emptyList(),
+                    interactionInsights = emptyList(),
+                    ludoRoom = null,
+                    isLudoActive = false
+                )
+            }
+        }
+    }
+
+    private suspend fun handleAuthResult(result: SupabaseAuth.AuthResult) {
+        when {
+            result.success && result.session != null -> adoptSession(result.session)
+            result.success && result.needsEmailConfirmation ->
+                _uiState.update {
+                    it.copy(
+                        authNotice = "Account created! Check your email to confirm " +
+                                "your address, then log in."
+                    )
+                }
+            else ->
+                _uiState.update { it.copy(authError = result.errorMessage ?: "Authentication failed.") }
+        }
+        _uiState.update { it.copy(isAuthLoading = false) }
+    }
+
+    /**
+     * Loads the signed-in user's profiles row and routes accordingly:
+     * completed onboarding straight into the app, otherwise into the
+     * onboarding flow — resuming a locally persisted draft if present.
+     */
+    private suspend fun adoptSession(session: SupabaseAuth.AuthSession) {
+        val remote = SupabaseRepository.fetchProfile(session.userId, session.accessToken)
+        if (remote == null) {
+            _uiState.update {
+                it.copy(
+                    authGate = AuthGate.SIGNED_IN,
+                    authSession = session,
+                    isOnboardingComplete = false,
+                    onboardingDraft = appContext?.let { ctx -> readPersistedDraft(ctx) } ?: OnboardingDraft()
+                )
+            }
+        } else {
+            _uiState.update {
+                it.copy(
+                    authGate = AuthGate.SIGNED_IN,
+                    authSession = session,
+                    userProfile = remote.profile,
+                    isOnboardingComplete = remote.onboardingCompleted,
+                    onboardingDraft = if (remote.onboardingCompleted) OnboardingDraft()
+                    else appContext?.let { ctx -> readPersistedDraft(ctx) } ?: OnboardingDraft()
+                )
+            }
+        }
+    }
+
+    /** Field-level draft updates from the onboarding screens. */
+    fun updateOnboardingDraft(update: (OnboardingDraft) -> OnboardingDraft) {
+        _uiState.update { it.copy(onboardingDraft = update(it.onboardingDraft)) }
+    }
+
+    /** Stage navigation + local persistence of the draft. */
+    fun goToOnboardingStage(context: Context, stage: Int) {
+        val draft = _uiState.value.onboardingDraft.copy(step = stage.coerceIn(1, 4))
+        _uiState.update { it.copy(onboardingDraft = draft, onboardingError = null) }
+        persistDraft(context, draft)
+    }
+
+    /**
+     * Picks up a photo from the system photo picker, runs on-device
+     * face validation (ML Kit) and appends it to the draft (max 3).
+     */
+    fun addOnboardingPhoto(context: Context, uri: Uri) {
+        val current = _uiState.value
+        if (current.onboardingDraft.photos.size >= 3) {
+            _uiState.update { it.copy(onboardingError = "You can add up to 3 photos.") }
+            return
+        }
+        if (current.onboardingDraft.photos.any { it.uri == uri.toString() }) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isProcessingPhoto = true, onboardingError = null) }
+            val bytes = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { stream -> stream.readBytes() }
+            }.getOrNull()
+
+            if (bytes == null || bytes.isEmpty()) {
+                _uiState.update {
+                    it.copy(isProcessingPhoto = false, onboardingError = "Couldn't read that photo — try another one.")
+                }
+                return@launch
+            }
+            if (bytes.size > 10 * 1024 * 1024) {
+                _uiState.update {
+                    it.copy(isProcessingPhoto = false, onboardingError = "That photo is too large (max 10 MB).")
+                }
+                return@launch
+            }
+
+            val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+            val faceValidated = detectFace(context, uri)
+            onboardingPhotoBytes[uri.toString()] = bytes
+            _uiState.update {
+                it.copy(
+                    isProcessingPhoto = false,
+                    onboardingDraft = it.onboardingDraft.copy(
+                        photos = it.onboardingDraft.photos + OnboardingPhoto(
+                            uri = uri.toString(),
+                            mimeType = mime,
+                            fileSizeBytes = bytes.size.toLong(),
+                            faceValidated = faceValidated
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    /** Removes a picked photo from the draft. */
+    fun removeOnboardingPhoto(uriString: String) {
+        onboardingPhotoBytes.remove(uriString)
+        _uiState.update {
+            it.copy(
+                onboardingDraft = it.onboardingDraft.copy(
+                    photos = it.onboardingDraft.photos.filterNot { p -> p.uri == uriString }
+                )
+            )
+        }
+    }
+
+    /**
+     * On-device face validation with ML Kit. Returns false when no
+     * clearly visible face is found or the detector is unavailable —
+     * never throws, so a missing model never blocks onboarding.
+     */
+    private suspend fun detectFace(context: Context, uri: Uri): Boolean = runCatching {
+        val image = InputImage.fromFilePath(context, uri)
+        val detector = FaceDetection.getClient(
+            FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .build()
+        )
+        try {
+            suspendCancellableCoroutine { cont ->
+                detector.process(image)
+                    .addOnSuccessListener { faces -> cont.resume(faces.isNotEmpty()) }
+                    .addOnFailureListener { cont.resume(false) }
+            }
+        } finally {
+            detector.close()
+        }
+    }.getOrDefault(false)
+
+    /**
+     * Completes onboarding: uploads photos to Supabase Storage, saves
+     * the profiles row (+ normalized user_interests) and enters the app.
+     * Falls back to local photo uris when the upload is not possible so
+     * the user is never blocked offline.
+     */
+    fun completeOnboarding(context: Context) {
+        val state = _uiState.value
+        val session = state.authSession
+        if (session == null) {
+            _uiState.update { it.copy(onboardingError = "Your session expired — please log in again.") }
+            return
+        }
+        val draft = state.onboardingDraft
+        if (!draft.isStage4Valid) {
+            _uiState.update { it.copy(onboardingError = "Add at least one photo with a clearly visible face.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(onboardingUploading = true, onboardingError = null) }
+
+            val remoteUrls = mutableListOf<String>()
+            for (photo in draft.photos) {
+                val bytes = onboardingPhotoBytes[photo.uri]
+                    ?: runCatching {
+                        context.contentResolver.openInputStream(Uri.parse(photo.uri))?.use { s -> s.readBytes() }
+                    }.getOrNull()
+                val url = if (bytes != null && SupabaseRepository.isConfigured()) {
+                    SupabaseRepository.uploadProfilePhoto(
+                        userId = session.userId,
+                        bytes = bytes,
+                        contentType = photo.mimeType.ifEmpty { "image/jpeg" },
+                        accessToken = session.accessToken
+                    )
+                } else null
+                remoteUrls.add(url ?: photo.uri)
+            }
+
+            val saved = SupabaseRepository.saveOnboardingProfile(
+                session = session,
+                draft = draft,
+                photoUrls = remoteUrls,
+                systemInterests = _uiState.value.interestCatalog
+            )
+
+            val profile = draft.toUserProfile(session.userId, remoteUrls)
+            onboardingPhotoBytes.clear()
+            clearPersistedDraft(context)
+            _uiState.update {
+                it.copy(
+                    onboardingUploading = false,
+                    isOnboardingComplete = true,
+                    userProfile = profile,
+                    toastMessage = if (saved) "Welcome to Quicky, ${profile.name}! 🎉"
+                    else "Profile saved locally — will sync when you're back online."
+                )
+            }
+        }
+    }
+
+    // --- Draft persistence (resume an interrupted onboarding) ---
+
+    private fun persistDraft(context: Context, draft: OnboardingDraft) {
+        runCatching {
+            val photos = JSONArray()
+            draft.photos.forEach { photo ->
+                photos.put(
+                    JSONObject()
+                        .put("uri", photo.uri)
+                        .put("mimeType", photo.mimeType)
+                        .put("fileSizeBytes", photo.fileSizeBytes)
+                        .put("faceValidated", photo.faceValidated)
+                )
+            }
+            context.getSharedPreferences(onboardingPrefs, Context.MODE_PRIVATE)
+                .edit()
+                .putInt("step", draft.step)
+                .putString("fullName", draft.fullName)
+                .putLong("dateOfBirthEpochDay", draft.dateOfBirthEpochDay ?: -1L)
+                .putString("gender", draft.gender)
+                .putString("customGender", draft.customGender)
+                .putString("bio", draft.bio)
+                .putString("interests", JSONArray(draft.interests).toString())
+                .putString("interestedIn", draft.interestedIn)
+                .putString("lookingFor", JSONArray(draft.lookingFor).toString())
+                .putString("qualification", draft.qualification)
+                .putString("hobbies", JSONArray(draft.hobbies).toString())
+                .putInt("heightCm", draft.heightCm ?: -1)
+                .putFloat("weightKg", draft.weightKg ?: -1f)
+                .putString("city", draft.city)
+                .putString("photos", photos.toString())
+                .apply()
+        }
+    }
+
+    private fun readPersistedDraft(context: Context): OnboardingDraft? = runCatching {
+        val prefs = context.getSharedPreferences(onboardingPrefs, Context.MODE_PRIVATE)
+        if (!prefs.contains("step")) return null
+
+        fun stringList(key: String): List<String> = runCatching {
+            val arr = JSONArray(prefs.getString(key, "[]"))
+            buildList { for (i in 0 until arr.length()) add(arr.optString(i)) }
+        }.getOrDefault(emptyList())
+
+        OnboardingDraft(
+            step = prefs.getInt("step", 1),
+            fullName = prefs.getString("fullName", "").orEmpty(),
+            dateOfBirthEpochDay = prefs.getLong("dateOfBirthEpochDay", -1L).takeIf { it > 0 },
+            gender = prefs.getString("gender", "").orEmpty(),
+            customGender = prefs.getString("customGender", "").orEmpty(),
+            bio = prefs.getString("bio", "").orEmpty(),
+            interests = stringList("interests"),
+            interestedIn = prefs.getString("interestedIn", "").orEmpty(),
+            lookingFor = stringList("lookingFor"),
+            qualification = prefs.getString("qualification", "").orEmpty(),
+            hobbies = stringList("hobbies"),
+            heightCm = prefs.getInt("heightCm", -1).takeIf { it > 0 },
+            weightKg = prefs.getFloat("weightKg", -1f).takeIf { it > 0f },
+            city = prefs.getString("city", "").orEmpty(),
+            photos = runCatching {
+                val arr = JSONArray(prefs.getString("photos", "[]"))
+                buildList {
+                    for (i in 0 until arr.length()) {
+                        val p = arr.optJSONObject(i) ?: continue
+                        add(
+                            OnboardingPhoto(
+                                uri = p.optString("uri"),
+                                mimeType = p.optString("mimeType", "image/jpeg"),
+                                fileSizeBytes = p.optLong("fileSizeBytes", 0L),
+                                faceValidated = p.optBoolean("faceValidated", false)
+                            )
+                        )
+                    }
+                }
+            }.getOrDefault(emptyList())
+        )
+    }.getOrNull()
+
+    private fun clearPersistedDraft(context: Context) {
+        runCatching {
+            context.getSharedPreferences(onboardingPrefs, Context.MODE_PRIVATE)
+                .edit().clear().apply()
+        }
     }
 
     fun openProfileDetail(profile: UserProfile) {
@@ -525,7 +965,25 @@ class SparkViewModel : ViewModel() {
     }
 
     fun setPrimaryPhoto(photoIndex: Int) {
-        val photos = _uiState.value.userProfile.photoResIds.toMutableList()
+        val profile = _uiState.value.userProfile
+
+        // Uploaded (remote/local uri) photos — the post-onboarding case.
+        if (profile.photoResIds.isEmpty() && profile.photoUris.isNotEmpty()) {
+            val uris = profile.photoUris.toMutableList()
+            if (photoIndex in uris.indices) {
+                val selected = uris.removeAt(photoIndex)
+                uris.add(0, selected)
+                _uiState.update {
+                    it.copy(
+                        userProfile = it.userProfile.copy(photoUris = uris.take(3)),
+                        toastMessage = "Main profile photo updated! ★"
+                    )
+                }
+            }
+            return
+        }
+
+        val photos = profile.photoResIds.toMutableList()
         if (photoIndex in photos.indices) {
             val selected = photos.removeAt(photoIndex)
             photos.add(0, selected)
@@ -540,7 +998,28 @@ class SparkViewModel : ViewModel() {
     }
 
     fun deletePhoto(photoIndex: Int) {
-        val photos = _uiState.value.userProfile.photoResIds.toMutableList()
+        val profile = _uiState.value.userProfile
+
+        // Uploaded (remote/local uri) photos — the post-onboarding case.
+        if (profile.photoResIds.isEmpty() && profile.photoUris.isNotEmpty()) {
+            if (profile.photoUris.size <= 1) {
+                showToast("At least one profile photo is required.")
+                return
+            }
+            if (photoIndex in profile.photoUris.indices) {
+                val uris = profile.photoUris.toMutableList()
+                uris.removeAt(photoIndex)
+                _uiState.update {
+                    it.copy(
+                        userProfile = it.userProfile.copy(photoUris = uris),
+                        toastMessage = "Photo removed."
+                    )
+                }
+            }
+            return
+        }
+
+        val photos = profile.photoResIds.toMutableList()
         if (photos.size > 1 && photoIndex in photos.indices) {
             photos.removeAt(photoIndex)
             val updatedUser = _uiState.value.userProfile.copy(photoResIds = photos)

@@ -34,10 +34,14 @@ object SupabaseClient {
             .build()
     }
 
-    private fun authHeaders(): Map<String, String> = mapOf(
-        "apikey" to SupabaseConfig.SUPABASE_ANON_KEY,
-        "Authorization" to "Bearer ${SupabaseConfig.SUPABASE_ANON_KEY}"
-    )
+    private fun authHeaders(accessToken: String? = null): Map<String, String> {
+        // User access token (Supabase Auth) when present, anon key otherwise.
+        val bearer = accessToken ?: SupabaseConfig.SUPABASE_ANON_KEY
+        return mapOf(
+            "apikey" to SupabaseConfig.SUPABASE_ANON_KEY,
+            "Authorization" to "Bearer $bearer"
+        )
+    }
 
     private fun buildUrl(path: String, query: Map<String, String>): String {
         val base = "${SupabaseConfig.SUPABASE_URL}$path"
@@ -53,17 +57,25 @@ object SupabaseClient {
      * @param path   e.g. "/rest/v1/messages"
      * @param query  URL query params, e.g. mapOf("select" to "*", "club_id" to "eq.123")
      * @param body   optional JSON body (POST/PATCH)
+     * @param accessToken Supabase Auth user JWT — sent as the Bearer token
+     *                    so RLS policies evaluate the signed-in user.
+     * @param prefer optional PostgREST `Prefer` header value, e.g.
+     *               "return=minimal" or "resolution=merge-duplicates"
      * @return raw response body string
      */
     suspend fun rest(
         method: String,
         path: String,
         query: Map<String, String> = emptyMap(),
-        body: String? = null
+        body: String? = null,
+        accessToken: String? = null,
+        prefer: String? = null
     ): String = withContext(Dispatchers.IO) {
         val builder = Request.Builder()
             .url(buildUrl(path, query))
-            .apply { authHeaders().forEach { (k, v) -> header(k, v) } }
+            .apply { authHeaders(accessToken).forEach { (k, v) -> header(k, v) } }
+
+        if (prefer != null) builder.header("Prefer", prefer)
 
         when (method.uppercase()) {
             "POST" -> builder.post((body ?: "{}").toRequestBody(JSON))
@@ -90,18 +102,21 @@ object SupabaseClient {
      * @param objectPath  path inside the bucket, e.g. "users/u123/avatar.jpg"
      * @param bytes       file content
      * @param contentType MIME type, e.g. "image/jpeg"
+     * @param accessToken Supabase Auth user JWT — required for buckets whose
+     *                    upload policies demand an authenticated user
      * @return the storage key of the uploaded object, or null on failure
      */
     suspend fun storageUpload(
         bucket: String,
         objectPath: String,
         bytes: ByteArray,
-        contentType: String
+        contentType: String,
+        accessToken: String? = null
     ): String? = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
                 .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$objectPath")
-                .apply { authHeaders().forEach { (k, v) -> header(k, v) } }
+                .apply { authHeaders(accessToken).forEach { (k, v) -> header(k, v) } }
                 .header("Content-Type", contentType)
                 .header("x-upsert", "true")
                 .put(bytes.toRequestBody(contentType.toMediaType()))
