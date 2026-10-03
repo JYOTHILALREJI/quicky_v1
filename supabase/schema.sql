@@ -1100,6 +1100,12 @@ create trigger trg_club_deletion
 -- ----------------------------------------------------------------------------
 -- premium_gate() returns whether the caller has Quicky Gold.
 --
+-- Matches the REAL public.subscriptions columns: tier (FREE/PLUS/GOLD),
+-- is_active, expires_at, started_at. A caller is premium when their most
+-- recent subscription row is active, of a paid tier, and not expired.
+-- (p_user_id is compared as text so a malformed id can never raise —
+-- unknown/invalid ids simply return false.)
+--
 -- QA OVERRIDE (v2.1): to validate every premium feature end-to-end before
 -- v2.2 re-enables monetization, flip the constant below to true IN A
 -- QA-SPECIFIC Supabase project only — NEVER in production:
@@ -1112,13 +1118,15 @@ returns boolean
 language sql
 stable
 security definer
+set search_path = public
 as $$
   select coalesce(
-    (select (s->>'is_premium')::boolean
+    (select s.is_active
+       and (s.expires_at is null or s.expires_at > now())
+       and s.tier in ('PLUS', 'GOLD')
      from public.subscriptions s
-     where s.user_id = p_user_id
-       and s.status = 'ACTIVE'
-     order by s.created_at desc
+     where s.user_id::text = p_user_id
+     order by s.started_at desc
      limit 1),
     false
   );
