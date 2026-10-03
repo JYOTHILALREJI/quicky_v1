@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.ui.components.CassyGradientButton
 import com.example.ui.theme.*
 
 /**
@@ -343,37 +344,18 @@ fun AuthScreen(
 
                 Spacer(modifier = Modifier.height(22.dp))
 
-                // ---- Primary action ----
-                Button(
+                // ---- Primary action: Cassy gradient pill (PRD §5.4) ----
+                CassyGradientButton(
                     onClick = { submit() },
-                    enabled = formValid && !isLoading,
-                    shape = RoundedCornerShape(26.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = QuickyPink,
-                        disabledContainerColor = LightSurfaceHighlight
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp)
-                        .testTag("auth_submit_button")
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(
-                            color = Color.White,
-                            strokeWidth = 2.5.dp,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    } else {
-                        Text(
-                            text = when {
-                                isSignUp -> "Create Account"
-                                needsOtp -> "Verify & Sign In"
-                                else -> "Log In"
-                            },
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-                    }
-                }
+                    enabled = formValid,
+                    isLoading = isLoading,
+                    text = when {
+                        isSignUp -> "Create Account"
+                        needsOtp -> "Verify & Sign In"
+                        else -> "Log In"
+                    },
+                    modifier = Modifier.testTag("auth_submit_button")
+                )
 
                 // ---- Forgot password (log-in only, hidden while verifying) ----
                 if (!isSignUp && !needsOtp) {

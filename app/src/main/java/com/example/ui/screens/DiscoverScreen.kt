@@ -15,6 +15,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.UserProfile
+import com.example.ui.components.CassyGradientButton
 import com.example.ui.components.ProfileCard
 import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.DarkTextSecondary
@@ -82,16 +83,14 @@ fun DiscoverScreen(
                         textAlign = TextAlign.Center
                     )
                     Spacer(modifier = Modifier.height(24.dp))
-                    Button(
+                    // Cassy gradient pill CTA (PRD §5.4)
+                    CassyGradientButton(
                         onClick = onResetDeck,
-                        colors = ButtonDefaults.buttonColors(containerColor = SparkRose),
-                        shape = RoundedCornerShape(24.dp),
+                        text = "Reset Deck",
+                        leadingIcon = Icons.Filled.Refresh,
+                        height = 48,
                         modifier = Modifier.testTag("reset_deck_button")
-                    ) {
-                        Icon(imageVector = Icons.Filled.Refresh, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Reset Deck", fontWeight = FontWeight.Bold)
-                    }
+                    )
                 }
             }
         }

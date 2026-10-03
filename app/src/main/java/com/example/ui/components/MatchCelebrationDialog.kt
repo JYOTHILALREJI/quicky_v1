@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,7 +37,17 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.R
 import com.example.data.AppContent
 import com.example.model.UserProfile
-import com.example.ui.theme.*
+import com.example.ui.theme.CassyAccent
+import com.example.ui.theme.CassyPrimary
+import com.example.ui.theme.CassyPrimaryGradientEnd
+import com.example.ui.theme.CassySuccess
+import com.example.ui.theme.DarkTextMuted
+import com.example.ui.theme.DarkTextSecondary
+import com.example.ui.theme.SparkGold
+import com.example.ui.theme.SparkRose
+import com.example.ui.theme.SparkPurple
+import com.example.ui.theme.cassyPrimaryGradient
+import com.example.ui.theme.cassyVerticalGradient
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.cos
@@ -94,9 +105,17 @@ fun MatchCelebrationDialog(
         label = "halo_pulse"
     )
 
-    // Pre-calculate celebratory particles
+    // Pre-calculate celebratory particles — Cassy palette: rosewood, blush,
+    // champagne, soft rose, ivory (PRD §5.4 "Match Modal" celebration).
     val particles = remember {
-        val colors = listOf(SparkRose, SparkGold, SparkPurple, Color(0xFF38BDF8), Color(0xFFFF6584), Color.White)
+        val colors = listOf(
+            CassyPrimary,
+            CassyPrimaryGradientEnd,
+            CassyAccent,
+            Color(0xFFD4B88C),
+            Color(0xFFE88B9A),
+            Color(0xFFFFF6F0)
+        )
         List(38) { i ->
             MatchParticle(
                 angleRad = (i.toFloat() / 38f) * 2f * Math.PI.toFloat() + (Random.nextFloat() * 0.2f - 0.1f),
@@ -177,9 +196,9 @@ fun MatchCelebrationDialog(
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            Color(0xFF0F0A1A).copy(alpha = 0.96f),
-                            Color(0xFF320E28).copy(alpha = 0.98f),
-                            Color(0xFF13091B)
+                            Color(0xFF120A0E).copy(alpha = 0.97f),
+                            Color(0xFF3B1A24).copy(alpha = 0.98f),
+                            Color(0xFF160D12)
                         )
                     )
                 )
@@ -258,9 +277,9 @@ fun MatchCelebrationDialog(
             ) {
                 // Header Badge
                 Surface(
-                    color = SparkRose.copy(alpha = 0.2f),
+                    color = CassyPrimary.copy(alpha = 0.20f),
                     shape = RoundedCornerShape(16.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, SparkRose.copy(alpha = 0.8f)),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, CassyPrimaryGradientEnd.copy(alpha = 0.8f)),
                     modifier = Modifier.graphicsLayer {
                         alpha = contentAlpha.value
                         translationY = -contentSlideY.value
@@ -281,7 +300,7 @@ fun MatchCelebrationDialog(
                                 fontWeight = FontWeight.ExtraBold,
                                 letterSpacing = 2.sp
                             ),
-                            color = SparkRose
+                            color = CassyPrimaryGradientEnd
                         )
                     }
                 }
@@ -331,8 +350,10 @@ fun MatchCelebrationDialog(
                     val leftRotation = -14f * (1f - p) - 3f
                     val rightRotation = 14f * (1f - p) + 3f
 
-                    // Left avatar: Current User
-                    val myPhoto = AppContent.currentUser.photoResIds.firstOrNull() ?: R.drawable.img_onboarding_hero
+                    // Left avatar: Current User (remote photo wins, then bundled)
+                    val myPhoto = AppContent.currentUser.photoUris.firstOrNull()
+                    val myPhotoRes = AppContent.currentUser.photoResIds.firstOrNull()
+                        ?: R.drawable.img_onboarding_hero
                     Box(
                         modifier = Modifier
                             .offset(x = leftOffsetXDp)
@@ -354,19 +375,33 @@ fun MatchCelebrationDialog(
                                     CircleShape
                                 )
                         )
-                        Image(
-                            painter = painterResource(id = myPhoto),
-                            contentDescription = "My avatar",
-                            modifier = Modifier
-                                .size(108.dp)
-                                .clip(CircleShape)
-                                .border(2.dp, Color.White, CircleShape),
-                            contentScale = ContentScale.Crop
-                        )
+                        if (myPhoto != null) {
+                            coil.compose.AsyncImage(
+                                model = myPhoto,
+                                contentDescription = "My avatar",
+                                modifier = Modifier
+                                    .size(108.dp)
+                                    .clip(CircleShape)
+                                    .border(2.dp, Color.White, CircleShape),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Image(
+                                painter = painterResource(id = myPhotoRes),
+                                contentDescription = "My avatar",
+                                modifier = Modifier
+                                    .size(108.dp)
+                                    .clip(CircleShape)
+                                    .border(2.dp, Color.White, CircleShape),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
                     }
 
-                    // Right avatar: Matched Profile
-                    val matchPhoto = matchedProfile.photoResIds.firstOrNull() ?: R.drawable.img_profile_sarah
+                    // Right avatar: Matched Profile (remote photo wins, then bundled)
+                    val matchPhotoUri = matchedProfile.photoUris.firstOrNull()
+                    val matchPhotoRes = matchedProfile.photoResIds.firstOrNull()
+                        ?: R.drawable.img_profile_sarah
                     Box(
                         modifier = Modifier
                             .offset(x = rightOffsetXDp)
@@ -388,15 +423,27 @@ fun MatchCelebrationDialog(
                                     CircleShape
                                 )
                         )
-                        Image(
-                            painter = painterResource(id = matchPhoto),
-                            contentDescription = "${matchedProfile.name}'s avatar",
-                            modifier = Modifier
-                                .size(108.dp)
-                                .clip(CircleShape)
-                                .border(2.dp, Color.White, CircleShape),
-                            contentScale = ContentScale.Crop
-                        )
+                        if (matchPhotoUri != null) {
+                            coil.compose.AsyncImage(
+                                model = matchPhotoUri,
+                                contentDescription = "${matchedProfile.name}'s avatar",
+                                modifier = Modifier
+                                    .size(108.dp)
+                                    .clip(CircleShape)
+                                    .border(2.dp, Color.White, CircleShape),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Image(
+                                painter = painterResource(id = matchPhotoRes),
+                                contentDescription = "${matchedProfile.name}'s avatar",
+                                modifier = Modifier
+                                    .size(108.dp)
+                                    .clip(CircleShape)
+                                    .border(2.dp, Color.White, CircleShape),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
                     }
 
                     // Floating Center Heart with Elastic Collision Explosion & Heartbeat Pulse
@@ -462,38 +509,57 @@ fun MatchCelebrationDialog(
                         },
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Primary CTA: Send Message
-                    Button(
-                        onClick = onSendMessage,
+                    // Primary CTA: Send Message — signature Cassy gradient fill
+                    // (PRD §5.4: gradient CTA on the match modal).
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(52.dp)
-                            .testTag("celebration_send_message"),
-                        colors = ButtonDefaults.buttonColors(containerColor = SparkRose),
-                        shape = RoundedCornerShape(26.dp)
+                            .graphicsLayer {
+                                val scale = if (heartPopScale.value > 0.9f) 1f else 0.96f
+                                scaleX = scale
+                                scaleY = scale
+                            }
+                            .clip(RoundedCornerShape(percent = 50))
+                            .background(cassyPrimaryGradient(isDark = true))
+                            .testTag("celebration_send_message")
+                            .clickable { onSendMessage() }
                     ) {
-                        Icon(imageVector = Icons.Outlined.ChatBubbleOutline, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Send Message",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                        )
+                        Row(
+                            modifier = Modifier.align(Alignment.Center),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.ChatBubbleOutline,
+                                contentDescription = null,
+                                tint = Color(0xFF2A0F16)
+                            )
+                            Text(
+                                text = "Send Message",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = Color(0xFF2A0F16)
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // Secondary CTA: Play Truth or Dare Game
+                    // Secondary CTA: Play Truth or Dare Game — champagne glass outline
                     OutlinedButton(
                         onClick = onPlayGame,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(52.dp)
                             .testTag("celebration_play_game"),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = SparkPurple),
-                        border = androidx.compose.foundation.BorderStroke(1.5.dp, SparkPurple),
-                        shape = RoundedCornerShape(26.dp)
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.06f),
+                            contentColor = Color(0xFFE2C9A2)
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFFD4B88C).copy(alpha = 0.8f)),
+                        shape = RoundedCornerShape(percent = 50)
                     ) {
-                        Icon(imageVector = Icons.Filled.SportsEsports, contentDescription = null, tint = SparkPurple)
+                        Icon(imageVector = Icons.Filled.SportsEsports, contentDescription = null, tint = Color(0xFFE2C9A2))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "Play Truth or Dare 🎲",

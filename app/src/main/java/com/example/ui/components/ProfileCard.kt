@@ -16,7 +16,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -45,7 +47,14 @@ fun ProfileCard(
     bottomContentInset: Dp = 0.dp
 ) {
     var currentPhotoIndex by remember(profile.id) { mutableIntStateOf(0) }
-    val photoCount = profile.photoResIds.size.coerceAtLeast(1)
+    // Photos may be remote URLs (server-served candidates) or bundled
+    // drawables — remote wins, drawable is the fallback.
+    val totalPhotos = maxOf(profile.photoUris.size, profile.photoResIds.size)
+    val photoCount = totalPhotos.coerceAtLeast(1)
+    // Cassy micro-interaction (PRD §5.5): light haptic impact the moment
+    // a decision button fires — same cue users feel crossing the swipe
+    // threshold in gesture-driven decks.
+    val haptics = LocalHapticFeedback.current
 
     Card(
         modifier = modifier
@@ -56,18 +65,30 @@ fun ProfileCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            val currentPhotoRes = if (profile.photoResIds.isNotEmpty()) {
-                profile.photoResIds[currentPhotoIndex % profile.photoResIds.size]
-            } else {
-                R.drawable.img_onboarding_hero
-            }
-
-            Image(
-                painter = painterResource(id = currentPhotoRes),
-                contentDescription = "${profile.name}'s photo",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
+            // Current photo: prefer remote URL, fall back to drawable, then hero
+            val currentPhotoUri = profile.photoUris.getOrNull(
+                currentPhotoIndex % maxOf(1, profile.photoUris.size)
             )
+            val currentPhotoRes = profile.photoResIds.getOrNull(
+                currentPhotoIndex % maxOf(1, profile.photoResIds.size)
+            )
+            if (currentPhotoUri != null) {
+                coil.compose.AsyncImage(
+                    model = currentPhotoUri,
+                    contentDescription = "${profile.name}'s photo",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Image(
+                    painter = painterResource(
+                        id = currentPhotoRes ?: R.drawable.img_onboarding_hero
+                    ),
+                    contentDescription = "${profile.name}'s photo",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
 
             // Tap zones to cycle photos (max 3 photos)
             Row(modifier = Modifier.fillMaxSize()) {
@@ -104,10 +125,43 @@ fun ProfileCard(
                                 .height(4.dp)
                                 .clip(RoundedCornerShape(2.dp))
                                 .background(
-                                    if (index == currentPhotoIndex) Color.White else Color.White.copy(alpha = 0.4f)
+                                    if (index == currentPhotoIndex) CassyPrimaryGradientEnd else Color.White.copy(alpha = 0.35f)
                                 )
                         )
                     }
+                }
+            }
+
+            // Smart-Deck compatibility badge (PRD §8.1) — a subtle champagne
+            // pill at the TOP-LEFT corner showing the shared-interest score.
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = Color.Black.copy(alpha = 0.45f),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    CassyAccent.copy(alpha = 0.75f)
+                ),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 22.dp, start = 16.dp)
+                    .testTag("compatibility_badge_${profile.id}")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Favorite,
+                        contentDescription = null,
+                        tint = CassyPrimaryGradientEnd,
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Text(
+                        text = "${profile.compatibilityScore}% MATCH",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
                 }
             }
 
@@ -167,7 +221,8 @@ fun ProfileCard(
                 }
             }
 
-            // Cinematic Gradient Overlay for readable profile content
+            // Cinematic Cassy gradient scrim — a warm rosewood-tinted ink
+            // wash keeps the profile content readable while feeling curated.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -177,8 +232,8 @@ fun ProfileCard(
                         Brush.verticalGradient(
                             colors = listOf(
                                 Color.Transparent,
-                                Color.Black.copy(alpha = 0.55f),
-                                Color.Black.copy(alpha = 0.95f)
+                                Color(0xFF1A0E12).copy(alpha = 0.62f),
+                                Color(0xFF120A0E).copy(alpha = 0.96f)
                             )
                         )
                     )
@@ -289,7 +344,10 @@ fun ProfileCard(
                 ) {
                     // Rewind
                     FilledIconButton(
-                        onClick = onRewind,
+                        onClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onRewind()
+                        },
                         modifier = Modifier
                             .size(46.dp)
                             .testTag("action_rewind"),
@@ -303,7 +361,10 @@ fun ProfileCard(
 
                     // Pass
                     FilledIconButton(
-                        onClick = onPass,
+                        onClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onPass()
+                        },
                         modifier = Modifier
                             .size(56.dp)
                             .testTag("action_pass"),
@@ -321,7 +382,10 @@ fun ProfileCard(
 
                     // Super Like
                     FilledIconButton(
-                        onClick = onSuperLike,
+                        onClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onSuperLike()
+                        },
                         modifier = Modifier
                             .size(46.dp)
                             .testTag("action_super_like"),
@@ -333,9 +397,12 @@ fun ProfileCard(
                         Icon(imageVector = Icons.Filled.Star, contentDescription = "Super Like")
                     }
 
-                    // Like (Quicky Pink)
+                    // Like (Cassy rosewood gradient pill)
                     FilledIconButton(
-                        onClick = onLike,
+                        onClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onLike()
+                        },
                         modifier = Modifier
                             .size(56.dp)
                             .testTag("action_like"),

@@ -389,6 +389,8 @@ class SparkViewModel : ViewModel() {
                     else appContext?.let { ctx -> readPersistedDraft(ctx) } ?: OnboardingDraft()
                 )
             }
+            // v2: fill the discovery deck from the server-side ranked RPC.
+            if (remote.onboardingCompleted) autoLoadDiscoveryDeck()
         }
     }
 
@@ -637,6 +639,8 @@ class SparkViewModel : ViewModel() {
                     else "Profile saved locally — will sync when you're back online."
                 )
             }
+            // v2: start the ranked server-side discovery deck right away.
+            autoLoadDiscoveryDeck()
         }
     }
 
@@ -788,6 +792,22 @@ class SparkViewModel : ViewModel() {
                     }
                 )
             }
+
+            // v2 hardening: persist the swipe server-side — the record_swipe
+            // RPC is rate-limited and creates the match row atomically when
+            // the like is mutual (optimistic UI above stays as-is).
+            _uiState.value.authSession?.let { session ->
+                val result = SupabaseRepository.recordSwipe(
+                    session = session,
+                    targetUserId = profile.id,
+                    action = if (isSuperLike) "SUPER_LIKE" else "LIKE"
+                )
+                if (result == "RATE_LIMITED_HOURLY" || result == "RATE_LIMITED_DAILY") {
+                    _uiState.update {
+                        it.copy(toastMessage = "Slow down — swipe limit reached. Take a breather! ⏳")
+                    }
+                }
+            }
         }
     }
 
@@ -807,18 +827,90 @@ class SparkViewModel : ViewModel() {
                 passedHistory = updatedPassed
             )
         }
+
+        // v2 hardening: passes are persisted server-side too (feeds the
+        // already-swiped exclusion in get_discovery_profiles).
+        _uiState.value.authSession?.let { session ->
+            viewModelScope.launch {
+                SupabaseRepository.recordSwipe(
+                    session = session,
+                    targetUserId = profile.id,
+                    action = "PASS"
+                )
+            }
+        }
     }
 
     /**
-     * Refreshes the discovery deck.
-     * TODO(Supabase): fetch candidate profiles from the `profiles` table
-     * once remote image URLs replace local drawable res IDs.
+     * Refreshes the discovery deck. When Supabase is configured and the
+     * v2 RPC is deployed, candidates come from `get_discovery_profiles` —
+     * filtered AND ranked server-side (age, distance, gender, intent,
+     * verification, occupation, shared interests, already-swiped
+     * exclusion, compatibility score).
      */
     fun resetDiscoveryDeck() {
-        if (!SupabaseRepository.isConfigured()) {
+        val state = _uiState.value
+        val session = state.authSession
+        if (!SupabaseRepository.isConfigured() || session == null) {
             showToast("Connect your Supabase credentials in SupabaseConfig.kt to load real profiles.")
-        } else {
-            showToast("No more profiles to discover right now. Check back soon!")
+            return
+        }
+        viewModelScope.launch {
+            val candidates = fetchRankedDiscoveryCandidates(session)
+            when {
+                candidates == null -> showToast(
+                    "Discovery service not reachable — run the updated supabase/schema.sql (v2 section)."
+                )
+                candidates.isEmpty() ->
+                    showToast("No more profiles to discover right now. Check back soon!")
+                else -> _uiState.update { it.copy(discoveryDeck = candidates) }
+            }
+        }
+    }
+
+    /**
+     * Fetches ranked candidates for the CURRENT discovery preferences via
+     * the server-side RPC. Returns null when the RPC is unavailable so
+     * callers can keep the existing deck untouched.
+     */
+    private suspend fun fetchRankedDiscoveryCandidates(
+        session: SupabaseAuth.AuthSession
+    ): List<UserProfile>? {
+        val prefs = _uiState.value.discoveryPreferences
+        return SupabaseRepository.fetchDiscoveryCandidates(
+            session = session,
+            minAge = prefs.minAge,
+            maxAge = prefs.maxAge,
+            maxDistanceKm = prefs.distanceKm,
+            gender = when (prefs.whoDoYouWantToSee) {
+                "Men" -> "Male"
+                "Women" -> "Female"
+                else -> null
+            },
+            intent = prefs.relationshipIntent.takeUnless {
+                it.isBlank() || it.equals("Any", ignoreCase = true)
+            },
+            verifiedOnly = prefs.verifiedOnly,
+            occupation = prefs.occupation.takeIf { it.isNotBlank() },
+            sharedInterests = prefs.interests
+        )
+    }
+
+    /**
+     * Auto-fills an empty deck from the server after sign-in or
+     * onboarding completion (no toast — silent best-effort).
+     */
+    private fun autoLoadDiscoveryDeck() {
+        val state = _uiState.value
+        val session = state.authSession ?: return
+        if (!SupabaseRepository.isConfigured() || !state.isOnboardingComplete) return
+        if (state.discoveryDeck.isNotEmpty()) return
+        viewModelScope.launch {
+            fetchRankedDiscoveryCandidates(session)?.let { candidates ->
+                if (candidates.isNotEmpty()) {
+                    _uiState.update { it.copy(discoveryDeck = candidates) }
+                }
+            }
         }
     }
 

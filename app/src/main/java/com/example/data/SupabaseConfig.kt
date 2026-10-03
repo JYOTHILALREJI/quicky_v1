@@ -48,6 +48,13 @@ object SupabaseConfig {
     const val TABLE_GAMES = "games"
     const val TABLE_GAME_PROMPTS = "game_prompts"
 
+    // ------------------------------------------------------------
+    // PostgREST RPC functions (v2 "Premium Cassy" hardening —
+    // deploy via supabase/schema.sql, section v2.3 / v2.4)
+    // ------------------------------------------------------------
+    const val RPC_GET_DISCOVERY_PROFILES = "get_discovery_profiles"
+    const val RPC_RECORD_SWIPE = "record_swipe"
+
     /**
      * True once real credentials have been filled in above.
      * The app stays fully offline / empty until then.

@@ -32,8 +32,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -48,6 +52,8 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.AppContent
 import com.example.model.OnboardingDraft
+import com.example.ui.components.CassyGradientButton
+import com.example.ui.components.cassyCinematicBrush
 import com.example.ui.theme.*
 
 /**
@@ -105,13 +111,15 @@ fun OnboardingScreen(
     // System back moves back one stage (disabled on the welcome step).
     BackHandler(enabled = stage > 0) { goToStage(stage - 1) }
 
-    // The onboarding flow always renders in the light Quicky theme,
+    // The onboarding flow always renders in the light Cassy theme,
     // independent of the in-app light/dark mode setting.
     QuickyTheme(darkTheme = false) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(LightBg)
+                // Cassy cinematic full-bleed gradient (PRD §5.4): a warm
+                // ivory-to-blush wash that deepens towards the bottom.
+                .background(cassyCinematicBrush())
         ) {
         if (stage == 0) {
             WelcomeStage(
@@ -308,24 +316,13 @@ private fun WelcomeStage(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            Button(
+            // Cassy primary CTA — gradient pill (PRD §5.4)
+            CassyGradientButton(
                 onClick = onGetStarted,
                 enabled = isAgeConfirmed,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("onboarding_continue_button"),
-                shape = RoundedCornerShape(26.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = QuickyPink,
-                    disabledContainerColor = LightSurfaceHighlight
-                )
-            ) {
-                Text(
-                    text = "Get Started",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                )
-            }
+                text = "Get Started",
+                modifier = Modifier.testTag("onboarding_continue_button")
+            )
         }
     }
 }
@@ -336,53 +333,96 @@ private fun WelcomeStage(
 
 @Composable
 private fun OnboardingHeader(stage: Int, onBack: () -> Unit) {
-    Column(modifier = Modifier.padding(horizontal = 20.dp)) {
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier
-                    .size(40.dp)
-                    .testTag("onboarding_back_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = LightTextPrimary
-                )
-            }
-            Column {
-                Text(
-                    text = when (stage) {
-                        1 -> "Let's start with the basics"
-                        2 -> "Show off your personality"
-                        3 -> "A bit of background"
-                        else -> "Add your photos"
-                    },
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = LightTextPrimary
-                )
-                Text(
-                    text = "Step $stage of 4",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = LightTextSecondary
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(12.dp))
-        LinearProgressIndicator(
-            progress = { stage / 4f },
-            color = QuickyPink,
-            trackColor = LightSurfaceHighlight,
+    Row(
+        modifier = Modifier.padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(
+            onClick = onBack,
             modifier = Modifier
-                .fillMaxWidth()
-                .height(6.dp)
-                .clip(RoundedCornerShape(3.dp))
+                .size(40.dp)
+                .testTag("onboarding_back_button")
+        ) {
+            Icon(
+                imageVector = Icons.Filled.ArrowBack,
+                contentDescription = "Back",
+                tint = LightTextPrimary
+            )
+        }
+        Column {
+            Text(
+                text = when (stage) {
+                    1 -> "Let's start with the basics"
+                    2 -> "Show off your personality"
+                    3 -> "A bit of background"
+                    else -> "Add your photos"
+                },
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = LightTextPrimary
+            )
+            Text(
+                text = "Step $stage of 4",
+                style = MaterialTheme.typography.labelMedium,
+                color = LightTextSecondary
+            )
+        }
+        Spacer(modifier = Modifier.weight(1f))
+        // Cassy progress ring (PRD §5.4) replaces the flat linear bar —
+        // a champagne-track ring with a rosewood gradient sweep.
+        CassyProgressRing(
+            progress = stage / 4f,
+            label = "$stage/4"
         )
-        Spacer(modifier = Modifier.height(8.dp))
+    }
+    Spacer(modifier = Modifier.height(14.dp))
+}
+
+/**
+ * Cassy onboarding progress ring — gradient sweep over a champagne track
+ * with the step counter in the center.
+ */
+@Composable
+private fun CassyProgressRing(progress: Float, label: String) {
+    val animatedProgress by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = progress.coerceIn(0f, 1f),
+        animationSpec = androidx.compose.animation.core.tween(durationMillis = 420),
+        label = "onboarding_ring"
+    )
+    Box(contentAlignment = Alignment.Center) {
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(44.dp)) {
+            val strokePx = 4.5.dp.toPx()
+            val inset = strokePx / 2 + 1f
+            val arcSize = Size(size.width - inset * 2, size.height - inset * 2)
+            val topLeft = Offset(inset, inset)
+
+            // Champagne track
+            drawArc(
+                color = CassyAccent.copy(alpha = 0.35f),
+                startAngle = -90f,
+                sweepAngle = 360f,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = Stroke(width = strokePx, cap = StrokeCap.Round)
+            )
+            // Rosewood sweep
+            drawArc(
+                brush = Brush.sweepGradient(
+                    listOf(CassyPrimary, CassyPrimaryGradientEnd)
+                ),
+                startAngle = -90f,
+                sweepAngle = 360f * animatedProgress,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = Stroke(width = strokePx, cap = StrokeCap.Round)
+            )
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+            color = LightTextSecondary
+        )
     }
 }
 
@@ -394,7 +434,7 @@ private fun OnboardingFooter(
     error: String?,
     onNext: () -> Unit
 ) {
-    Surface(color = LightBg) {
+    Surface(color = Color.Transparent) {
         Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
             if (error != null) {
                 Text(
@@ -404,32 +444,15 @@ private fun OnboardingFooter(
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
             }
-            Button(
+            // Cassy primary CTA — rosewood→blush gradient pill (PRD §5.4)
+            // with the upload spinner built in.
+            CassyGradientButton(
                 onClick = onNext,
                 enabled = enabled,
-                shape = RoundedCornerShape(26.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = QuickyPink,
-                    disabledContainerColor = LightSurfaceHighlight
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("onboarding_next_button")
-            ) {
-                if (isUploading) {
-                    CircularProgressIndicator(
-                        color = Color.White,
-                        strokeWidth = 2.5.dp,
-                        modifier = Modifier.size(22.dp)
-                    )
-                } else {
-                    Text(
-                        text = if (stage == 4) "Finish & Enter Quicky" else "Continue",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                }
-            }
+                isLoading = isUploading,
+                text = if (stage == 4) "Finish & Enter Quicky" else "Continue",
+                modifier = Modifier.testTag("onboarding_next_button")
+            )
         }
     }
 }

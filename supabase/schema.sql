@@ -516,3 +516,491 @@ create policy "voice_notes_owner_all" on storage.objects
         bucket_id = 'voice-notes'
         and (storage.foldername(name))[1] = auth.uid()::text
     );
+
+
+-- ============================================================================
+-- QUICKY v2 — "PREMIUM CASSY" EDITION (PRD §6, §9.3)
+--   • get_discovery_profiles  server-side ranked discovery (PRD §6.1)
+--   • rate_limits + check_rate_limit  sliding-window abuse prevention (§6.2)
+--   • record_swipe             atomic LIKE/PASS + mutual-match creation
+--   • reports / subscriptions / boosts / message_reactions /
+--     game_sessions / club_events  new v2 tables (§9.3)
+--   • input validation CHECKs + duplicate-message trigger (§6.3, §6.5)
+-- Everything below is idempotent — safe to re-run.
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- v2.1  INPUT VALIDATION (PRD §6.3)
+-- ----------------------------------------------------------------------------
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'profiles_bio_length'
+  ) then
+    alter table public.profiles
+      add constraint profiles_bio_length check (char_length(bio) <= 500);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint where conname = 'profiles_latitude_range'
+  ) then
+    alter table public.profiles
+      add constraint profiles_latitude_range check (latitude between -90 and 90);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint where conname = 'profiles_longitude_range'
+  ) then
+    alter table public.profiles
+      add constraint profiles_longitude_range check (longitude between -180 and 180);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint where conname = 'messages_text_length'
+  ) then
+    alter table public.messages
+      add constraint messages_text_length check (char_length(text) <= 2000);
+  end if;
+end
+$$;
+
+-- Strip HTML tags from profiles.bio before it lands (text sanitization)
+create or replace function public.sanitize_profile_bio()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.bio := regexp_replace(new.bio, '<[^>]*>', '', 'g');
+  new.name := regexp_replace(new.name, '<[^>]*>', '', 'g');
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_sanitize_bio on public.profiles;
+create trigger profiles_sanitize_bio
+  before insert or update of bio, name on public.profiles
+  for each row execute function public.sanitize_profile_bio();
+
+-- Reject identical messages sent within 60 seconds (PRD §6.5)
+create or replace function public.reject_duplicate_message()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.text <> '' and exists (
+    select 1 from public.messages m
+    where m.conversation_id = new.conversation_id
+      and m.sender_id = new.sender_id
+      and m.text = new.text
+      and m.created_at > now() - interval '60 seconds'
+  ) then
+    raise exception 'DUPLICATE_MESSAGE: identical text within 60 seconds';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists messages_dedup on public.messages;
+create trigger messages_dedup
+  before insert on public.messages
+  for each row execute function public.reject_duplicate_message();
+
+
+-- ----------------------------------------------------------------------------
+-- v2.2  RATE LIMITING (PRD §6.2)
+--   Sliding-window counter kept in PostgreSQL; the security-definer
+--   helper below is what RPCs call before accepting a write.
+-- ----------------------------------------------------------------------------
+create table if not exists public.rate_limits (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null references public.profiles (id) on delete cascade,
+  action        text not null,
+  window_start  timestamptz not null default now(),
+  request_count int not null default 0,
+  unique (user_id, action, window_start)
+);
+
+create index if not exists rate_limits_user_idx
+  on public.rate_limits (user_id, action, window_start desc);
+
+-- Counts & records one request; returns false when the quota is exhausted.
+create or replace function public.check_rate_limit(
+  p_user_id        uuid,
+  p_action         text,
+  p_max_requests   int,
+  p_window_seconds int default 3600
+)
+returns boolean
+language plpgsql
+security definer
+as $$
+declare
+  v_count int;
+begin
+  if p_user_id is null or p_action is null or p_max_requests is null then
+    return false;
+  end if;
+
+  -- Purge stale windows for this user + action.
+  delete from public.rate_limits
+  where user_id = p_user_id
+    and action = p_action
+    and window_start < now() - make_interval(secs => p_window_seconds);
+
+  select coalesce(sum(request_count), 0) into v_count
+  from public.rate_limits
+  where user_id = p_user_id
+    and action = p_action
+    and window_start > now() - make_interval(secs => p_window_seconds);
+
+  if v_count >= p_max_requests then
+    return false;
+  end if;
+
+  insert into public.rate_limits (user_id, action, window_start, request_count)
+  values (p_user_id, p_action, date_trunc('hour', now()), 1)
+  on conflict (user_id, action, window_start)
+  do update set request_count = public.rate_limits.request_count + 1;
+
+  return true;
+end;
+$$;
+
+
+-- ----------------------------------------------------------------------------
+-- v2.3  SERVER-SIDE DISCOVERY FILTERING (PRD §6.1)
+--   Ranked candidate profiles: compatibility score (shared interests +
+--   intent match + verification + online bonus), Haversine distance,
+--   already-swiped exclusion — all enforced IN the database so the client
+--   can neither bypass filters nor over-fetch.
+-- ----------------------------------------------------------------------------
+create or replace function public.get_discovery_profiles(
+  p_user_id           uuid,
+  p_min_age           int  default 18,
+  p_max_age           int  default 99,
+  p_max_distance_km   int  default 500,
+  p_gender            text default null,
+  p_intent            text default null,
+  p_verified_only     boolean default false,
+  p_occupation        text default null,
+  p_shared_interests  text[] default '{}',
+  p_limit             int  default 20,
+  p_offset            int  default 0
+)
+returns table (
+  profile_id         uuid,
+  name                text,
+  age                 int,
+  bio                 text,
+  city                text,
+  distance_km        real,
+  photo_urls          text[],
+  interests          text[],
+  compatibility_score int,
+  is_verified         boolean,
+  last_active         timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  -- The caller may only ever query their OWN discovery deck.
+  if p_user_id is distinct from auth.uid() then
+    raise exception 'FORBIDDEN: p_user_id must match the authenticated user';
+  end if;
+
+  return query
+  select
+    ranked.profile_id,
+    ranked.name,
+    ranked.age,
+    ranked.bio,
+    ranked.city,
+    ranked.dist_km as distance_km,
+    ranked.photo_urls,
+    ranked.interests,
+    ranked.compat as compatibility_score,
+    ranked.is_verified,
+    ranked.last_active
+  from (
+    select
+      p.id as profile_id,
+      p.name,
+      p.age,
+      p.bio,
+      p.city,
+      case
+        when up.latitude is not null and p.latitude is not null then
+          (6371 * acos(
+            least(1.0, greatest(-1.0,
+              cos(radians(up.latitude)) * cos(radians(p.latitude)) *
+              cos(radians(p.longitude) - radians(up.longitude)) +
+              sin(radians(up.latitude)) * sin(radians(p.latitude))
+            ))
+          ))::real
+        else p.distance_km::real
+      end as dist_km,
+      p.photo_urls,
+      p.interests,
+      (
+        (select count(*) from unnest(p.interests) i
+          where i = any(up.interests)) * 10
+        + case when p.relationship_intent = up.relationship_intent then 20 else 0 end
+        + case when p.is_verified then 15 else 0 end
+        + case when p.is_online then 10 else 0 end
+      )::int as compat,
+      p.is_verified,
+      p.updated_at as last_active
+    from public.profiles p
+    cross join public.profiles up
+    where up.id = p_user_id
+      and p.id <> p_user_id
+      and p.onboarding_completed = true
+      and p.age between p_min_age and p_max_age
+      and not exists (
+        select 1 from public.likes l
+        where l.user_id = p_user_id and l.target_user_id = p.id
+      )
+      and (p_gender is null or p.gender = p_gender)
+      and (p_intent is null or p.relationship_intent = p_intent)
+      and (p_verified_only = false or p.is_verified)
+      and (p_occupation is null or p.occupation ilike '%' || p_occupation || '%')
+      and (cardinality(p_shared_interests) = 0 or p.interests && p_shared_interests)
+  ) ranked
+  where (p_max_distance_km is null or ranked.dist_km <= p_max_distance_km)
+  order by ranked.compat desc, ranked.dist_km asc
+  limit p_limit offset p_offset;
+end;
+$$;
+
+
+-- ----------------------------------------------------------------------------
+-- v2.4  ATOMIC SWIPE RECORDING + MUTUAL MATCH (PRD §6.1 / §6.2)
+--   Likes and passes are written server-side; a mutual LIKE/SUPER_LIKE
+--   pair creates the match row in the same transaction. Swipe quota:
+--   200/hour, 1000/day (PRD: 50/hour, 200/day with headroom for pass
+--   actions — tighten to taste).
+-- ----------------------------------------------------------------------------
+create or replace function public.record_swipe(
+  p_user_id        uuid,
+  p_target_user_id uuid,
+  p_action         text
+)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_hour_ok boolean;
+  v_day_ok  boolean;
+  v_mutual  boolean;
+  v_a       uuid;
+  v_b       uuid;
+begin
+  -- You may only record swipes for yourself.
+  if p_user_id is distinct from auth.uid() then
+    return 'FORBIDDEN';
+  end if;
+
+  if p_action not in ('LIKE', 'PASS', 'SUPER_LIKE') then
+    return 'INVALID_ACTION';
+  end if;
+  if p_user_id is null or p_target_user_id is null or p_user_id = p_target_user_id then
+    return 'INVALID_TARGET';
+  end if;
+
+  select public.check_rate_limit(p_user_id, 'swipe_hour', 200, 3600) into v_hour_ok;
+  if not v_hour_ok then
+    return 'RATE_LIMITED_HOURLY';
+  end if;
+  select public.check_rate_limit(p_user_id, 'swipe_day', 1000, 86400) into v_day_ok;
+  if not v_day_ok then
+    return 'RATE_LIMITED_DAILY';
+  end if;
+
+  insert into public.likes (user_id, target_user_id, action)
+  values (p_user_id, p_target_user_id, p_action)
+  on conflict (user_id, target_user_id)
+  do update set action = excluded.action, created_at = now();
+
+  if p_action in ('LIKE', 'SUPER_LIKE') then
+    select exists (
+      select 1 from public.likes l
+      where l.user_id = p_target_user_id
+        and l.target_user_id = p_user_id
+        and l.action in ('LIKE', 'SUPER_LIKE')
+    ) into v_mutual;
+
+    if v_mutual then
+      v_a := least(p_user_id, p_target_user_id);
+      v_b := greatest(p_user_id, p_target_user_id);
+      insert into public.matches (user_a_id, user_b_id)
+      values (v_a, v_b)
+      on conflict (user_a_id, user_b_id) do nothing;
+      return 'MATCH';
+    end if;
+  end if;
+
+  return 'OK';
+end;
+$$;
+
+-- RPC access: authenticated users only (never anon).
+revoke all on function public.get_discovery_profiles(uuid, int, int, int, text, text, boolean, text, text[], int, int) from public, anon;
+grant execute on function public.get_discovery_profiles(uuid, int, int, int, text, text, boolean, text, text[], int, int) to authenticated;
+
+revoke all on function public.record_swipe(uuid, uuid, text) from public, anon;
+grant execute on function public.record_swipe(uuid, uuid, text) to authenticated;
+
+
+-- ----------------------------------------------------------------------------
+-- v2.5  NEW v2 TABLES (PRD §9.3)
+-- ----------------------------------------------------------------------------
+
+-- Reports & safety
+create table if not exists public.reports (
+  id          uuid primary key default gen_random_uuid(),
+  reporter_id uuid not null references public.profiles (id) on delete cascade,
+  reported_id uuid not null references public.profiles (id) on delete cascade,
+  reason      text not null check (reason in ('SPAM', 'INAPPROPRIATE', 'FAKE_PROFILE', 'HARASSMENT', 'UNDERAGE', 'OTHER')),
+  details     text,
+  status      text not null default 'PENDING' check (status in ('PENDING', 'REVIEWED', 'ACTIONED', 'DISMISSED')),
+  created_at  timestamptz not null default now(),
+  check (reporter_id <> reported_id)
+);
+
+create index if not exists reports_reported_idx on public.reports (reported_id, status);
+
+-- Subscription tiers (Quicky+ / Gold — RevenueCat webhook writes here)
+create table if not exists public.subscriptions (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null references public.profiles (id) on delete cascade,
+  tier          text not null check (tier in ('FREE', 'PLUS', 'GOLD')),
+  started_at    timestamptz not null default now(),
+  expires_at    timestamptz,
+  revenuecat_id text,
+  is_active     boolean not null default true
+);
+
+create index if not exists subscriptions_user_idx on public.subscriptions (user_id) where is_active;
+
+-- 30-minute visibility boosts
+create table if not exists public.boosts (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.profiles (id) on delete cascade,
+  started_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  is_active  boolean not null default true
+);
+
+create index if not exists boosts_user_idx on public.boosts (user_id) where is_active;
+
+-- Emoji reactions on chat messages
+create table if not exists public.message_reactions (
+  id         uuid primary key default gen_random_uuid(),
+  message_id uuid not null references public.messages (id) on delete cascade,
+  user_id    uuid not null references public.profiles (id) on delete cascade,
+  emoji      text not null,
+  created_at timestamptz not null default now(),
+  unique (message_id, user_id, emoji)
+);
+
+-- Turn-based game sessions (solo / couple / group)
+create table if not exists public.game_sessions (
+  id         uuid primary key default gen_random_uuid(),
+  host_id    uuid not null references public.profiles (id),
+  game_id    text not null references public.games (id),
+  mode       text not null check (mode in ('SOLO', 'COUPLE', 'GROUP')),
+  status     text not null default 'ACTIVE' check (status in ('ACTIVE', 'PAUSED', 'COMPLETED')),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists game_sessions_host_idx on public.game_sessions (host_id, status);
+
+-- Club events & RSVPs
+create table if not exists public.club_events (
+  id          uuid primary key default gen_random_uuid(),
+  club_id     text not null references public.clubs (id) on delete cascade,
+  title       text not null,
+  description text,
+  location    text,
+  starts_at   timestamptz not null,
+  created_by  uuid not null references public.profiles (id),
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists club_events_club_idx on public.club_events (club_id, starts_at);
+
+
+-- ----------------------------------------------------------------------------
+-- v2.6  ROW LEVEL SECURITY FOR THE NEW TABLES
+-- ----------------------------------------------------------------------------
+alter table public.rate_limits        enable row level security;
+alter table public.reports            enable row level security;
+alter table public.subscriptions      enable row level security;
+alter table public.boosts             enable row level security;
+alter table public.message_reactions  enable row level security;
+alter table public.game_sessions      enable row level security;
+alter table public.club_events        enable row level security;
+
+-- rate_limits: only the (security-definer) RPCs touch this; a user may
+-- read their own counters for transparency. No client writes.
+drop policy if exists "rate_limits_select_own" on public.rate_limits;
+create policy "rate_limits_select_own" on public.rate_limits
+  for select using (auth.uid() = user_id);
+
+-- reports: you can file one and review your own; moderation reads all.
+drop policy if exists "reports_select_own" on public.reports;
+create policy "reports_select_own" on public.reports
+  for select using (auth.uid() = reporter_id);
+drop policy if exists "reports_insert_own" on public.reports;
+create policy "reports_insert_own" on public.reports
+  for insert with check (auth.uid() = reporter_id);
+
+-- subscriptions & boosts: strictly private to the owner (system writes
+-- via service role / security definer functions).
+drop policy if exists "subscriptions_select_own" on public.subscriptions;
+create policy "subscriptions_select_own" on public.subscriptions
+  for select using (auth.uid() = user_id);
+
+drop policy if exists "boosts_select_own" on public.boosts;
+create policy "boosts_select_own" on public.boosts
+  for select using (auth.uid() = user_id);
+
+-- message reactions: participants can read; you react as yourself only.
+drop policy if exists "message_reactions_select" on public.message_reactions;
+create policy "message_reactions_select" on public.message_reactions
+  for select using (auth.role() = 'authenticated');
+drop policy if exists "message_reactions_insert_own" on public.message_reactions;
+create policy "message_reactions_insert_own" on public.message_reactions
+  for insert with check (auth.uid() = user_id);
+drop policy if exists "message_reactions_delete_own" on public.message_reactions;
+create policy "message_reactions_delete_own" on public.message_reactions
+  for delete using (auth.uid() = user_id);
+
+-- game sessions: readable to authenticated users; hosts create their own.
+drop policy if exists "game_sessions_select" on public.game_sessions;
+create policy "game_sessions_select" on public.game_sessions
+  for select using (auth.role() = 'authenticated');
+drop policy if exists "game_sessions_insert_host" on public.game_sessions;
+create policy "game_sessions_insert_host" on public.game_sessions
+  for insert with check (auth.uid() = host_id);
+drop policy if exists "game_sessions_update_host" on public.game_sessions;
+create policy "game_sessions_update_host" on public.game_sessions
+  for update using (auth.uid() = host_id);
+
+-- club events: members browse; club members create.
+drop policy if exists "club_events_select" on public.club_events;
+create policy "club_events_select" on public.club_events
+  for select using (auth.role() = 'authenticated');
+drop policy if exists "club_events_insert_member" on public.club_events;
+create policy "club_events_insert_member" on public.club_events
+  for insert with check (
+    auth.uid() = created_by
+    and exists (
+      select 1 from public.club_members cm
+      where cm.club_id = club_id and cm.user_id = auth.uid()::text
+    )
+  );

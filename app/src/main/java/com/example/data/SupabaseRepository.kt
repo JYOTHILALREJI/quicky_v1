@@ -236,6 +236,114 @@ object SupabaseRepository {
     }
 
     // ==============================================================
+    // v2 HARDENED DISCOVERY (RPC — server-side filtering & ranking)
+    // ==============================================================
+
+    /**
+     * Server-side discovery query (PRD §6.1). Calls the
+     * `get_discovery_profiles` Postgres function which enforces the age
+     * window, distance (Haversine), gender, relationship intent,
+     * verified-only, occupation keyword and shared-interest filters IN
+     * the database — plus excludes already-swiped profiles and ranks by
+     * a deterministic compatibility score.
+     *
+     * Falls back to an empty list (with a `null` result distinction) when
+     * the RPC is not deployed yet, so the caller can keep its bundled
+     * deck.
+     *
+     * @return null when the RPC is missing/unreachable, the ranked
+     *         candidates otherwise.
+     */
+    suspend fun fetchDiscoveryCandidates(
+        session: SupabaseAuth.AuthSession,
+        minAge: Int,
+        maxAge: Int,
+        maxDistanceKm: Int,
+        gender: String?,
+        intent: String?,
+        verifiedOnly: Boolean,
+        occupation: String?,
+        sharedInterests: List<String>,
+        limit: Int = 20,
+        offset: Int = 0
+    ): List<UserProfile>? {
+        if (!isConfigured()) return null
+        return runCatching {
+            val body = JSONObject()
+                .put("p_user_id", session.userId)
+                .put("p_min_age", minAge)
+                .put("p_max_age", maxAge)
+                .put("p_max_distance_km", maxDistanceKm)
+                .put("p_gender", gender ?: JSONObject.NULL)
+                .put("p_intent", intent ?: JSONObject.NULL)
+                .put("p_verified_only", verifiedOnly)
+                .put("p_occupation", occupation?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                .put("p_shared_interests", JSONArray(sharedInterests))
+                .put("p_limit", limit)
+                .put("p_offset", offset)
+
+            val raw = SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/rpc/${SupabaseConfig.RPC_GET_DISCOVERY_PROFILES}",
+                body = body.toString(),
+                accessToken = session.accessToken
+            )
+            val rows = SupabaseClient.parseArray(raw)
+
+            buildList {
+                for (i in 0 until rows.length()) {
+                    val row = rows.optJSONObject(i) ?: continue
+                    add(
+                        UserProfile(
+                            id = row.optString("profile_id"),
+                            name = row.optString("name"),
+                            age = row.optInt("age", 21),
+                            bio = row.optString("bio"),
+                            city = row.optString("city"),
+                            distanceKm = row.optDouble("distance_km", 0.0).toInt(),
+                            photoUris = row.optJSONArray("photo_urls").toStringList(),
+                            interests = row.optJSONArray("interests").toStringList(),
+                            isVerified = row.optBoolean("is_verified", false),
+                            compatibilityScore = row.optInt("compatibility_score", 0)
+                                .coerceIn(1, 100)
+                        )
+                    )
+                }
+            }
+        }.getOrNull()
+    }
+
+    /**
+     * Records a LIKE / PASS / SUPER_LIKE server-side via the
+     * `record_swipe` RPC (PRD §6.1/§6.2): rate-limited (200/hour),
+     * deduplicated and — when the like is mutual — creates the match row
+     * atomically.
+     *
+     * @return the RPC result token ("OK", "MATCH", "RATE_LIMITED_*",
+     *         "INVALID_*") or null when the call failed / not configured.
+     */
+    suspend fun recordSwipe(
+        session: SupabaseAuth.AuthSession,
+        targetUserId: String,
+        action: String
+    ): String? {
+        if (!isConfigured()) return null
+        return runCatching {
+            val body = JSONObject()
+                .put("p_user_id", session.userId)
+                .put("p_target_user_id", targetUserId)
+                .put("p_action", action)
+
+            SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/rpc/${SupabaseConfig.RPC_RECORD_SWIPE}",
+                body = body.toString(),
+                accessToken = session.accessToken
+            ).trim().trim('"')
+        }.getOrNull()
+    }
+
+    // ==============================================================
     // WRITES
     // ==============================================================
 

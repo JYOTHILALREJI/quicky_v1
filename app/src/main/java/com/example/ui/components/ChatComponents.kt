@@ -18,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -170,76 +171,44 @@ fun ChatBubble(
             )
         } else if (message.text.isNotBlank()) {
             Box {
-                Surface(
-                    shape = RoundedCornerShape(
-                        topStart = 18.dp,
-                        topEnd = 18.dp,
-                        bottomStart = if (message.isMine) 18.dp else 4.dp,
-                        bottomEnd = if (message.isMine) 4.dp else 18.dp
-                    ),
-                    color = if (message.isMine) SparkRose else MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier
-                        .widthIn(max = 280.dp)
-                        .clickable { showReactionPicker = !showReactionPicker }
-                ) {
-                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                        if (message.replyToText != null) {
-                            Surface(
-                                color = if (message.isMine) Color.Black.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
-                                    Text(
-                                        text = message.replyToSender ?: "Reply",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
-                                        color = if (message.isMine) Color.White.copy(alpha = 0.9f) else QuickyPurple
-                                    )
-                                    Text(
-                                        text = message.replyToText,
-                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        color = if (message.isMine) Color.White.copy(alpha = 0.75f) else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-
-                        if (message.isVoiceMessage || message.voiceDurationSeconds != null) {
-                            VoiceMessagePlayer(
-                                durationSeconds = message.voiceDurationSeconds ?: 5,
-                                isMine = message.isMine
+                // Cassy chat bubbles (PRD §5.4): asymmetric corners with a
+                // soft rosewood→blush gradient on outgoing messages and a
+                // subtly elevated surface on incoming ones.
+                val bubbleShape = RoundedCornerShape(
+                    topStart = 18.dp,
+                    topEnd = 18.dp,
+                    bottomStart = if (message.isMine) 18.dp else 4.dp,
+                    bottomEnd = if (message.isMine) 4.dp else 18.dp
+                )
+                if (message.isMine) {
+                    Box(
+                        modifier = Modifier
+                            .widthIn(max = 280.dp)
+                            .shadow(
+                                elevation = 3.dp,
+                                shape = bubbleShape,
+                                spotColor = CassyPrimary.copy(alpha = 0.35f)
                             )
-                        } else {
-                            Text(
-                                text = message.text,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = if (message.isMine) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.align(Alignment.End)
-                        ) {
-                            Text(
-                                text = message.timestamp,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (message.isMine) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                            )
-                            if (message.isMine) {
-                                Icon(
-                                    imageVector = Icons.Filled.DoneAll,
-                                    contentDescription = "Read status",
-                                    tint = if (message.isRead) Color.White else Color.White.copy(alpha = 0.6f),
-                                    modifier = Modifier.size(14.dp)
+                            .clip(bubbleShape)
+                            .background(
+                                Brush.horizontalGradient(
+                                    listOf(CassyPrimary, CassyPrimaryGradientEnd)
                                 )
-                            }
-                        }
+                            )
+                            .clickable { showReactionPicker = !showReactionPicker }
+                    ) {
+                        ChatBubbleContent(message = message)
+                    }
+                } else {
+                    Surface(
+                        shape = bubbleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shadowElevation = 1.dp,
+                        modifier = Modifier
+                            .widthIn(max = 280.dp)
+                            .clickable { showReactionPicker = !showReactionPicker }
+                    ) {
+                        ChatBubbleContent(message = message)
                     }
                 }
             }
@@ -311,6 +280,74 @@ fun ChatBubble(
         }
     } else {
         bubbleContent()
+    }
+}
+
+/**
+ * The inner payload of a chat bubble — reply quote, voice player, message
+ * text and the timestamp/read-status row. Shared by the gradient
+ * (outgoing) and elevated (incoming) Cassy bubble surfaces.
+ */
+@Composable
+private fun ChatBubbleContent(message: ChatMessage) {
+    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+        if (message.replyToText != null) {
+            Surface(
+                color = if (message.isMine) Color.Black.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                    Text(
+                        text = message.replyToSender ?: "Reply",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                        color = if (message.isMine) Color.White.copy(alpha = 0.9f) else QuickyPurple
+                    )
+                    Text(
+                        text = message.replyToText,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = if (message.isMine) Color.White.copy(alpha = 0.75f) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        if (message.isVoiceMessage || message.voiceDurationSeconds != null) {
+            VoiceMessagePlayer(
+                durationSeconds = message.voiceDurationSeconds ?: 5,
+                isMine = message.isMine
+            )
+        } else {
+            Text(
+                text = message.text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (message.isMine) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.align(Alignment.End)
+        ) {
+            Text(
+                text = message.timestamp,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (message.isMine) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            )
+            if (message.isMine) {
+                Icon(
+                    imageVector = Icons.Filled.DoneAll,
+                    contentDescription = "Read status",
+                    tint = if (message.isRead) Color.White else Color.White.copy(alpha = 0.6f),
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
     }
 }
 

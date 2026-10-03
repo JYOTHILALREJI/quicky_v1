@@ -263,37 +263,38 @@ fun SparkBottomNav(
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
-    // Liquid-glass palette: translucent frosted surfaces that let the
-    // content behind the bar shine through.
+    // Cassy frosted glass (PRD §5.4): warm translucent surfaces with a
+    // rose-gold hairline rim — the content behind keeps gliding beneath.
     val glassBrush = if (isDark) {
         Brush.verticalGradient(
             colors = listOf(
-                Color(0xFF26263A).copy(alpha = 0.62f),
-                Color(0xFF12121C).copy(alpha = 0.88f)
+                Color(0xFF2A2632).copy(alpha = 0.66f),
+                Color(0xFF141218).copy(alpha = 0.92f)
             )
         )
     } else {
         Brush.verticalGradient(
             colors = listOf(
-                Color.White.copy(alpha = 0.72f),
-                Color(0xFFF3F3F9).copy(alpha = 0.92f)
+                Color.White.copy(alpha = 0.78f),
+                Color(0xFFF9F1F1).copy(alpha = 0.94f)
             )
         )
     }
 
-    // Glass edge: bright at the top rim, fading away towards the bottom.
+    // Rose-gold hairline edge: bright champagne at the top rim, fading out
+    // towards the bottom (replaces the old pure-white glass edge).
     val glassEdgeBrush = if (isDark) {
         Brush.verticalGradient(
             colors = listOf(
-                Color.White.copy(alpha = 0.30f),
-                Color.White.copy(alpha = 0.04f)
+                Color(0xFFE2C9A2).copy(alpha = 0.55f),
+                Color(0xFFB8956A).copy(alpha = 0.08f)
             )
         )
     } else {
         Brush.verticalGradient(
             colors = listOf(
-                Color.White.copy(alpha = 0.85f),
-                Color.White.copy(alpha = 0.10f)
+                Color(0xFFD9BC8E).copy(alpha = 0.95f),
+                Color(0xFFB8956A).copy(alpha = 0.10f)
             )
         )
     }
@@ -311,14 +312,15 @@ fun SparkBottomNav(
                 .shadow(
                     elevation = 22.dp,
                     shape = glassShape,
-                    ambientColor = if (isDark) Color.Black else Color(0xFF3A3550).copy(alpha = 0.30f),
-                    spotColor = if (isDark) Color.Black else QuickyPurple.copy(alpha = 0.30f)
+                    ambientColor = if (isDark) Color.Black else Color(0xFF4A3540).copy(alpha = 0.28f),
+                    spotColor = if (isDark) Color.Black else QuickyPink.copy(alpha = 0.32f)
                 )
                 .clip(glassShape)
                 .background(glassBrush)
                 .border(BorderStroke(1.dp, glassEdgeBrush), glassShape)
         ) {
-            // Specular highlight — a thin light streak across the top rim
+            // Rose-gold specular highlight — a thin champagne streak across
+            // the top rim of the frosted bar.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -326,15 +328,15 @@ fun SparkBottomNav(
                     .background(
                         Brush.horizontalGradient(
                             colors = listOf(
-                                Color.White.copy(alpha = 0f),
-                                Color.White.copy(alpha = if (isDark) 0.45f else 0.9f),
-                                Color.White.copy(alpha = 0f)
+                                Color(0xFFB8956A).copy(alpha = 0f),
+                                Color(0xFFE8CFA6).copy(alpha = if (isDark) 0.75f else 1f),
+                                Color(0xFFB8956A).copy(alpha = 0f)
                             )
                         )
                     )
             )
 
-            // Soft inner glow right under the rim for that "liquid" depth
+            // Soft warm inner glow right under the rim for that "liquid" depth
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -342,7 +344,7 @@ fun SparkBottomNav(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color.White.copy(alpha = if (isDark) 0.06f else 0.22f),
+                                Color(0xFFE2C9A2).copy(alpha = if (isDark) 0.05f else 0.18f),
                                 Color.Transparent
                             )
                         )
@@ -409,7 +411,8 @@ fun SparkBottomNav(
 
 /**
  * A single perfectly-centered glass tab item: icon wrapped in an
- * animated gradient pill with the label underneath.
+ * animated gradient pill with the label underneath, plus a springy
+ * icon scale transition when the tab is selected (Cassy motion).
  */
 @Composable
 private fun GlassNavItem(
@@ -429,6 +432,15 @@ private fun GlassNavItem(
         targetValue = if (selected) 1f else 0f,
         label = "glass_nav_pill"
     )
+    // Cassy animated icon transition: the icon springs up when selected.
+    val iconScale by animateFloatAsState(
+        targetValue = if (selected) 1.12f else 1f,
+        animationSpec = androidx.compose.animation.core.spring(
+            dampingRatio = 0.55f,
+            stiffness = 400f
+        ),
+        label = "glass_nav_icon_scale"
+    )
     val interactionSource = remember { MutableInteractionSource() }
 
     Column(
@@ -443,7 +455,7 @@ private fun GlassNavItem(
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         Box(contentAlignment = Alignment.Center) {
-            // Liquid pill highlight behind the active icon
+            // Rosewood gradient pill highlight behind the active icon
             Box(
                 modifier = Modifier
                     .size(width = 58.dp, height = 32.dp)
@@ -451,7 +463,7 @@ private fun GlassNavItem(
                     .background(
                         Brush.horizontalGradient(
                             listOf(
-                                accent.copy(alpha = 0.22f),
+                                accent.copy(alpha = 0.24f),
                                 QuickyPurple.copy(alpha = 0.16f)
                             )
                         ),
@@ -479,7 +491,12 @@ private fun GlassNavItem(
                     imageVector = icon,
                     contentDescription = label,
                     tint = contentColor,
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier
+                        .size(24.dp)
+                        .graphicsLayer {
+                            scaleX = iconScale
+                            scaleY = iconScale
+                        }
                 )
             }
         }
