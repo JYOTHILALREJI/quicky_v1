@@ -87,6 +87,14 @@ object AppContent {
         "Doctorate", "Professional Qualification", "Other", "Prefer Not to Say"
     )
 
+    // Curated languages for the onboarding stage-3 chips and the
+    // language discovery filter (India-heavy, plus common globals).
+    val languageCatalog = listOf(
+        "English", "Malayalam", "Hindi", "Tamil", "Telugu", "Kannada",
+        "Bengali", "Marathi", "Gujarati", "Punjabi", "Urdu",
+        "Spanish", "French", "German", "Arabic", "Mandarin", "Japanese"
+    )
+
     // -------------------------------------------------------------
     // GAME CATALOG (product content — can also be served from
     // Supabase via SupabaseRepository.fetchGamesCatalog())

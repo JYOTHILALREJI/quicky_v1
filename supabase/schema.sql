@@ -86,6 +86,11 @@ alter table public.profiles add column if not exists occupation           text  
 alter table public.profiles add column if not exists latitude             double precision;
 alter table public.profiles add column if not exists longitude            double precision;
 
+-- v2 language discovery filter: GIN index so the `p.languages && :filter`
+-- array-overlap check in get_discovery_profiles stays fast at scale.
+create index if not exists idx_profiles_languages
+    on public.profiles using gin (languages);
+
 -- Auto-create the profiles row the moment a Supabase Auth account is
 -- registered (email+password or OAuth). security definer bypasses RLS
 -- for the system-trigger insert.
@@ -684,6 +689,7 @@ create or replace function public.get_discovery_profiles(
   p_verified_only     boolean default false,
   p_occupation        text default null,
   p_shared_interests  text[] default '{}',
+  p_languages         text[] default '{}',
   p_limit             int  default 20,
   p_offset            int  default 0
 )
@@ -696,6 +702,7 @@ returns table (
   distance_km        real,
   photo_urls          text[],
   interests          text[],
+  languages          text[],
   compatibility_score int,
   is_verified         boolean,
   relationship_intent text,
@@ -721,6 +728,7 @@ begin
     ranked.dist_km as distance_km,
     ranked.photo_urls,
     ranked.interests,
+    ranked.languages,
     ranked.compat as compatibility_score,
     ranked.is_verified,
     ranked.relationship_intent,
@@ -745,12 +753,14 @@ begin
       end as dist_km,
       p.photo_urls,
       p.interests,
+      p.languages,
       (
         (select count(*) from unnest(p.interests) i
           where i = any(up.interests)) * 10
         + case when p.relationship_intent = up.relationship_intent then 20 else 0 end
         + case when p.is_verified then 15 else 0 end
         + case when p.is_online then 10 else 0 end
+        + case when p.languages && up.languages then 15 else 0 end
       )::int as compat,
       p.is_verified,
       p.relationship_intent,
@@ -770,6 +780,7 @@ begin
       and (p_verified_only = false or p.is_verified)
       and (p_occupation is null or p.occupation ilike '%' || p_occupation || '%')
       and (cardinality(p_shared_interests) = 0 or p.interests && p_shared_interests)
+      and (cardinality(p_languages) = 0 or p.languages && p_languages)
   ) ranked
   where (p_max_distance_km is null or ranked.dist_km <= p_max_distance_km)
   order by ranked.compat desc, ranked.dist_km asc

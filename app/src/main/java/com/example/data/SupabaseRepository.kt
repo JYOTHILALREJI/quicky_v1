@@ -1,12 +1,19 @@
 package com.example.data
 
 import com.example.model.GameDefinition
+import com.example.model.GeoSuggestion
 import com.example.model.OnboardingDraft
 import com.example.model.TruthOrDarePrompt
 import com.example.model.UserProfile
 import com.example.model.VisibilityLevel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
 /**
  * Data-access layer for Supabase (database + storage).
@@ -264,6 +271,7 @@ object SupabaseRepository {
         verifiedOnly: Boolean,
         occupation: String?,
         sharedInterests: List<String>,
+        languages: List<String> = emptyList(),
         limit: Int = 20,
         offset: Int = 0
     ): List<UserProfile>? {
@@ -279,6 +287,7 @@ object SupabaseRepository {
                 .put("p_verified_only", verifiedOnly)
                 .put("p_occupation", occupation?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                 .put("p_shared_interests", JSONArray(sharedInterests))
+                .put("p_languages", JSONArray(languages))
                 .put("p_limit", limit)
                 .put("p_offset", offset)
 
@@ -306,6 +315,8 @@ object SupabaseRepository {
                                 ?: "Long-term partner",
                             photoUris = row.optJSONArray("photo_urls").toStringList(),
                             interests = row.optJSONArray("interests").toStringList(),
+                            languages = row.optJSONArray("languages").toStringList()
+                                .ifEmpty { listOf("English") },
                             isVerified = row.optBoolean("is_verified", false),
                             compatibilityScore = row.optInt("compatibility_score", 0)
                                 .coerceIn(1, 100)
@@ -437,6 +448,7 @@ object SupabaseRepository {
                 .put("occupation", draft.occupation.trim())
                 .put("interests", JSONArray(draft.interests))
                 .put("hobbies", JSONArray(draft.hobbies))
+                .put("languages", JSONArray(draft.languages.ifEmpty { listOf("English") }))
                 .put("looking_for", JSONArray(draft.lookingFor))
                 .put("height", if (draft.heightCm != null) "${draft.heightCm} cm" else "")
                 .put("photo_urls", JSONArray(photoUrls))
@@ -613,5 +625,70 @@ object SupabaseRepository {
         ) ?: return null
         return SupabaseClient.storagePublicUrl(SupabaseConfig.BUCKET_PROFILE_PHOTOS, objectPath)
             .ifEmpty { key }
+    }
+
+    // ==============================================================
+    // GEOCODING (Edit Location sheet — change request #5)
+    // ==============================================================
+
+    /**
+     * Forward-geocodes a city / area name via the free Nominatim
+     * (OpenStreetMap) search API. Nominatim requires a descriptive
+     * User-Agent, so a dedicated plain OkHttp client is used (no Supabase
+     * headers). Results are capped at 5 and each suggestion carries a
+     * shortened "City, Region" label for the UI.
+     */
+    suspend fun searchCity(query: String): List<GeoSuggestion> {
+        val trimmed = query.trim()
+        if (trimmed.length < 2) return emptyList()
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val url = "https://nominatim.openstreetmap.org/search" +
+                        "?q=${URLEncoder.encode(trimmed, "UTF-8")}" +
+                        "&format=json&limit=5&addressdetails=0"
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "Quicky-Android/1.0 (dating app location search)")
+                    .header("Accept", "application/json")
+                    .build()
+                val body = geoHttpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) response.body?.string() else return@runCatching emptyList()
+                } ?: return@runCatching emptyList()
+                val rows = JSONArray(body)
+                buildList {
+                    for (i in 0 until rows.length()) {
+                        val row = rows.optJSONObject(i) ?: continue
+                        val lat = row.optDouble("lat", Double.NaN)
+                        val lon = row.optDouble("lon", Double.NaN)
+                        if (lat.isNaN() || lon.isNaN()) continue
+                        val display = row.optString("display_name")
+                        if (display.isBlank()) continue
+                        // "Kochi, Ernakulam District, Kerala, India" ->
+                        // short label "Kochi, Kerala" (first + a nearby part).
+                        val parts = display.split(", ").map { it.trim() }
+                        val shortLabel = when {
+                            parts.size >= 3 -> "${parts[0]}, ${parts[parts.size - 2]}"
+                            else -> parts.first()
+                        }
+                        add(
+                            GeoSuggestion(
+                                latitude = lat,
+                                longitude = lon,
+                                label = display,
+                                city = shortLabel
+                            )
+                        )
+                    }
+                }
+            }.getOrDefault(emptyList())
+        }
+    }
+
+    /** Plain HTTP client for external (non-Supabase) geocoding calls. */
+    private val geoHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .build()
     }
 }

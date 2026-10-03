@@ -25,6 +25,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.BuildConfig
 import com.example.R
 import com.example.model.GameDefinition
 import com.example.model.MatchItem
@@ -55,6 +56,11 @@ fun GamesHubScreen(
     // The glass nav bar is hidden on this screen; keep the list clear of
     // the system gesture bar only.
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    // Ludo is free on debug builds (BuildConfig.LUDO_FREE) so it can be
+    // tested end-to-end without a Premium subscription; release keeps
+    // the premium gate.
+    val isLudoUnlocked = BuildConfig.LUDO_FREE || isPremium
 
     LazyColumn(
         modifier = modifier
@@ -287,12 +293,12 @@ fun GamesHubScreen(
                 elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
                 border = androidx.compose.foundation.BorderStroke(
                     1.5.dp,
-                    if (isPremium) QuickyPurple else QuickyGold.copy(alpha = 0.6f)
+                    if (isLudoUnlocked) QuickyPurple else QuickyGold.copy(alpha = 0.6f)
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable {
-                        if (isPremium) onOpenLudo()
+                        if (isLudoUnlocked) onOpenLudo()
                         else onLockedGameClick()
                     }
                     .testTag("ludo_game_card")
@@ -311,15 +317,15 @@ fun GamesHubScreen(
                         )
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = if (isPremium) QuickyPurple else QuickyGold,
+                            color = if (isLudoUnlocked) QuickyPurple else QuickyGold,
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .padding(12.dp)
                         ) {
                             Text(
-                                text = if (isPremium) "🎮 READY TO PLAY" else "🔒 PREMIUM ONLY",
+                                text = if (isLudoUnlocked) "🎮 READY TO PLAY" else "🔒 PREMIUM ONLY",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = if (isPremium) Color.White else Color.Black,
+                                color = if (isLudoUnlocked) Color.White else Color.Black,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
@@ -344,18 +350,18 @@ fun GamesHubScreen(
                         Spacer(modifier = Modifier.height(14.dp))
                         Button(
                             onClick = {
-                                if (isPremium) onOpenLudo()
+                                if (isLudoUnlocked) onOpenLudo()
                                 else onLockedGameClick()
                             },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isPremium) QuickyPurple else QuickyGold
+                                containerColor = if (isLudoUnlocked) QuickyPurple else QuickyGold
                             ),
                             shape = RoundedCornerShape(20.dp),
                             modifier = Modifier.fillMaxWidth().testTag("enter_ludo_button")
                         ) {
                             Text(
-                                text = if (isPremium) "Enter 2-Player Ludo Arena" else "Unlock Ludo with Quicky Gold",
-                                color = if (isPremium) Color.White else Color.Black,
+                                text = if (isLudoUnlocked) "Enter 2-Player Ludo Arena" else "Unlock Ludo with Quicky Gold",
+                                color = if (isLudoUnlocked) Color.White else Color.Black,
                                 fontWeight = FontWeight.Bold
                             )
                         }

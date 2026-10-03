@@ -1,8 +1,14 @@
 package com.example.ui.components
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,21 +20,26 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.UserProfile
 import com.example.model.VisibilityLevel
 import com.example.ui.theme.*
+import kotlin.math.abs
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -40,11 +51,7 @@ fun ProfileCard(
     onRewind: () -> Unit,
     onBoost: () -> Unit,
     onOpenDetail: () -> Unit,
-    modifier: Modifier = Modifier,
-    // Lifts the bottom info column (and the action dock) above the
-    // floating liquid-glass nav bar while the photo keeps extending
-    // behind the frosted translucent surface.
-    bottomContentInset: Dp = 0.dp
+    modifier: Modifier = Modifier
 ) {
     var currentPhotoIndex by remember(profile.id) { mutableIntStateOf(0) }
     // Photos may be remote URLs (server-served candidates) or bundled
@@ -56,9 +63,31 @@ fun ProfileCard(
     // threshold in gesture-driven decks.
     val haptics = LocalHapticFeedback.current
 
+    // ---- Swipe-to-decide gesture state (change request #2) ----
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val swipeThresholdPx = with(density) { 120.dp.toPx() }
+    val superLikeThresholdPx = with(density) { 140.dp.toPx() }
+    val exitDistancePx = with(density) { 1000.dp.toPx() }
+    val offsetX = remember(profile.id) { Animatable(0f) }
+    val offsetY = remember(profile.id) { Animatable(0f) }
+    // Named cardRotation (not rotationZ) to avoid clashing with the
+    // GraphicsLayerScope.rotationZ property inside the lambda below.
+    val cardRotation = remember(profile.id) { derivedStateOf { offsetX.value / 40f } }
+    // Fire-once latch so a single drag can never trigger two actions.
+    var swipeConsumed by remember(profile.id) { mutableStateOf(false) }
+
+    // Card with drag-driven translation / tilt. Buttons inside the
+    // bottom dock keep their own click handling — a drag that starts on
+    // them is consumed by the button and never reaches this detector.
     Card(
         modifier = modifier
             .fillMaxSize()
+            .graphicsLayer {
+                translationX = offsetX.value
+                translationY = offsetY.value
+                rotationZ = cardRotation.value
+            }
             .testTag("profile_card_${profile.id}"),
         shape = RoundedCornerShape(26.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -90,25 +119,80 @@ fun ProfileCard(
                 )
             }
 
-            // Tap zones to cycle photos (max 3 photos)
-            Row(modifier = Modifier.fillMaxSize()) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clickable {
-                            if (currentPhotoIndex > 0) currentPhotoIndex--
+            // Tap to cycle photos (left = previous, right = next) + drag
+            // to swipe the card away. Replaces the old clickable zones —
+            // clickable would have eaten the drag gestures.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(profile.id) {
+                        detectTapGestures { offset: Offset ->
+                            if (offset.x < size.width / 2f) {
+                                if (currentPhotoIndex > 0) currentPhotoIndex--
+                            } else {
+                                if (currentPhotoIndex < photoCount - 1) currentPhotoIndex++
+                            }
                         }
-                )
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clickable {
-                            if (currentPhotoIndex < photoCount - 1) currentPhotoIndex++
-                        }
-                )
-            }
+                    }
+                    .pointerInput(profile.id) {
+                        detectDragGestures(
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                scope.launch {
+                                    offsetX.snapTo(offsetX.value + dragAmount.x)
+                                    offsetY.snapTo(offsetY.value + dragAmount.y)
+                                }
+                                // One haptic tick the moment the finger
+                                // crosses the decision threshold.
+                                if (!swipeConsumed && (
+                                            abs(offsetX.value) > swipeThresholdPx ||
+                                                    offsetY.value < -superLikeThresholdPx
+                                            )
+                                ) {
+                                    swipeConsumed = true
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                }
+                            },
+                            onDragEnd = {
+                                val x = offsetX.value
+                                val y = offsetY.value
+                                when {
+                                    !swipeConsumed && y < -superLikeThresholdPx -> scope.launch {
+                                        offsetY.animateTo(-exitDistancePx, tween(220))
+                                        onSuperLike()
+                                        resetSwipe(offsetX, offsetY)
+                                    }
+                                    !swipeConsumed && x > swipeThresholdPx -> scope.launch {
+                                        offsetX.animateTo(exitDistancePx, tween(220))
+                                        onLike()
+                                        resetSwipe(offsetX, offsetY)
+                                    }
+                                    !swipeConsumed && x < -swipeThresholdPx -> scope.launch {
+                                        offsetX.animateTo(-exitDistancePx, tween(220))
+                                        onPass()
+                                        resetSwipe(offsetX, offsetY)
+                                    }
+                                    else -> scope.launch {
+                                        val settle = spring<Float>(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        )
+                                        offsetX.animateTo(0f, settle)
+                                        offsetY.animateTo(0f, settle)
+                                    }
+                                }
+                                swipeConsumed = false
+                            },
+                            onDragCancel = {
+                                scope.launch {
+                                    offsetX.animateTo(0f, spring())
+                                    offsetY.animateTo(0f, spring())
+                                }
+                                swipeConsumed = false
+                            }
+                        )
+                    }
+            )
 
             // Top Photo Segment Indicators
             if (photoCount > 1) {
@@ -239,12 +323,42 @@ fun ProfileCard(
                     )
             )
 
+            // Swipe feedback labels — LIKE (right), NOPE (left) and
+            // SUPER LIKE (up) fade in as the finger crosses the thresholds.
+            SwipeDecisionLabel(
+                text = "LIKE",
+                color = ActionLike,
+                alpha = (offsetX.value / swipeThresholdPx).coerceIn(0f, 1f),
+                rotationDegrees = -8f,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 24.dp, top = 64.dp)
+            )
+            SwipeDecisionLabel(
+                text = "NOPE",
+                color = ActionPass,
+                alpha = (-offsetX.value / swipeThresholdPx).coerceIn(0f, 1f),
+                rotationDegrees = 8f,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 24.dp, top = 64.dp)
+            )
+            SwipeDecisionLabel(
+                text = "SUPER LIKE",
+                color = ActionSuperLike,
+                alpha = (-offsetY.value / superLikeThresholdPx).coerceIn(0f, 1f),
+                rotationDegrees = 0f,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 96.dp)
+            )
+
             // Bottom Profile Information Content
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomStart)
-                    .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 16.dp + bottomContentInset)
+                    .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 16.dp)
             ) {
                 // Name, Age and Detail Sheet Button
                 Row(
@@ -435,4 +549,49 @@ fun ProfileCard(
             }
         }
     }
+}
+
+/**
+ * A rubber-stamp style decision label that fades in proportionally to how
+ * far the card has been dragged past its threshold (LIKE / NOPE / SUPER
+ * LIKE). Alpha-driven, so it is invisible while the card rests.
+ */
+@Composable
+private fun SwipeDecisionLabel(
+    text: String,
+    color: Color,
+    alpha: Float,
+    rotationDegrees: Float,
+    modifier: Modifier = Modifier
+) {
+    if (alpha <= 0.01f) return
+    Text(
+        text = text,
+        color = color.copy(alpha = alpha),
+        style = MaterialTheme.typography.displaySmall.copy(
+            fontWeight = FontWeight.Black,
+            letterSpacing = 2.sp
+        ),
+        modifier = modifier
+            .graphicsLayer { rotationZ = rotationDegrees }
+            .border(
+                width = 3.dp,
+                color = color.copy(alpha = alpha),
+                shape = RoundedCornerShape(12.dp)
+            )
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+    )
+}
+
+/**
+ * Snap the swipe offsets back to rest after an action fired. The deck
+ * usually swaps the profile instantly, but this also covers the edge case
+ * of the same card being kept (e.g. a rate-limited swipe).
+ */
+private suspend fun resetSwipe(
+    offsetX: Animatable<Float, *>,
+    offsetY: Animatable<Float, *>
+) {
+    offsetX.snapTo(0f)
+    offsetY.snapTo(0f)
 }

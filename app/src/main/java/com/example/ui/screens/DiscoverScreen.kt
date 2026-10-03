@@ -40,9 +40,10 @@ fun DiscoverScreen(
     ) {
         if (deck.isNotEmpty()) {
             val topProfile = deck.first()
-            // The card photo keeps extending behind the floating liquid-glass
-            // nav bar; only the info column and action dock are lifted above it.
-            val navBarInset = glassNavBarOverlayHeight()
+            // The whole swipe card now sits fully ABOVE the floating
+            // liquid-glass nav bar (system navigation-bar inset included),
+            // so no part of the profile — photo, info column or action
+            // dock — is ever covered by it.
             ProfileCard(
                 profile = topProfile,
                 onLike = { onLike(topProfile, false) },
@@ -51,8 +52,9 @@ fun DiscoverScreen(
                 onRewind = onRewind,
                 onBoost = onBoost,
                 onOpenDetail = { onOpenDetail(topProfile) },
-                bottomContentInset = navBarInset,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = glassNavBarOverlayHeight(extra = 4.dp))
             )
         } else {
             // Polished Empty Deck State

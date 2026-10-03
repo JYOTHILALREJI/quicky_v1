@@ -2,7 +2,10 @@ package com.example.ui.components
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,6 +42,14 @@ fun ProfileDetailSheet(
     onReport: () -> Unit
 ) {
     var showReportDialog by remember { mutableStateOf(false) }
+    // Which of the profile's photos the hero shows — switchable from the
+    // thumbnail strip (remote Storage URLs win over bundled drawables).
+    var heroIndex by remember(profile.id) { mutableIntStateOf(0) }
+
+    val remotePhotos = profile.photoUris
+    val bundledPhotos = profile.photoResIds
+    val totalPhotos = maxOf(remotePhotos.size, bundledPhotos.size)
+    val clampedHeroIndex = heroIndex.coerceIn(0, maxOf(0, totalPhotos - 1))
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -52,19 +63,36 @@ fun ProfileDetailSheet(
                 .verticalScroll(rememberScrollState())
                 .padding(bottom = 36.dp)
         ) {
-            // PRD Section 16: Cinematic Hero Image with Overlay Info
-            val heroPhoto = profile.photoResIds.firstOrNull() ?: R.drawable.img_onboarding_hero
+            // PRD Section 16: Cinematic Hero Image with Overlay Info.
+            // Remote Supabase Storage photo first (uploaded by the user),
+            // then bundled drawable, then the hero placeholder — fixes the
+            // "info icon shows a placeholder" bug for server candidates.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(420.dp)
             ) {
-                Image(
-                    painter = painterResource(id = heroPhoto),
-                    contentDescription = profile.name,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
+                val heroUri = remotePhotos.getOrNull(clampedHeroIndex)
+                val heroRes = bundledPhotos.getOrNull(clampedHeroIndex)
+                if (heroUri != null) {
+                    coil.compose.AsyncImage(
+                        model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+                            .data(heroUri)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "${profile.name}'s photo",
+                        contentScale = ContentScale.Crop,
+                        error = painterResource(R.drawable.img_onboarding_hero),
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Image(
+                        painter = painterResource(id = heroRes ?: R.drawable.img_onboarding_hero),
+                        contentDescription = profile.name,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
 
                 // Close Button Top-Start
                 IconButton(
@@ -176,6 +204,58 @@ fun ProfileDetailSheet(
                 }
             }
 
+            // ---------------------------------------------------------
+            // PHOTO STRIP — all of the profile's photos; tapping a
+            // thumbnail switches the hero above.
+            // ---------------------------------------------------------
+            if (totalPhotos > 1) {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp),
+                    modifier = Modifier.padding(top = 12.dp)
+                ) {
+                    items(totalPhotos) { index ->
+                        val isSelected = index == clampedHeroIndex
+                        val thumbUri = remotePhotos.getOrNull(index)
+                        val thumbRes = bundledPhotos.getOrNull(index)
+                        Box(
+                            modifier = Modifier
+                                .size(84.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .then(
+                                    if (isSelected) {
+                                        Modifier.border(
+                                            width = 2.5.dp,
+                                            color = QuickyPink,
+                                            shape = RoundedCornerShape(14.dp)
+                                        )
+                                    } else Modifier
+                                )
+                                .clickable { heroIndex = index }
+                                .testTag("detail_photo_thumb_$index")
+                        ) {
+                            if (thumbUri != null) {
+                                coil.compose.AsyncImage(
+                                    model = thumbUri,
+                                    contentDescription = "${profile.name}'s photo ${index + 1}",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Image(
+                                    painter = painterResource(
+                                        id = thumbRes ?: R.drawable.img_onboarding_hero
+                                    ),
+                                    contentDescription = "${profile.name}'s photo ${index + 1}",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // Lower Detail Section (Respects field visibility matrix)
             Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
 
@@ -226,6 +306,50 @@ fun ProfileDetailSheet(
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 6.dp)
                 )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // ---------------------------------------------------------
+                // BASICS — every useful profile column, each row rendered
+                // only when it actually has data (change request #4).
+                // ---------------------------------------------------------
+                val zodiacSign = zodiacFor(profile.dateOfBirth)
+                val basics = buildList {
+                    add("Looking For" to profile.relationshipIntent)
+                    add("Zodiac" to zodiacSign)
+                    add("Industry" to profile.industry)
+                    add("Interested In" to profile.interestedIn.takeIf { it.isNotBlank() })
+                }
+
+                Text(
+                    text = "Basics",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                basics.forEach { (label, value) ->
+                    if (!value.isNullOrBlank()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = value,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 24.dp)
+                            )
+                        }
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -306,13 +430,20 @@ fun ProfileDetailSheet(
                     }
                 }
 
-                if (profile.fieldVisibility["education"] != VisibilityLevel.ONLY_ME && profile.education.isNotBlank()) {
+                if (profile.fieldVisibility["education"] != VisibilityLevel.ONLY_ME &&
+                    (profile.education.isNotBlank() || profile.educationLevel.isNotBlank())
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text("Education", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("${profile.educationLevel} (${profile.education})", fontWeight = FontWeight.Medium)
+                        Text(
+                            profile.educationLevel +
+                                    (profile.education.takeIf { it.isNotBlank() && it != profile.educationLevel }
+                                        ?.let { " ($it)" } ?: ""),
+                            fontWeight = FontWeight.Medium
+                        )
                     }
                 }
 
@@ -323,6 +454,34 @@ fun ProfileDetailSheet(
                     ) {
                         Text("Languages", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(profile.languages.joinToString(", "), fontWeight = FontWeight.Medium)
+                    }
+                }
+
+                // ---------------------------------------------------------
+                // HOBBIES — chip row (only when the profile has any)
+                // ---------------------------------------------------------
+                if (profile.hobbies.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Hobbies",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    FlowRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        profile.hobbies.forEach { hobby ->
+                            SuggestionChip(
+                                onClick = {},
+                                label = { Text(hobby) },
+                                colors = SuggestionChipDefaults.suggestionChipColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                )
+                            )
+                        }
                     }
                 }
 
@@ -397,5 +556,33 @@ fun ProfileDetailSheet(
                 TextButton(onClick = { showReportDialog = false }) { Text("Cancel") }
             }
         )
+    }
+}
+
+/**
+ * Maps the profile's (private, never displayed raw) date of birth to a
+ * zodiac sign label — one of the "more available details" surfaced on
+ * the detail sheet. Returns null when the date is missing/unparseable.
+ */
+private fun zodiacFor(isoDate: String?): String? {
+    if (isoDate.isNullOrBlank()) return null
+    val parts = isoDate.split("-")
+    if (parts.size < 3) return null
+    val month = parts[1].toIntOrNull() ?: return null
+    val day = parts[2].toIntOrNull() ?: return null
+    return when (month) {
+        1 -> if (day < 20) "Capricorn ♑" else "Aquarius ♒"
+        2 -> if (day < 19) "Aquarius ♒" else "Pisces ♓"
+        3 -> if (day < 21) "Pisces ♓" else "Aries ♈"
+        4 -> if (day < 20) "Aries ♈" else "Taurus ♉"
+        5 -> if (day < 21) "Taurus ♉" else "Gemini ♊"
+        6 -> if (day < 21) "Gemini ♊" else "Cancer ♋"
+        7 -> if (day < 23) "Cancer ♋" else "Leo ♌"
+        8 -> if (day < 23) "Leo ♌" else "Virgo ♍"
+        9 -> if (day < 23) "Virgo ♍" else "Libra ♎"
+        10 -> if (day < 23) "Libra ♎" else "Scorpio ♏"
+        11 -> if (day < 22) "Scorpio ♏" else "Sagittarius ♐"
+        12 -> if (day < 22) "Sagittarius ♐" else "Capricorn ♑"
+        else -> null
     }
 }

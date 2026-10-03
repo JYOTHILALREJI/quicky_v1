@@ -10,6 +10,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.R
+import com.example.BuildConfig
 import com.example.data.AppContent
 import com.example.data.SupabaseAuth
 import com.example.data.SupabaseRepository
@@ -112,7 +113,13 @@ data class SparkUiState(
     // Sticker Store state
     val stickerPacks: List<StickerPack> = AppContent.stickerPackCatalog,
     val showStickerStore: Boolean = false,
-    val showStickerPicker: Boolean = false
+    val showStickerPicker: Boolean = false,
+
+    // Edit Location sheet (change request #5)
+    val showEditLocationSheet: Boolean = false,
+    val locationSearchResults: List<GeoSuggestion> = emptyList(),
+    val isSearchingLocation: Boolean = false,
+    val editLocationError: String? = null
 ) {
     val filter: DiscoveryFilter get() = discoveryPreferences
 }
@@ -672,6 +679,7 @@ class SparkViewModel : ViewModel() {
                 .putString("qualification", draft.qualification)
                 .putString("occupation", draft.occupation)
                 .putString("hobbies", JSONArray(draft.hobbies).toString())
+                .putString("languages", JSONArray(draft.languages).toString())
                 .putInt("heightCm", draft.heightCm ?: -1)
                 .putFloat("weightKg", draft.weightKg ?: -1f)
                 .putString("city", draft.city)
@@ -702,6 +710,7 @@ class SparkViewModel : ViewModel() {
             qualification = prefs.getString("qualification", "").orEmpty(),
             occupation = prefs.getString("occupation", "").orEmpty(),
             hobbies = stringList("hobbies"),
+            languages = stringList("languages").ifEmpty { listOf("English") },
             heightCm = prefs.getInt("heightCm", -1).takeIf { it > 0 },
             weightKg = prefs.getFloat("weightKg", -1f).takeIf { it > 0f },
             city = prefs.getString("city", "").orEmpty(),
@@ -892,7 +901,8 @@ class SparkViewModel : ViewModel() {
             },
             verifiedOnly = prefs.verifiedOnly,
             occupation = prefs.occupation.takeIf { it.isNotBlank() },
-            sharedInterests = prefs.interests
+            sharedInterests = prefs.interests,
+            languages = prefs.languages
         )
     }
 
@@ -1503,6 +1513,94 @@ class SparkViewModel : ViewModel() {
         }
     }
 
+    // -------------------------------------------------------------
+    // EDIT LOCATION (change request #5)
+    // -------------------------------------------------------------
+
+    fun toggleEditLocationSheet(show: Boolean) {
+        _uiState.update {
+            it.copy(
+                showEditLocationSheet = show,
+                locationSearchResults = if (show) it.locationSearchResults else emptyList(),
+                editLocationError = if (show) it.editLocationError else null
+            )
+        }
+    }
+
+    /** Nominatim city/area search for the Edit Location sheet. */
+    fun searchCityLocation(query: String) {
+        if (query.trim().length < 2) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSearchingLocation = true, editLocationError = null) }
+            val results = SupabaseRepository.searchCity(query)
+            _uiState.update {
+                it.copy(
+                    isSearchingLocation = false,
+                    locationSearchResults = results,
+                    editLocationError = if (results.isEmpty())
+                        "No places found for \"${query.trim()}\" — try a nearby city name."
+                    else null
+                )
+            }
+        }
+    }
+
+    /**
+     * GPS path of the Edit Location sheet: grabs the current position,
+     * reverse-geocodes it into a street/city label and saves it straight
+     * to the profile + database.
+     */
+    fun captureCurrentLocation(context: Context) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLocating = true, editLocationError = null) }
+            val location = fetchCurrentLocation(context)
+            if (location == null) {
+                _uiState.update {
+                    it.copy(
+                        isLocating = false,
+                        editLocationError = "Couldn't get your location. Make sure location " +
+                                "is on and the permission is granted, then try again."
+                    )
+                }
+                return@launch
+            }
+            val label = reverseGeocode(context, location.latitude, location.longitude)
+            saveLocationInternal(
+                latitude = location.latitude,
+                longitude = location.longitude,
+                city = label ?: _uiState.value.userProfile.city
+            )
+        }
+    }
+
+    /** Search-selection path of the Edit Location sheet. */
+    fun saveLocation(latitude: Double, longitude: Double, city: String) {
+        saveLocationInternal(latitude, longitude, city)
+    }
+
+    private fun saveLocationInternal(latitude: Double, longitude: Double, city: String) {
+        _uiState.update {
+            it.copy(
+                isLocating = false,
+                showEditLocationSheet = false,
+                userProfile = it.userProfile.copy(
+                    latitude = latitude,
+                    longitude = longitude,
+                    city = city
+                ),
+                toastMessage = "Location updated — distance matching uses it right away 📍"
+            )
+        }
+        // Keep the database row in sync so the server-side distance
+        // filter follows immediately.
+        persistProfileFields(
+            JSONObject()
+                .put("latitude", latitude)
+                .put("longitude", longitude)
+                .put("city", city.trim())
+        )
+    }
+
     fun purchaseSubscription(isYearly: Boolean) {
         val updated = _uiState.value.entitlements.copy(
             isPremium = true,
@@ -1622,12 +1720,16 @@ class SparkViewModel : ViewModel() {
         prefs: DiscoveryPreferences
     ): List<UserProfile> {
         val occupationQuery = prefs.occupation.trim()
+        val preferredLanguages = prefs.languages.map { it.trim().lowercase() }
         return deck.filter { profile ->
             profile.age in prefs.minAge..prefs.maxAge &&
                 profile.distanceKm <= prefs.distanceKm &&
                 (occupationQuery.isBlank() ||
                         profile.occupation.contains(occupationQuery, ignoreCase = true)) &&
                 (!prefs.verifiedOnly || profile.isVerified) &&
+                (preferredLanguages.isEmpty() || profile.languages.any { candidate ->
+                    candidate.trim().lowercase() in preferredLanguages
+                }) &&
                 (prefs.interests.isEmpty() || profile.interests.any { candidate ->
                     candidate.trim().lowercase() in prefs.interests.map { it.trim().lowercase() }
                 })
@@ -1931,7 +2033,10 @@ class SparkViewModel : ViewModel() {
     // 2-PLAYER PREMIUM LUDO METHODS (PRD Section 3 - 10)
     // -------------------------------------------------------------
     fun openLudoGame() {
-        if (!_uiState.value.entitlements.isPremium) {
+        // Debug builds (and QA) can enter Ludo for free via
+        // BuildConfig.LUDO_FREE — release keeps the premium gate.
+        val ludoUnlocked = BuildConfig.LUDO_FREE || _uiState.value.entitlements.isPremium
+        if (!ludoUnlocked) {
             showToast("🔒 Ludo is a Quicky Premium Game. Unlock Quicky Gold to play!")
             openPremiumStore()
             return

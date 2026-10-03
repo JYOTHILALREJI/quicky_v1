@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Cake
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.outlined.Work
@@ -24,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.example.model.DiscoveryFilter
+import com.example.data.AppContent
 import com.example.ui.theme.QuickyPink
 
 /**
@@ -50,6 +52,8 @@ fun FilterSheet(
     var verifiedOnly by remember { mutableStateOf(currentFilter.verifiedOnly) }
     var intent by remember { mutableStateOf(currentFilter.relationshipIntent) }
     var occupationInput by remember { mutableStateOf(currentFilter.occupation) }
+    // Language filter (change request #7) — empty means "any language".
+    var selectedLanguages by remember { mutableStateOf(currentFilter.languages) }
 
     // Shared interests — seeded with the user's own (onboarding-chosen)
     // interests. Toggling any chip changes both the filter and the
@@ -184,6 +188,67 @@ fun FilterSheet(
             }
 
             // ---------------------------------------------------------
+            // LANGUAGES — match people who speak at least one of these
+            // ---------------------------------------------------------
+            FilterSectionBox(
+                icon = Icons.Outlined.Language,
+                title = "Languages",
+                valueText = if (selectedLanguages.isEmpty()) "Any"
+                else "${selectedLanguages.size} picked",
+                testTag = "filter_languages_box"
+            ) {
+                Text(
+                    text = "Leave everything unselected to see every language, or pick the ones you'd like in common.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 10.dp)
+                )
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    AppContent.languageCatalog.forEach { language ->
+                        val isSelected = language in selectedLanguages
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = {
+                                selectedLanguages = if (isSelected) {
+                                    selectedLanguages - language
+                                } else {
+                                    selectedLanguages + language
+                                }
+                            },
+                            label = {
+                                Text(
+                                    text = language,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            leadingIcon = if (isSelected) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            } else null,
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = QuickyPink.copy(alpha = 0.14f),
+                                selectedLabelColor = QuickyPink,
+                                selectedLeadingIconColor = QuickyPink
+                            ),
+                            modifier = Modifier.testTag(
+                                "filter_language_chip_${language.replace(" ", "_").lowercase()}"
+                            )
+                        )
+                    }
+                }
+            }
+
+            // ---------------------------------------------------------
             // VERIFIED PROFILES ONLY
             // ---------------------------------------------------------
             FilterSectionBox(
@@ -289,6 +354,7 @@ fun FilterSheet(
                             relationshipIntent = intent,
                             verifiedOnly = verifiedOnly,
                             occupation = occupationInput.trim(),
+                            languages = selectedLanguages,
                             interests = selectedInterests
                         )
                     )

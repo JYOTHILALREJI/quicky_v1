@@ -383,6 +383,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                                 onEditProfileClick = { showEditProfileSheet = true },
                                 onPersonalInformationClick = { viewModel.togglePersonalInformation(true) },
                                 onDiscoveryPreferencesClick = { viewModel.toggleFilterSheet(true) },
+                                onEditLocationClick = { viewModel.toggleEditLocationSheet(true) },
                                 onStartVerificationClick = { viewModel.startVerificationChallenge() },
                                 onSetPrimaryPhoto = { photoRes -> viewModel.setPrimaryPhoto(photoRes) },
                                 onDeletePhoto = { photoRes -> viewModel.deletePhoto(photoRes) },
@@ -454,6 +455,25 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 viewModel.reportUser(detailProfile.id, "Reported from profile sheet")
                 viewModel.closeProfileDetail()
             }
+        )
+    }
+
+    // Edit Location Sheet (change request #5)
+    if (state.showEditLocationSheet) {
+        EditLocationSheet(
+            currentCity = state.userProfile.city,
+            currentLatitude = state.userProfile.latitude,
+            currentLongitude = state.userProfile.longitude,
+            searchResults = state.locationSearchResults,
+            isSearching = state.isSearchingLocation,
+            isLocating = state.isLocating,
+            error = state.editLocationError,
+            onSearch = { query -> viewModel.searchCityLocation(query) },
+            onCaptureCurrentLocation = { viewModel.captureCurrentLocation(context) },
+            onSave = { latitude, longitude, city ->
+                viewModel.saveLocation(latitude, longitude, city)
+            },
+            onDismiss = { viewModel.toggleEditLocationSheet(false) }
         )
     }
 

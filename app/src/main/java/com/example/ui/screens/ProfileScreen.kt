@@ -50,6 +50,7 @@ fun ProfileScreen(
     onEditProfileClick: () -> Unit,
     onPersonalInformationClick: () -> Unit,
     onDiscoveryPreferencesClick: () -> Unit,
+    onEditLocationClick: () -> Unit,
     onStartVerificationClick: () -> Unit,
     onSetPrimaryPhoto: (Int) -> Unit,
     onDeletePhoto: (Int) -> Unit,
@@ -621,6 +622,32 @@ fun ProfileScreen(
                     trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     modifier = Modifier.clickable { onDiscoveryPreferencesClick() }
+                )
+
+                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                // Edit Location (change request #5) — updates the saved
+                // GPS coordinates + city that power distance matching.
+                ListItem(
+                    headlineContent = { Text("Location", fontWeight = FontWeight.SemiBold) },
+                    supportingContent = {
+                        Text(
+                            if (userProfile.city.isBlank()) "Set your location for distance matching"
+                            else "${userProfile.city} · used for distance matching"
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            Icons.Outlined.LocationOn,
+                            contentDescription = null,
+                            tint = QuickyPink
+                        )
+                    },
+                    trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier
+                        .clickable { onEditLocationClick() }
+                        .testTag("edit_location_row")
                 )
 
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))

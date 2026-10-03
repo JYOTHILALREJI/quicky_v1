@@ -49,6 +49,9 @@ data class OnboardingDraft(
     val qualification: String = "",
     val occupation: String = "",
     val hobbies: List<String> = emptyList(),
+    // Languages the user speaks — multi-select chips in stage 3; powers
+    // the language-overlap discovery filter (both client and RPC sides).
+    val languages: List<String> = emptyList(),
     val heightCm: Int? = null,
     val weightKg: Float? = null,
     val city: String = "",
@@ -78,7 +81,7 @@ data class OnboardingDraft(
                 lookingFor.isNotEmpty()
 
     val isStage3Valid: Boolean
-        get() = qualification.isNotEmpty()
+        get() = qualification.isNotEmpty() && languages.isNotEmpty()
 
     val isStage4Valid: Boolean
         get() = photos.isNotEmpty() && photos.any { it.faceValidated }
@@ -108,6 +111,7 @@ fun OnboardingDraft.toUserProfile(userId: String, photoUrls: List<String>): User
     photoUris = photoUrls,
     interests = interests,
     hobbies = hobbies,
+    languages = languages.ifEmpty { listOf("English") },
     lookingFor = lookingFor,
     heightCm = heightCm,
     weightKg = weightKg,
@@ -288,6 +292,8 @@ data class DiscoveryPreferences(
     val relationshipIntent: String = "Any",
     /** Occupation keyword filter — blank means "any occupation". */
     val occupation: String = "",
+    /** Language filter — empty means "any language"; otherwise candidates must share at least one. */
+    val languages: List<String> = emptyList(),
     val verifiedOnly: Boolean = false,
     val withPhotosOnly: Boolean = true,
     val interests: List<String> = emptyList() // Match profiles sharing at least one of these interests
@@ -301,6 +307,16 @@ enum class AppThemeMode {
     DARK,
     SYSTEM
 }
+
+/** A geocoding search suggestion (Nominatim) for the Edit Location sheet. */
+data class GeoSuggestion(
+    val latitude: Double,
+    val longitude: Double,
+    /** Full display name, e.g. "Kochi, Ernakulam District, Kerala, India". */
+    val label: String,
+    /** Shortened city/area label, e.g. "Kochi, Kerala". */
+    val city: String
+)
 
 // -------------------------------------------------------------
 // CLUBS & SOCIAL COMMUNITY MODELS (PRD Section 11 - 18, 32)

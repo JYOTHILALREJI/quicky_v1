@@ -44,8 +44,14 @@ android {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
+      // Ludo stays premium-gated in release builds.
+      buildConfigField("boolean", "LUDO_FREE", "false")
     }
-    debug { signingConfig = signingConfigs.getByName("debugConfig") }
+    debug {
+      signingConfig = signingConfigs.getByName("debugConfig")
+      // Ludo is free on debug builds so QA can test it without Premium.
+      buildConfigField("boolean", "LUDO_FREE", "true")
+    }
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11

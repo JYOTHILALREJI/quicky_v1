@@ -814,6 +814,30 @@ private fun StageBackground(
         }
     }
 
+    // -------------------------------------------------------------
+    // LANGUAGES YOU SPEAK (change request #6) — powers the language
+    // discovery filter; at least one required to continue.
+    // -------------------------------------------------------------
+    SectionLabel("LANGUAGES YOU SPEAK  ·  pick at least one")
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        AppContent.languageCatalog.forEach { language ->
+            FilterChip(
+                selected = language in draft.languages,
+                onClick = {
+                    val next = if (language in draft.languages) draft.languages - language
+                    else draft.languages + language
+                    onSave(draft.copy(languages = next))
+                },
+                label = { Text(language) },
+                colors = chipColors(),
+                modifier = Modifier.testTag("onboarding_language_chip")
+            )
+        }
+    }
+
     SectionLabel("BODY  ·  optional, visibility controlled later")
     Row(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
