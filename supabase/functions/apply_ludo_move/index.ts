@@ -18,8 +18,10 @@
 //      REJECTED and the deterministic timeout move is applied instead.
 //      `auto: true` requests the timeout move directly (any participant may
 //      trigger it once the deadline passes — the server decides).
-//   3. Validate the token ownership + full rule set (release-on-6, exact
-//      finish, blocks, safe cells) — the SAME rules as LudoEngine.kt.
+//   3. Validate the token ownership + full rule set (release-on-6, ANY dice
+//      for active coins, exact finish, blocks, safe cells) — the SAME rules
+//      as LudoEngine.kt. Rejections carry a `reason` code: BASE_REQUIRES_SIX,
+//      MOVE_EXCEEDS_HOME, TOKEN_ALREADY_HOME, BLOCKED_PATH.
 //   4. Apply the move + capture in ONE transaction; award +50 per newly
 //      finished coin; assign finish positions.
 //   5. THIRD player to bring all 4 coins home ends the game (PRD §18):
@@ -116,6 +118,11 @@ function isMoveLegal(board: Board, seat: number, tokenId: number, dice: number):
   const step = board.players[seat].tokens[tokenId];
   if (step === undefined || step >= FINISH_STEP) return false;
 
+  // A yard coin needs a SIX to leave base; an ACTIVE coin moves on ANY dice
+  // 1–6 provided it does not overshoot the exact home step (movement patch
+  // §3/§4 — parity with LudoEngine.isMoveLegal).
+  if (step === 0 && dice !== 6) return false;
+
   const newStep = step === 0 ? 1 : step + dice;
   if (newStep > FINISH_STEP) return false; // exact roll to finish only
 
@@ -132,6 +139,22 @@ function range(from: number, to: number): number[] {
   const out: number[] = [];
   for (let i = from; i <= to; i++) out.push(i);
   return out;
+}
+
+/**
+ * Why a manual move was rejected (movement patch §15). Checked in the SAME
+ * order as [isMoveLegal] so the reason matches the first failing rule —
+ * purely diagnostic; the reject decision itself is always isMoveLegal's.
+ */
+function illegalMoveReason(board: Board, seat: number, tokenId: number, dice: number): string {
+  if (tokenId === null || tokenId < 0 || tokenId > 3) return "TOKEN_ID_INVALID";
+  if (board.phase !== "AWAITING_MOVE") return "STALE_TURN";
+  const step = board.players[seat]?.tokens[tokenId];
+  if (step === undefined) return "TOKEN_ID_INVALID";
+  if (step >= FINISH_STEP) return "TOKEN_ALREADY_HOME";
+  if (step === 0 && dice !== 6) return "BASE_REQUIRES_SIX";
+  if ((step === 0 ? 1 : step + dice) > FINISH_STEP) return "MOVE_EXCEEDS_HOME";
+  return "BLOCKED_PATH"; // 2+ opponents on a cell along the path
 }
 
 /** Steps the moved coin travels through (animation path, PRD §13). */
@@ -352,7 +375,10 @@ Deno.serve(async (req) => {
         return json({ error: "not_your_turn" }, 403);
       }
       if (!isMoveLegal(board, turnIndex, tokenId, dice)) {
-        return json({ error: "illegal_move" }, 422);
+        return json(
+          { error: "illegal_move", reason: illegalMoveReason(board, turnIndex, tokenId, dice) },
+          422,
+        );
       }
       chosenToken = tokenId;
       isAutoMove = false;

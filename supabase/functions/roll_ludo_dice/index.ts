@@ -114,6 +114,9 @@ function hasAnyLegalMove(board: Board, seat: number, dice: number): boolean {
   for (let tokenId = 0; tokenId < tokens.length; tokenId++) {
     const step = tokens[tokenId];
     if (step >= FINISH_STEP) continue;
+    // A yard coin needs a SIX to leave base; an ACTIVE coin moves on ANY
+    // dice 1–6 (movement patch §3/§4 — parity with LudoEngine.isMoveLegal).
+    if (step === 0 && dice !== 6) continue;
     const newStep = step === 0 ? 1 : step + dice;
     if (newStep > FINISH_STEP) continue;
     const cells = step === 0

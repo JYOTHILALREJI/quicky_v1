@@ -17,7 +17,8 @@ import com.example.model.LudoToken
  * apply_ludo_move) implement THESE exact rules — keep them in sync.
  *
  * RULES ENFORCED
- *  1. Token release: a token leaves the home yard only on a roll of 6.
+ *  1. Token release: a token leaves the home yard ONLY on a roll of 6 —
+ *     a coin already on the track moves on ANY roll 1–6 (movement patch §3/§4).
  *  2. Extra turn on a 6; three consecutive 6s forfeit the turn (the third
  *     six is not played).
  *  3. Capture: landing on a cell occupied by exactly ONE opponent token
@@ -156,12 +157,21 @@ object LudoEngine {
     // --------------------------------------------------------------
 
     /**
-     * True when [token] of the current player can legally move [dice] steps
-     * (release-on-6, exact home entry, block rule included).
+     * True when [token] of the current player can legally move [dice] steps.
+     *
+     * Rules (movement patch §3/§4/§9):
+     *  - YARD coin: movable ONLY on a 6 (releases onto the seat's start cell).
+     *  - ACTIVE coin (1..56): movable on ANY dice 1–6 as long as the
+     *    destination does not overshoot the exact home step (57).
+     *  - FINISHED coin: never movable.
+     *  - Block rule: cannot pass through or land on 2+ opponent tokens.
      */
     fun isMoveLegal(match: LudoMatch, token: LudoToken, dice: Int): Boolean {
         if (dice !in 1..6) return false
         if (token.isFinished) return false
+
+        // A yard coin needs a six to leave; an ACTIVE coin never does.
+        if (token.isInYard && dice != 6) return false
 
         val seat = match.turnIndex
         val from = token.stepCount
