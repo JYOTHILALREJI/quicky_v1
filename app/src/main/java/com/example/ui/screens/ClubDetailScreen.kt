@@ -1,7 +1,9 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -34,13 +36,15 @@ import com.example.model.Club
 import com.example.model.ClubMember
 import com.example.model.ClubMessage
 import com.example.model.UserProfile
+import com.example.ui.components.ClubChatBannerAd
 import com.example.ui.components.QuickyStickerIcon
 import com.example.ui.components.ReplyPreviewBanner
 import com.example.ui.components.SwipeToReplyContainer
+import com.example.ui.components.dismissKeyboardOnTap
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ClubDetailScreen(
     club: Club,
@@ -56,6 +60,7 @@ fun ClubDetailScreen(
     onOpenPremiumStore: () -> Unit,
     onViewMemberProfile: (String) -> Unit,
     onRemoveMember: (clubId: String, memberUserId: String) -> Unit,
+    onDeleteClub: (String) -> Unit = {},
     onJoinClub: (String) -> Unit = {},
     onLeaveAndJoinClub: (String) -> Unit = {},
     onLeaveClub: (String) -> Unit = {},
@@ -68,6 +73,7 @@ fun ClubDetailScreen(
     var memberToRemove by remember { mutableStateOf<ClubMember?>(null) }
     var showLeaveConfirmDialog by remember { mutableStateOf(false) }
     var showSwitchClubConfirmDialog by remember { mutableStateOf(false) }
+    var showDeleteClubConfirmDialog by remember { mutableStateOf(false) }
     var isRecordingVoiceNote by remember { mutableStateOf(false) }
     var voiceRecordSeconds by remember { mutableIntStateOf(0) }
     val listState = rememberLazyListState()
@@ -87,12 +93,16 @@ fun ClubDetailScreen(
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
-            // +1 because the welcome tile occupies index 0 of the list
-            listState.animateScrollToItem(messages.size)
+            listState.animateScrollToItem(messages.size - 1)
         }
     }
 
     Scaffold(
+        modifier = modifier
+            .fillMaxSize()
+            // v2.1 §3.3/§3.4 — keyboard pushes only the composer up;
+            // the pinned header stays put.
+            .imePadding(),
         topBar = {
             TopAppBar(
                 title = {
@@ -113,12 +123,22 @@ fun ClubDetailScreen(
                             Text(
                                 text = club.name,
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
+                            // v2.1 §3.4 — the description lives ONLY in the
+                            // header now (1 line). Long descriptions marquee
+                            // slowly instead of pushing content off-screen.
                             Text(
-                                text = "${club.memberCount} / ${club.maxMembers} members",
+                                text = "${club.memberCount}/${club.maxMembers} members · ${club.description}",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = QuickyPurple
+                                color = QuickyPurple,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    velocity = 20.dp
+                                )
                             )
                         }
                     }
@@ -169,56 +189,50 @@ fun ClubDetailScreen(
                                         Icon(Icons.Filled.ExitToApp, contentDescription = null, tint = ActionPass)
                                     }
                                 )
+                                // v2.1 §3.8 — owner-only club deletion. Cascades
+                                // wipe members/messages/events server-side and
+                                // every member gets notified by the DB trigger.
+                                if (isOwner) {
+                                    DropdownMenuItem(
+                                        text = { Text("Delete Club", color = ActionPass, fontWeight = FontWeight.Bold) },
+                                        onClick = {
+                                            showMenu = false
+                                            showDeleteClubConfirmDialog = true
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Outlined.DeleteForever, contentDescription = null, tint = ActionPass)
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
-        },
-        modifier = modifier.fillMaxSize()
+        }
     ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Messages Feed — same bubble styling as the personal chat
+            // v2.1 §3.6.2 — AdMob banner pinned between the club header and
+            // the message list (fixed slot, never scrolls, 60s refresh).
+            ClubChatBannerAd()
+
+            // Messages Feed — same bubble styling as the personal chat.
+            // (v2.1 §3.4: club name/description live ONLY in the pinned
+            // header — nothing is duplicated inside the scroll area.)
             LazyColumn(
                 state = listState,
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .dismissKeyboardOnTap(),
                 reverseLayout = false
             ) {
-                // Club welcome info tile
-                item {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = QuickyPurple.copy(alpha = 0.08f),
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(club.logoEmoji, fontSize = 32.sp)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = club.name,
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Text(
-                                text = club.description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                            )
-                        }
-                    }
-                }
-
-                items(messages) { msg ->
+                items(messages, key = { it.id }) { msg ->
                     SwipeToReplyContainer(onSwipeToReply = { replyingToMessage = msg }) {
                         Row(
                             modifier = Modifier
@@ -841,6 +855,36 @@ fun ClubDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { memberToRemove = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // v2.1 §3.8 — owner-only club deletion with explicit cascade warning.
+    if (showDeleteClubConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteClubConfirmDialog = false },
+            title = { Text("Delete this club?") },
+            text = {
+                Text(
+                    "All ${club.memberCount} members will be removed and every club message " +
+                            "will be permanently deleted. This cannot be undone."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteClubConfirmDialog = false
+                        onDeleteClub(club.id)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ActionPass)
+                ) {
+                    Text("Delete Club")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteClubConfirmDialog = false }) {
                     Text("Cancel")
                 }
             }

@@ -50,6 +50,7 @@ fun SparkTopBar(
     onGamesClick: () -> Unit = {},
     onClubsClick: () -> Unit = {},
     onBackClick: () -> Unit = {},
+    onSettingsClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // Games Hub & Clubs are now full-screen destinations reached from the
@@ -191,6 +192,23 @@ fun SparkTopBar(
                         imageVector = Icons.Filled.Diversity3,
                         contentDescription = "Clubs",
                         tint = if (currentTab == SparkTab.CLUBS) QuickyPurple else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // v2.1 §3.9 — gear icon opens the dedicated Settings screen
+            // (Profile page carries no settings rows any more).
+            if (currentTab == SparkTab.PROFILE) {
+                IconButton(
+                    onClick = onSettingsClick,
+                    modifier = Modifier
+                        .testTag("top_bar_settings")
+                        .minimumInteractiveComponentSize()
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Settings,
+                        contentDescription = "Settings",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

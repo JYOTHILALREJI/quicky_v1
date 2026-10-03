@@ -139,4 +139,41 @@ object SupabaseClient {
 
     /** Convenience: parse a REST response as a JSON array. */
     fun parseArray(raw: String): JSONArray = JSONArray(raw.ifEmpty { "[]" })
+
+    /**
+     * Invokes a Supabase Edge Function (Deno) deployed under
+     * `{SUPABASE_URL}/functions/v1/{name}` — e.g. the server-authoritative
+     * Ludo Arena dice roll / move validation (v2.1 §3.2.2 / §3.2.4).
+     *
+     * @param name        function folder name, e.g. "roll_ludo_dice"
+     * @param payload     JSON-serializable request body
+     * @param accessToken Supabase Auth user JWT (identifies the caller
+     *                    server-side); anon key is used when null.
+     * @return the function's parsed JSON response object
+     */
+    suspend fun functions(
+        name: String,
+        payload: Map<String, Any?> = emptyMap(),
+        accessToken: String? = null
+    ): JSONObject = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply { payload.forEach { (k, v) -> put(k, v ?: JSONObject.NULL) } }
+        val request = Request.Builder()
+            .url("${SupabaseConfig.SUPABASE_URL}/functions/v1/$name")
+            .apply {
+                authHeaders(accessToken).forEach { (k, v) -> header(k, v) }
+                header("Content-Type", "application/json")
+            }
+            .post(body.toString().toRequestBody(JSON))
+            .build()
+
+        http.newCall(request).execute().use { response ->
+            val responseBody = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException(
+                    "Edge function $name failed: HTTP ${response.code} — $responseBody"
+                )
+            }
+            JSONObject(responseBody.ifEmpty { "{}" })
+        }
+    }
 }

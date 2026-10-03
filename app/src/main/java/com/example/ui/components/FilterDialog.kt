@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import com.example.model.DiscoveryFilter
 import com.example.data.AppContent
 import com.example.ui.theme.QuickyPink
+import com.example.ui.components.dismissKeyboardOnTap
 
 /**
  * Discovery Preferences bottom sheet.
@@ -73,6 +74,8 @@ fun FilterSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // v2.1 §3.5 — tap outside any field dismisses the keyboard.
+                .dismissKeyboardOnTap()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)

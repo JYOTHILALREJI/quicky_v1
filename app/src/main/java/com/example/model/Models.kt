@@ -308,6 +308,16 @@ enum class AppThemeMode {
     SYSTEM
 }
 
+/**
+ * Push notification toggles for the dedicated Settings screen (v2.1 §3.9).
+ */
+data class NotificationPreferences(
+    val matches: Boolean = true,
+    val messages: Boolean = true,
+    val clubs: Boolean = true,
+    val promotions: Boolean = false
+)
+
 /** A geocoding search suggestion (Nominatim) for the Edit Location sheet. */
 data class GeoSuggestion(
     val latitude: Double,
@@ -369,29 +379,88 @@ data class ClubMessage(
 )
 
 // -------------------------------------------------------------
-// 2-PLAYER PREMIUM LUDO MODELS (PRD Section 3 - 9, 32)
+// LUDO ARENA MODELS (v2.1 §3.2 — 4-player rewrite)
+//
+// Turn order is CLOCKWISE: RED → GREEN → YELLOW → BLUE.
+// A token's [LudoToken.stepCount] encodes its full journey:
+//     0      = in the home yard
+//     1..51  = on the shared 52-cell main track
+//     52..56 = inside the player's private colored home column
+//     57     = finished (center home)
+// Tokens leave the yard ONLY on a roll of 6 and need an exact
+// roll to enter the final home cell (overshoot is illegal).
 // -------------------------------------------------------------
+enum class LudoColor(val colorHex: Long, val label: String) {
+    RED(0xFFFF5A5F, "Red"),
+    GREEN(0xFF4CD964, "Green"),
+    YELLOW(0xFFFFC93C, "Yellow"),
+    BLUE(0xFF4DA6FF, "Blue")
+}
+
+enum class LudoMode { SOLO_VS_BOTS, ONLINE }
+
+/** Which input the match is waiting for. */
+enum class LudoPhase { AWAITING_ROLL, AWAITING_MOVE, FINISHED }
+
 data class LudoToken(
     val id: Int, // 0..3
-    val playerId: String,
-    val stepCount: Int = 0, // 0 = in base (-1), 1..56 = on track/safe path, 57 = Home center
-    val isHome: Boolean = true, // Still in starting base
-    val isFinished: Boolean = false // Reached home goal
-)
+    val stepCount: Int = 0 // see encoding above
+) {
+    val isInYard: Boolean get() = stepCount == 0
+    val isOnMainTrack: Boolean get() = stepCount in 1..51
+    val isFinished: Boolean get() = stepCount >= 57
+}
 
 data class LudoPlayer(
-    val id: String,
+    val id: String, // "user_me" for the local user, "bot_1"…, or a remote user id
     val name: String,
     val avatarRes: Int,
-    val colorHex: Long, // e.g. 0xFFFF2A6D (Pink) vs 0xFF06B6D4 (Cyan) or Red vs Green
-    val colorName: String, // "Red" vs "Green"
-    val score: Int = 100,
-    val characterBadge: String = "The Explorer",
-    val isVerified: Boolean = true,
-    val tokens: List<LudoToken> = (0..3).map { LudoToken(id = it, playerId = id) }
+    val seat: Int, // 0=RED, 1=GREEN, 2=YELLOW, 3=BLUE
+    val isBot: Boolean = false,
+    val tokens: List<LudoToken> = (0..3).map { LudoToken(id = it) }
 ) {
-    val finishedTokensCount: Int get() = tokens.count { it.isFinished }
+    val color: LudoColor get() = LudoColor.entries.getOrElse(seat) { LudoColor.RED }
+    val finishedTokens: Int get() = tokens.count { it.isFinished }
+    val hasWon: Boolean get() = tokens.all { it.isFinished }
 }
+
+/**
+ * Full server-authoritative match state. Serialized as JSON into
+ * `ludo_game_state.board_state` for online matches; drives the board UI
+ * in every mode.
+ */
+data class LudoMatch(
+    val id: String,
+    val mode: LudoMode = LudoMode.SOLO_VS_BOTS,
+    val players: List<LudoPlayer>, // exactly 4 seats (bots fill empty seats)
+    val turnIndex: Int = 0,
+    val diceValue: Int? = null,
+    val phase: LudoPhase = LudoPhase.AWAITING_ROLL,
+    /** Consecutive sixes rolled by the current player in THIS turn streak. */
+    val consecutiveSixes: Int = 0,
+    val winnerId: String? = null,
+    val chatMessages: List<LudoChatMessage> = emptyList(),
+    /** Short human status for the strip under the board (no chat spam). */
+    val statusText: String = "Roll the dice to start",
+    /** Player id owned by THIS device — "user_me" for solo, the Supabase uid online. */
+    val localUserId: String = LOCAL_USER_ID
+) {
+    val currentPlayer: LudoPlayer get() = players[turnIndex.coerceIn(0, players.lastIndex)]
+    val isMyTurn: Boolean get() = currentPlayer.id == localUserId
+
+    companion object {
+        /** Marker id for the local user inside a solo Ludo match. */
+        const val LOCAL_USER_ID = "user_me"
+    }
+}
+
+/** A player seat description for joining an online match. */
+data class LudoSeatInfo(
+    val seat: Int,
+    val playerId: String,
+    val playerName: String,
+    val isBot: Boolean
+)
 
 data class LudoChatMessage(
     val id: String,
@@ -408,24 +477,11 @@ data class LudoChatMessage(
     val replyToSender: String? = null
 )
 
-data class LudoRoom(
-    val id: String,
-    val player1: LudoPlayer, // Opposite side top
-    val player2: LudoPlayer, // Opposite side bottom
-    val currentTurnPlayerId: String,
-    val diceValue: Int = 6,
-    val isRolling: Boolean = false,
-    val canMoveToken: Boolean = false,
-    val status: String = "IN_PROGRESS", // "WAITING", "IN_PROGRESS", "COMPLETED"
-    val winnerId: String? = null,
-    val lastEventText: String = "Game started! Roll dice to begin.",
-    val chatMessages: List<LudoChatMessage> = emptyList(),
-    val startedAt: String = "Just now",
-    val duration: String = "02:45"
-)
+// (v2.1) The old 2-player `LudoRoom` was removed — Ludo Arena is a
+// 4-player match described by [LudoMatch] above.
 
 // -------------------------------------------------------------
-// STICKERS STORE & OWNERSHIP MODELS (PRD Section 20 - 24, 32)
+// STICKERS STORE & OWNERSHIP MODELS (PRD Section 20 - 24, 32; v2.1 §3.1)
 // -------------------------------------------------------------
 data class StickerItem(
     val id: String,
@@ -440,9 +496,22 @@ data class StickerPack(
     val name: String,
     val description: String,
     val previewEmoji: String,
+    /** Real-money price label, e.g. "$0.99" — empty means coin-priced or free. */
     val price: String, // e.g. "$0.99"
     val googleProductId: String,
     val isOwned: Boolean = false,
     val category: String = "Reactions",
+    /** Quicky-Gold coin price (v2.1 §3.1 CTA: "Get · 250 🪙"). Null = real-money/free. */
+    val priceCoins: Int? = null,
+    /** Premium-gated pack — locked (lock icon + price) until Quicky Gold. */
+    val isPremiumGated: Boolean = false,
     val stickers: List<StickerItem> = emptyList()
-)
+) {
+    /** CTA label for the corner chip: "Get · 250 🪙", "Get · Free" or "Get · $0.99". */
+    val ctaLabel: String
+        get() = when {
+            priceCoins != null -> "Get · $priceCoins 🪙"
+            price.isBlank() || price == "0" -> "Get · Free"
+            else -> "Get · $price"
+        }
+}

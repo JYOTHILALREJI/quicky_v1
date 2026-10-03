@@ -30,6 +30,7 @@ import com.example.R
 import com.example.model.GameDefinition
 import com.example.model.MatchItem
 import com.example.model.TruthOrDarePrompt
+import com.example.ui.components.PremiumBadge
 import com.example.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -285,7 +286,8 @@ fun GamesHubScreen(
             }
         }
 
-        // FLAGSHIP PREMIUM GAME: 2-PLAYER LUDO ARENA (PRD Section 3 - 10)
+        // FLAGSHIP PREMIUM GAME: LUDO ARENA (v2.1 §3.2 — 4-player, real rules;
+        // 2-player mode removed by design)
         item {
             Card(
                 shape = RoundedCornerShape(22.dp),
@@ -311,7 +313,7 @@ fun GamesHubScreen(
                     ) {
                         Image(
                             painter = painterResource(id = R.drawable.img_ludo_banner),
-                            contentDescription = "2-Player Ludo",
+                            contentDescription = "Ludo Arena",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
                         )
@@ -337,13 +339,15 @@ fun GamesHubScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "Ludo · 2-Player Arena",
+                                text = "Ludo Arena",
                                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                             )
+                            // v2.1 §5 — redesigned champagne-gold premium badge
+                            PremiumBadge(label = "GOLD")
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Real-time 2-player board game with opposite player layout, animated dice, step-by-step token movement, and shared room chat.",
+                            text = "Real-rules Ludo with a full board, animated dice and captures. Play solo against bots or a 4-player online match with room chat.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -360,7 +364,7 @@ fun GamesHubScreen(
                             modifier = Modifier.fillMaxWidth().testTag("enter_ludo_button")
                         ) {
                             Text(
-                                text = if (isLudoUnlocked) "Enter 2-Player Ludo Arena" else "Unlock Ludo with Quicky Gold",
+                                text = if (isLudoUnlocked) "Enter Ludo Arena" else "Unlock Ludo with Quicky Gold",
                                 color = if (isLudoUnlocked) Color.White else Color.Black,
                                 fontWeight = FontWeight.Bold
                             )

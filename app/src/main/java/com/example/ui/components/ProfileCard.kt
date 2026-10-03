@@ -51,13 +51,22 @@ fun ProfileCard(
     onRewind: () -> Unit,
     onBoost: () -> Unit,
     onOpenDetail: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** v2.1 §3.9 — distance unit from the Settings screen ("km" | "mi"). */
+    distanceUnit: String = "km"
 ) {
     var currentPhotoIndex by remember(profile.id) { mutableIntStateOf(0) }
     // Photos may be remote URLs (server-served candidates) or bundled
     // drawables — remote wins, drawable is the fallback.
     val totalPhotos = maxOf(profile.photoUris.size, profile.photoResIds.size)
     val photoCount = totalPhotos.coerceAtLeast(1)
+
+    // Distance label honoring the Settings > Distance unit toggle.
+    val distanceLabel = if (distanceUnit == "mi") {
+        "${(profile.distanceKm * 0.621371).toInt()} mi"
+    } else {
+        "${profile.distanceKm} km"
+    }
     // Cassy micro-interaction (PRD §5.5): light haptic impact the moment
     // a decision button fires — same cue users feel crossing the swipe
     // threshold in gesture-driven decks.
@@ -403,7 +412,7 @@ fun ProfileCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = "${profile.city} • ${profile.distanceKm} km away",
+                        text = "${profile.city} • $distanceLabel away",
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color.LightGray
                     )

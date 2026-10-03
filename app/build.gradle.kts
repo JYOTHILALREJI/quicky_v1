@@ -46,11 +46,15 @@ android {
       signingConfig = signingConfigs.getByName("release")
       // Ludo stays premium-gated in release builds.
       buildConfigField("boolean", "LUDO_FREE", "false")
+      // v2.1 §3.7 — premium gates stay REAL in production builds.
+      buildConfigField("boolean", "FORCE_PREMIUM_UNLOCK", "false")
     }
     debug {
       signingConfig = signingConfigs.getByName("debugConfig")
       // Ludo is free on debug builds so QA can test it without Premium.
       buildConfigField("boolean", "LUDO_FREE", "true")
+      // v2.1 §3.7 — every premium gate is unlocked for QA on debug builds.
+      buildConfigField("boolean", "FORCE_PREMIUM_UNLOCK", "true")
     }
   }
   compileOptions {
@@ -129,6 +133,10 @@ dependencies {
   // FusedLocationProviderClient — one-shot GPS fix for the onboarding
   // location field (distance-based discovery filter)
   implementation(libs.play.services.location)
+  // Google AdMob — native ad card in Discovery + banner ad in Club Chat
+  // (v2.1 §3.6). Ships with Google's TEST ad unit ids; swap for real ids
+  // via RemoteConfig before enabling production traffic.
+  implementation(libs.play.services.ads)
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

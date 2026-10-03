@@ -18,6 +18,13 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
+        <!-- AdMob (v2.1 §3.6): this is Google's OFFICIAL TEST application id.
+             It MUST be replaced with the real AdMob app id
+             (ca-app-pub-XXXX~XXXX) before shipping to production. -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-3940256099942544~3347511713" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

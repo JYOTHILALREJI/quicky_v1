@@ -1018,3 +1018,275 @@ create policy "club_events_insert_member" on public.club_events
       where cm.club_id = club_id and cm.user_id = auth.uid()::text
     )
   );
+
+
+-- ============================================================================
+-- QUICKY v2.1 — POLISH, LUDO ARENA, MONETIZATION & CLUB LIFECYCLE
+--   • Ludo Arena 4-player online tables + server-authoritative helpers
+--   • Club deletion (owner only) + member notifications
+--   • premium_gate() — centralized premium check (QA override)
+-- Everything below is idempotent — safe to re-run.
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- v2.1 §3.8  CLUB DELETION — OWNER ONLY
+-- ----------------------------------------------------------------------------
+
+-- Only the owner may delete a club (RLS). The old policy allowed any
+-- authenticated user — that hole is closed here.
+drop policy if exists "clubs_delete" on public.clubs;
+create policy "clubs_delete" on public.clubs
+  for delete using (owner_id = auth.uid()::text);
+
+-- FK cascades: members / messages / events disappear with the club.
+-- (club_members + club_messages already cascade on delete; re-asserted
+-- for safety. club_events references clubs too — same treatment.)
+do $$
+begin
+  if exists (select 1 from information_schema.tables
+             where table_schema = 'public' and table_name = 'club_events') then
+    alter table public.club_events
+      drop constraint if exists club_events_club_id_fkey;
+    alter table public.club_events
+      add constraint club_events_club_id_fkey
+        foreign key (club_id) references public.clubs (id) on delete cascade;
+  end if;
+end
+$$;
+
+-- Notifications type gains CLUB_DELETED.
+do $$
+begin
+  -- Rebuild the CHECK so the new type is allowed (and future-proof LUDO too).
+  alter table public.notifications drop constraint if exists notifications_type_check;
+  alter table public.notifications
+    add constraint notifications_type_check
+    check (type in ('MATCH', 'MESSAGE', 'GAME', 'LIKE', 'SYSTEM',
+                    'CLUB_DELETED', 'LUDO'));
+exception
+  when duplicate_object then null; -- constraint name collision — next run fixes it
+end
+$$;
+
+-- Member notification on club deletion.
+-- IMPORTANT: this fires BEFORE the row delete so club_members rows are
+-- still readable — an AFTER DELETE trigger would run after the FK cascade
+-- has already wiped the member list (classic Postgres gotcha).
+create or replace function public.notify_club_deletion()
+returns trigger
+language plpgsql
+security definer
+as $$
+begin
+  insert into public.notifications (user_id, type, title, message)
+  select m.user_id,
+         'CLUB_DELETED',
+         'Club deleted',
+         'The club "' || old.name || '" was deleted by the owner.'
+  from public.club_members m
+  where m.club_id = old.id;
+
+  return old;
+end;
+$$;
+
+drop trigger if exists trg_club_deletion on public.clubs;
+create trigger trg_club_deletion
+  before delete on public.clubs
+  for each row execute function public.notify_club_deletion();
+
+-- ----------------------------------------------------------------------------
+-- v2.1 §3.7  PREMIUM GATE — centralized server-side check
+-- ----------------------------------------------------------------------------
+-- premium_gate() returns whether the caller has Quicky Gold.
+--
+-- QA OVERRIDE (v2.1): to validate every premium feature end-to-end before
+-- v2.2 re-enables monetization, flip the constant below to true IN A
+-- QA-SPECIFIC Supabase project only — NEVER in production:
+--
+--   create or replace function public.premium_gate_qa() ...
+--
+-- The default stays the REAL check so production behavior is unchanged.
+create or replace function public.premium_gate(p_user_id text)
+returns boolean
+language sql
+stable
+security definer
+as $$
+  select coalesce(
+    (select (s->>'is_premium')::boolean
+     from public.subscriptions s
+     where s.user_id = p_user_id
+       and s.status = 'ACTIVE'
+     order by s.created_at desc
+     limit 1),
+    false
+  );
+$$;
+
+-- ----------------------------------------------------------------------------
+-- v2.1 §3.2.4  LUDO ARENA — ONLINE 4-PLAYER TABLES
+-- ----------------------------------------------------------------------------
+
+create table if not exists public.ludo_matches (
+    id          text primary key,          -- short shareable code, e.g. "LA7K2QD"
+    host_id     text not null,
+    status      text not null default 'IN_PROGRESS'
+                check (status in ('WAITING', 'IN_PROGRESS', 'COMPLETED', 'ABANDONED')),
+    winner_id   text,
+    created_at  timestamptz not null default now(),
+    updated_at  timestamptz not null default now()
+);
+
+create table if not exists public.ludo_players (
+    match_id  text not null references public.ludo_matches (id) on delete cascade,
+    user_id   text not null,              -- auth uid, or "bot_seat_N" for bots
+    name      text not null default '',
+    seat      int  not null check (seat between 0 and 3), -- 0=RED..3=BLUE
+    is_bot    boolean not null default false,
+    joined_at timestamptz not null default now(),
+    primary key (match_id, user_id),
+    unique (match_id, seat)
+);
+
+create index if not exists ludo_players_user_idx on public.ludo_players (user_id);
+
+create table if not exists public.ludo_game_state (
+    match_id   text primary key references public.ludo_matches (id) on delete cascade,
+    turn       int  not null default 0,
+    dice_value int,
+    board_state jsonb not null,
+    updated_at timestamptz not null default now()
+);
+
+-- Full audit log of every accepted move (who moved what, with which dice).
+create table if not exists public.ludo_moves (
+    id         uuid primary key default gen_random_uuid(),
+    match_id   text not null references public.ludo_matches (id) on delete cascade,
+    user_id    text not null,
+    from_cell  int  not null default 0,
+    to_cell    int  not null default 0,
+    dice       int  not null,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists ludo_moves_match_idx
+  on public.ludo_moves (match_id, created_at desc);
+
+-- Room chat for a match — human messages only (system logs are an
+-- anti-requirement in v2.1 §3.2.3).
+create table if not exists public.ludo_chat_messages (
+    id                     uuid primary key default gen_random_uuid(),
+    match_id               text not null references public.ludo_matches (id) on delete cascade,
+    sender_id              text not null,
+    sender_name            text not null default '',
+    text                   text not null default '',
+    sticker_emoji          text,
+    voice_duration_seconds int,
+    created_at             timestamptz not null default now()
+);
+
+create index if not exists ludo_chat_match_idx
+  on public.ludo_chat_messages (match_id, created_at asc);
+
+-- ----- Ludo RLS -----
+alter table public.ludo_matches        enable row level security;
+alter table public.ludo_players       enable row level security;
+alter table public.ludo_game_state     enable row level security;
+alter table public.ludo_moves          enable row level security;
+alter table public.ludo_chat_messages  enable row level security;
+
+drop policy if exists "ludo_matches_select" on public.ludo_matches;
+create policy "ludo_matches_select" on public.ludo_matches
+  for select using (auth.role() = 'authenticated');
+drop policy if exists "ludo_matches_insert" on public.ludo_matches;
+create policy "ludo_matches_insert" on public.ludo_matches
+  for insert with check (auth.role() = 'authenticated');
+drop policy if exists "ludo_matches_delete" on public.ludo_matches;
+create policy "ludo_matches_delete" on public.ludo_matches
+  for delete using (host_id = auth.uid()::text);
+
+drop policy if exists "ludo_players_select" on public.ludo_players;
+create policy "ludo_players_select" on public.ludo_players
+  for select using (auth.role() = 'authenticated');
+drop policy if exists "ludo_players_insert" on public.ludo_players;
+create policy "ludo_players_insert" on public.ludo_players
+  for insert with check (auth.role() = 'authenticated');
+
+drop policy if exists "ludo_state_select" on public.ludo_game_state;
+create policy "ludo_state_select" on public.ludo_game_state
+  for select using (auth.role() = 'authenticated');
+drop policy if exists "ludo_state_insert" on public.ludo_game_state;
+create policy "ludo_state_insert" on public.ludo_game_state
+  for insert with check (auth.role() = 'authenticated');
+-- Participants (humans + host-owned bots) may push state updates. This is
+-- the fallback write path when the Edge Functions are not deployed; the
+-- `apply_ludo_move` function remains the authoritative route.
+drop policy if exists "ludo_state_update" on public.ludo_game_state;
+create policy "ludo_state_update" on public.ludo_game_state
+  for update using (
+    auth.role() = 'authenticated' and exists (
+      select 1 from public.ludo_players p
+      where p.match_id = ludo_game_state.match_id
+        and (p.user_id = auth.uid()::text or p.user_id like 'bot_seat_%')
+    )
+  );
+
+drop policy if exists "ludo_moves_insert" on public.ludo_moves;
+create policy "ludo_moves_insert" on public.ludo_moves
+  for insert with check (auth.role() = 'authenticated');
+drop policy if exists "ludo_moves_select" on public.ludo_moves;
+create policy "ludo_moves_select" on public.ludo_moves
+  for select using (auth.role() = 'authenticated');
+
+drop policy if exists "ludo_chat_select" on public.ludo_chat_messages;
+create policy "ludo_chat_select" on public.ludo_chat_messages
+  for select using (auth.role() = 'authenticated');
+drop policy if exists "ludo_chat_insert" on public.ludo_chat_messages;
+create policy "ludo_chat_insert" on public.ludo_chat_messages
+  for insert with check (auth.role() = 'authenticated');
+
+-- ----------------------------------------------------------------------------
+-- v2.1 §3.2.2  ROLL_LUDO_DICE RPC (server-side random)
+-- ----------------------------------------------------------------------------
+-- Used directly when Edge Functions are preferred over SQL. The Deno Edge
+-- Function (supabase/functions/roll_ludo_dice) wraps the same logic with
+-- JWT verification; this SQL variant is the always-available fallback:
+--   select public.roll_ludo_dice('<match_id>');
+-- It stores the roll into ludo_game_state and returns it.
+create or replace function public.roll_ludo_dice(p_match_id text)
+returns int
+language plpgsql
+security definer
+as $$
+declare
+  v_dice int;
+  v_state jsonb;
+begin
+  select board_state into v_state
+    from public.ludo_game_state where match_id = p_match_id
+    for update;
+
+  if v_state is null then
+    raise exception 'LUDO_MATCH_NOT_FOUND';
+  end if;
+
+  v_dice := 1 + floor(random() * 6)::int;
+
+  v_state := v_state
+    || jsonb_build_object(
+         'dice_value', v_dice,
+         'phase', 'AWAITING_MOVE',
+         'updated_at', to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+       );
+
+  update public.ludo_game_state
+     set board_state = v_state,
+         dice_value = v_dice,
+         turn = coalesce((v_state->>'turn_index')::int, 0),
+         updated_at = now()
+   where match_id = p_match_id;
+
+  return v_dice;
+end;
+$$;

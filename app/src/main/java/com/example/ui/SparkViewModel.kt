@@ -11,9 +11,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.R
 import com.example.BuildConfig
+import com.example.data.AdConfig
 import com.example.data.AppContent
+import com.example.data.LudoMatchRepository
 import com.example.data.SupabaseAuth
 import com.example.data.SupabaseRepository
+import com.example.game.LudoEngine
 import com.example.model.*
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
@@ -22,11 +25,13 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -106,14 +111,27 @@ data class SparkUiState(
     val lastClubCreatedTimestamp: Long = 0L,
     val showCreateClubDialog: Boolean = false,
 
-    // 2-Player Ludo state (created fresh in openLudoGame())
-    val ludoRoom: LudoRoom? = null,
+    // Ludo Arena state (v2.1 §3.2 — ludoMatch == null shows the mode lobby)
     val isLudoActive: Boolean = false,
+    val ludoMatch: LudoMatch? = null,
+    val isLudoRolling: Boolean = false,
+    val ludoJoinError: String? = null,
+    val isCreatingLudoMatch: Boolean = false,
 
     // Sticker Store state
     val stickerPacks: List<StickerPack> = AppContent.stickerPackCatalog,
     val showStickerStore: Boolean = false,
     val showStickerPicker: Boolean = false,
+
+    // Dedicated Settings screen (v2.1 §3.9) + its persisted prefs
+    val showSettingsScreen: Boolean = false,
+    val distanceUnit: String = "km", // "km" | "mi"
+    val notificationPrefs: NotificationPreferences = NotificationPreferences(),
+    val showMeOnDiscovery: Boolean = true,
+
+    // Discovery native-ad cadence (v2.1 §3.6.1)
+    val showDiscoveryAdCard: Boolean = false,
+    val discoverySwipesSinceAd: Int = 0,
 
     // Edit Location sheet (change request #5)
     val showEditLocationSheet: Boolean = false,
@@ -130,6 +148,10 @@ class SparkViewModel : ViewModel() {
     val uiState: StateFlow<SparkUiState> = _uiState.asStateFlow()
 
     init {
+        // Ludo room chat ownership: polled remote messages compare sender
+        // ids against the signed-in user to decide "mine vs theirs".
+        LudoMatchRepository.currentUserIdProvider = { _uiState.value.userProfile.id }
+
         // Load remote content from Supabase when credentials are configured.
         // Until then the app runs on the bundled static catalog in AppContent.
         if (SupabaseRepository.isConfigured()) {
@@ -337,8 +359,10 @@ class SparkViewModel : ViewModel() {
                     clubMessages = emptyMap(),
                     notifications = emptyList(),
                     interactionInsights = emptyList(),
-                    ludoRoom = null,
-                    isLudoActive = false
+                    ludoMatch = null,
+                    isLudoActive = false,
+                    isLudoRolling = false,
+                    ludoJoinError = null
                 )
             }
         }
@@ -750,7 +774,8 @@ class SparkViewModel : ViewModel() {
 
     fun likeProfile(profile: UserProfile, isSuperLike: Boolean = false) {
         viewModelScope.launch {
-            if (isSuperLike && _uiState.value.entitlements.superLikesRemaining <= 0 && !_uiState.value.entitlements.isPremium) {
+            if (isSuperLike && _uiState.value.entitlements.superLikesRemaining <= 0 &&
+                !PremiumGate.isPremium(_uiState.value.entitlements)) {
                 showToast("No Super Likes remaining. Refill in Store!")
                 openPremiumStore()
                 return@launch
@@ -798,9 +823,12 @@ class SparkViewModel : ViewModel() {
                         sharedInterests.isNotEmpty() ->
                             "It's a match! You & ${profile.name} both love ${sharedInterests.take(2).joinToString(" & ")} ❤️"
                         else -> "Liked ${profile.name} ❤️"
-                    }
+                    },
+                    // v2.1 §3.6.1 — native-ad cadence counter.
+                    discoverySwipesSinceAd = it.discoverySwipesSinceAd + 1
                 )
             }
+            maybeTriggerDiscoveryAd()
 
             // v2 hardening: persist the swipe server-side — the record_swipe
             // RPC is rate-limited and creates the match row atomically when
@@ -833,9 +861,12 @@ class SparkViewModel : ViewModel() {
         _uiState.update {
             it.copy(
                 discoveryDeck = updatedDeck,
-                passedHistory = updatedPassed
+                passedHistory = updatedPassed,
+                // v2.1 §3.6.1 — native-ad cadence counter.
+                discoverySwipesSinceAd = it.discoverySwipesSinceAd + 1
             )
         }
+        maybeTriggerDiscoveryAd()
 
         // v2 hardening: passes are persisted server-side too (feeds the
         // already-swiped exclusion in get_discovery_profiles).
@@ -848,6 +879,22 @@ class SparkViewModel : ViewModel() {
                 )
             }
         }
+    }
+
+    /** v2.1 §3.6.1: injects the Sponsored card once every N swipes. */
+    private fun maybeTriggerDiscoveryAd() {
+        val state = _uiState.value
+        if (state.showDiscoveryAdCard) return
+        if (state.discoverySwipesSinceAd >= AdConfig.discoveryNativeEveryNSwipes &&
+            state.discoveryDeck.isNotEmpty()
+        ) {
+            _uiState.update { it.copy(showDiscoveryAdCard = true, discoverySwipesSinceAd = 0) }
+        }
+    }
+
+    /** Swipe-left dismissal of the Sponsored card (no profile consumed). */
+    fun dismissDiscoveryAdCard() {
+        _uiState.update { it.copy(showDiscoveryAdCard = false) }
     }
 
     /**
@@ -872,7 +919,13 @@ class SparkViewModel : ViewModel() {
                 )
                 candidates.isEmpty() ->
                     showToast("No more profiles to discover right now. Check back soon!")
-                else -> _uiState.update { it.copy(discoveryDeck = candidates) }
+                else -> _uiState.update {
+                    it.copy(
+                        discoveryDeck = candidates,
+                        showDiscoveryAdCard = false,
+                        discoverySwipesSinceAd = 0
+                    )
+                }
             }
         }
     }
@@ -931,7 +984,8 @@ class SparkViewModel : ViewModel() {
             return
         }
 
-        if (_uiState.value.entitlements.rewindsRemaining <= 0 && !_uiState.value.entitlements.isPremium) {
+        if (_uiState.value.entitlements.rewindsRemaining <= 0 &&
+            !PremiumGate.isPremium(_uiState.value.entitlements)) {
             showToast("Rewinds depleted. Upgrade to Quicky Gold!")
             openPremiumStore()
             return
@@ -955,7 +1009,8 @@ class SparkViewModel : ViewModel() {
     }
 
     fun activateBoost() {
-        if (!_uiState.value.entitlements.isPremium && _uiState.value.entitlements.boostsRemaining <= 0) {
+        if (!PremiumGate.isPremium(_uiState.value.entitlements) &&
+            _uiState.value.entitlements.boostsRemaining <= 0) {
             showToast("Profile Boost is a Quicky Premium feature.")
             openPremiumStore()
             return
@@ -1091,6 +1146,12 @@ class SparkViewModel : ViewModel() {
         replyToText: String? = null,
         replyToSender: String? = null
     ) {
+        // v2.1 §3.7 — voice notes are premium-gated through PremiumGate.
+        if (!PremiumGate.isPremium(_uiState.value.entitlements)) {
+            showToast("Voice messages are a Quicky Gold feature. Upgrade to unlock!")
+            openPremiumStore()
+            return
+        }
         val replyingTo = _uiState.value.replyToMessage
         val resolvedReplyText = replyToText ?: replyingTo?.text?.take(60)
         val resolvedReplySender = replyToSender ?: if (replyingTo != null) (if (replyingTo.isMine) "You" else "Partner") else null
@@ -1768,6 +1829,42 @@ class SparkViewModel : ViewModel() {
         _uiState.update { it.copy(showSettings = show) }
     }
 
+    // -------------------------------------------------------------
+    // DEDICATED SETTINGS SCREEN (v2.1 §3.9)
+    // -------------------------------------------------------------
+    fun toggleSettingsScreen(show: Boolean) {
+        _uiState.update { it.copy(showSettingsScreen = show) }
+    }
+
+    /** Distance unit toggle (km / mi) — affects profile distance labels. */
+    fun setDistanceUnit(unit: String) {
+        _uiState.update { it.copy(distanceUnit = if (unit == "mi") "mi" else "km") }
+    }
+
+    fun updateNotificationPref(key: String, value: Boolean) {
+        _uiState.update {
+            it.copy(
+                notificationPrefs = when (key) {
+                    "matches" -> it.notificationPrefs.copy(matches = value)
+                    "messages" -> it.notificationPrefs.copy(messages = value)
+                    "clubs" -> it.notificationPrefs.copy(clubs = value)
+                    "promotions" -> it.notificationPrefs.copy(promotions = value)
+                    else -> it.notificationPrefs
+                }
+            )
+        }
+    }
+
+    /** Show/pause the profile on the Discovery deck of others. */
+    fun setShowMeOnDiscovery(show: Boolean) {
+        _uiState.update { it.copy(showMeOnDiscovery = show) }
+        // Mirror into the privacy settings so Incognito/visibility stays coherent.
+        _uiState.update {
+            it.copy(privacySettings = it.privacySettings.copy(isInvisible = !show))
+        }
+        showToast(if (show) "You are visible on Discovery again." else "You're hidden from Discovery decks.")
+    }
+
     fun toggleNotificationsSheet(show: Boolean) {
         _uiState.update { it.copy(showNotificationsSheet = show) }
     }
@@ -1952,7 +2049,7 @@ class SparkViewModel : ViewModel() {
         replyToText: String? = null,
         replyToSender: String? = null
     ) {
-        if (isVoice && !_uiState.value.entitlements.isPremium) {
+        if (isVoice && !PremiumGate.isPremium(_uiState.value.entitlements)) {
             showToast("🔒 Voice messages are a Quicky Gold feature. Upgrade to unlock!")
             openPremiumStore()
             return
@@ -2030,221 +2127,364 @@ class SparkViewModel : ViewModel() {
     }
 
     // -------------------------------------------------------------
-    // 2-PLAYER PREMIUM LUDO METHODS (PRD Section 3 - 10)
+    // CLUB DELETION — owner only (v2.1 §3.8)
+    // Server-side: FK cascades wipe members/messages/events, and the
+    // notify_club_deletion trigger pushes a notification to every member.
     // -------------------------------------------------------------
+    fun deleteClub(clubId: String) {
+        val club = _uiState.value.clubs.find { it.id == clubId } ?: return
+        viewModelScope.launch {
+            val session = _uiState.value.authSession
+            // Offline/QA fallback: without Supabase the deletion happens
+            // locally only (member notifications are server-side anyway).
+            val deleted = if (!SupabaseRepository.isConfigured()) true
+            else runCatching {
+                SupabaseRepository.deleteClub(clubId, session?.accessToken)
+            }.getOrElse { false }
+
+            if (!deleted) {
+                showToast("Could not delete the club — check your connection.")
+                return@launch
+            }
+
+            val updatedClubs = _uiState.value.clubs.filter { it.id != clubId }
+            val updatedMessages = _uiState.value.clubMessages.toMutableMap().apply { remove(clubId) }
+            _uiState.update {
+                it.copy(
+                    clubs = updatedClubs,
+                    clubMessages = updatedMessages,
+                    selectedClubForDetail = null,
+                    activeClubId = if (it.activeClubId == clubId) null else it.activeClubId,
+                    toastMessage = "The club \"${club.name}\" was deleted. All ${club.memberCount} members were notified."
+                )
+            }
+        }
+    }
+
+    // -------------------------------------------------------------
+    // LUDO ARENA METHODS (v2.1 §3.2 — 4-player rewrite)
+    // Solo-vs-bots plays fully offline through LudoEngine; online
+    // matches sync through ludo_* tables + Edge Functions with a
+    // ~1.2s polling fallback for Realtime.
+    // -------------------------------------------------------------
+    private var ludoPollJob: Job? = null
+    private var ludoBotDriverJob: Job? = null
+    /** Host-side id of the local user inside online matches. */
+    private val ludoLocalUserId: String get() = _uiState.value.userProfile.id
+
     fun openLudoGame() {
-        // Debug builds (and QA) can enter Ludo for free via
-        // BuildConfig.LUDO_FREE — release keeps the premium gate.
-        val ludoUnlocked = BuildConfig.LUDO_FREE || _uiState.value.entitlements.isPremium
+        // v2.1 §3.7: gates route through PremiumGate (unlocked for QA on
+        // debug builds; LUDO_FREE stays as the release-side freebie flag).
+        val ludoUnlocked = BuildConfig.LUDO_FREE || PremiumGate.isPremium(_uiState.value.entitlements)
         if (!ludoUnlocked) {
             showToast("🔒 Ludo is a Quicky Premium Game. Unlock Quicky Gold to play!")
             openPremiumStore()
             return
         }
-        _uiState.update {
-            it.copy(
-                isLudoActive = true,
-                ludoRoom = AppContent.freshLudoRoom(playerName = it.userProfile.name)
-            )
-        }
+        _uiState.update { it.copy(isLudoActive = true, ludoMatch = null, ludoJoinError = null) }
     }
 
     fun closeLudoGame() {
-        _uiState.update { it.copy(isLudoActive = false) }
-    }
-
-    fun rollLudoDice() {
-        val currentRoom = _uiState.value.ludoRoom ?: return
-        if (currentRoom.currentTurnPlayerId != "user_me" || currentRoom.isRolling) return
-
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(ludoRoom = it.ludoRoom?.copy(isRolling = true, canMoveToken = false))
-            }
-            delay(400) // Animated dice roll
-
-            val rolledValue = (1..6).random()
-            val isSix = rolledValue == 6
-
-            val p2Tokens = currentRoom.player2.tokens
-            val hasMovable = p2Tokens.any { token ->
-                if (token.isFinished) false
-                else if (token.isHome) isSix
-                else (token.stepCount + rolledValue) <= 57
-            }
-
-            val systemMsg = LudoChatMessage(
-                id = "lmsg_${System.currentTimeMillis()}",
-                roomId = currentRoom.id,
-                senderId = null,
-                senderName = "SYSTEM",
-                isSystem = true,
-                text = "🎲 You rolled a $rolledValue! ${if (isSix) "(Bonus Turn ⭐)" else ""}"
-            )
-
-            if (!hasMovable) {
-                // Pass turn to opponent
-                _uiState.update {
-                    it.copy(
-                        ludoRoom = it.ludoRoom?.copy(
-                            diceValue = rolledValue,
-                            isRolling = false,
-                            canMoveToken = false,
-                            currentTurnPlayerId = currentRoom.player1.id,
-                            lastEventText = "You rolled $rolledValue, but no legal moves. Opponent's turn.",
-                            chatMessages = it.ludoRoom?.chatMessages.orEmpty() + systemMsg
-                        )
-                    )
-                }
-                triggerOpponentTurn()
-            } else {
-                _uiState.update {
-                    it.copy(
-                        ludoRoom = it.ludoRoom?.copy(
-                            diceValue = rolledValue,
-                            isRolling = false,
-                            canMoveToken = true,
-                            lastEventText = "🎲 You rolled a $rolledValue! Tap a glowing token to advance.",
-                            chatMessages = it.ludoRoom?.chatMessages.orEmpty() + systemMsg
-                        )
-                    )
-                }
-            }
+        ludoPollJob?.cancel(); ludoPollJob = null
+        ludoBotDriverJob?.cancel(); ludoBotDriverJob = null
+        _uiState.update {
+            it.copy(isLudoActive = false, ludoMatch = null, isLudoRolling = false, ludoJoinError = null)
         }
     }
 
-    fun moveLudoToken(tokenId: Int) {
-        val currentRoom = _uiState.value.ludoRoom ?: return
-        if (!currentRoom.canMoveToken || currentRoom.currentTurnPlayerId != "user_me") return
-
-        val token = currentRoom.player2.tokens.find { it.id == tokenId } ?: return
-        val dice = currentRoom.diceValue
-
-        if (token.isHome && dice != 6) {
-            showToast("Need a 6 to release token from base!")
-            return
-        }
-
-        val newStepCount = if (token.isHome) 1 else token.stepCount + dice
-        if (newStepCount > 57) {
-            showToast("Roll exceeds distance to home goal!")
-            return
-        }
-
-        val isFinished = newStepCount == 57
-        val updatedToken = token.copy(
-            isHome = false,
-            stepCount = newStepCount,
-            isFinished = isFinished
-        )
-        val updatedP2Tokens = currentRoom.player2.tokens.map { if (it.id == tokenId) updatedToken else it }
-        var p2Score = currentRoom.player2.score + (dice * 2)
-        if (isFinished) p2Score += 50
-
-        // Check capture opponent token:
-        var capturedOpponent = false
-        var updatedP1Tokens = currentRoom.player1.tokens
-        if (!isFinished && newStepCount < 50) {
-            val opponentCapturedToken = currentRoom.player1.tokens.find { !it.isHome && !it.isFinished && it.stepCount == ((newStepCount + 26) % 52) }
-            if (opponentCapturedToken != null) {
-                capturedOpponent = true
-                p2Score += 25
-                updatedP1Tokens = currentRoom.player1.tokens.map {
-                    if (it.id == opponentCapturedToken.id) it.copy(isHome = true, stepCount = 0) else it
-                }
-            }
-        }
-
-        val updatedP1 = currentRoom.player1.copy(tokens = updatedP1Tokens)
-        val updatedP2 = currentRoom.player2.copy(tokens = updatedP2Tokens, score = p2Score)
-
-        val hasWon = updatedP2Tokens.all { it.isFinished } || updatedP2Tokens.count { it.isFinished } >= 2
-        val bonusTurn = dice == 6 || capturedOpponent
-
-        val moveMsg = LudoChatMessage(
-            id = "lmsg_mv_${System.currentTimeMillis()}",
-            roomId = currentRoom.id,
-            senderId = null,
-            senderName = "SYSTEM",
-            isSystem = true,
-            text = "🚀 You moved Token #${tokenId + 1} ${if (capturedOpponent) "💥 and CAPTURED ${currentRoom.player1.name}'s token! (+25 pts)" else ""}"
-        )
-
-        val nextPlayerId = if (bonusTurn && !hasWon) "user_me" else currentRoom.player1.id
-        val nextText = if (hasWon) "🏆 VICTORY! You won the Ludo match!"
-        else if (bonusTurn) "⭐ Bonus roll awarded! Roll again."
-        else "${currentRoom.player1.name}'s turn to roll."
-
+    fun startLudoSoloBots() {
+        ludoPollJob?.cancel(); ludoPollJob = null
+        ludoBotDriverJob?.cancel(); ludoBotDriverJob = null
         _uiState.update {
             it.copy(
-                ludoRoom = it.ludoRoom?.copy(
-                    player1 = updatedP1,
-                    player2 = updatedP2,
-                    canMoveToken = false,
-                    currentTurnPlayerId = nextPlayerId,
-                    winnerId = if (hasWon) "user_me" else null,
-                    status = if (hasWon) "COMPLETED" else "IN_PROGRESS",
-                    lastEventText = nextText,
-                    chatMessages = it.ludoRoom?.chatMessages.orEmpty() + moveMsg
-                )
+                isLudoActive = true,
+                ludoMatch = AppContent.freshSoloLudoMatch(playerName = it.userProfile.name),
+                isLudoRolling = false,
+                ludoJoinError = null
             )
-        }
-
-        if (!hasWon && nextPlayerId == currentRoom.player1.id) {
-            triggerOpponentTurn()
         }
     }
 
-    private fun triggerOpponentTurn() {
+    /** "Play again" from the winner dialog — fresh solo match. */
+    fun restartLudoSolo() = startLudoSoloBots()
+
+    /** Creates an online 4-player match and shows the shareable code. */
+    fun createLudoOnlineMatch() {
+        if (!SupabaseRepository.isConfigured()) {
+            showToast("Online matches need Supabase — check SupabaseConfig.kt")
+            return
+        }
         viewModelScope.launch {
-            delay(1200)
-            val currentRoom = _uiState.value.ludoRoom ?: return@launch
-            if (currentRoom.status == "COMPLETED" || currentRoom.currentTurnPlayerId != currentRoom.player1.id) return@launch
-
-            val rolled = (1..6).random()
-            val p1Tokens = currentRoom.player1.tokens
-            val tokenToMove = p1Tokens.find { !it.isFinished && (!it.isHome || rolled == 6) }
-
-            val oppRollMsg = LudoChatMessage(
-                id = "lmsg_opp_${System.currentTimeMillis()}",
-                roomId = currentRoom.id,
-                senderId = null,
-                senderName = "SYSTEM",
-                isSystem = true,
-                text = "🎲 ${currentRoom.player1.name} rolled a $rolled"
-            )
-
-            if (tokenToMove != null) {
-                val newSteps = if (tokenToMove.isHome) 1 else (tokenToMove.stepCount + rolled).coerceAtMost(57)
-                val updatedTokens = p1Tokens.map {
-                    if (it.id == tokenToMove.id) it.copy(isHome = false, stepCount = newSteps, isFinished = newSteps == 57)
-                    else it
-                }
-                val updatedP1 = currentRoom.player1.copy(
-                    tokens = updatedTokens,
-                    score = currentRoom.player1.score + (rolled * 2)
+            _uiState.update { it.copy(isCreatingLudoMatch = true, ludoJoinError = null) }
+            val session = _uiState.value.authSession
+            val code = runCatching {
+                LudoMatchRepository.createOnlineMatch(
+                    hostUserId = ludoLocalUserId,
+                    hostName = _uiState.value.userProfile.name,
+                    accessToken = session?.accessToken
                 )
+            }.getOrElse { e ->
+                _uiState.update { it.copy(isCreatingLudoMatch = false, ludoJoinError = e.message) }
+                showToast("Could not create the match: ${e.message}")
+                return@launch
+            }
+            val match = runCatching {
+                LudoMatchRepository.fetchMatch(code, session?.accessToken)
+            }.getOrNull() ?: LudoMatch(
+                id = code,
+                mode = LudoMode.ONLINE,
+                players = listOf(
+                    LudoPlayer(
+                        id = ludoLocalUserId,
+                        name = _uiState.value.userProfile.name,
+                        avatarRes = R.drawable.img_onboarding_hero,
+                        seat = 0
+                    )
+                ),
+                statusText = "Share code $code — fill seats or wait for players",
+                localUserId = ludoLocalUserId
+            )
+            _uiState.update { it.copy(isCreatingLudoMatch = false, ludoMatch = match, isLudoActive = true) }
+            showToast("Match created! Code: $code")
+            startLudoPolling()
+        }
+    }
+
+    /** Joins an existing online match by its shareable code. */
+    fun joinLudoOnlineMatch(code: String) {
+        if (code.isBlank()) return
+        if (!SupabaseRepository.isConfigured()) {
+            showToast("Online matches need Supabase — check SupabaseConfig.kt")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(ludoJoinError = null, isCreatingLudoMatch = true) }
+            val session = _uiState.value.authSession
+            val joined = runCatching {
+                LudoMatchRepository.joinOnlineMatch(
+                    matchCode = code,
+                    userId = ludoLocalUserId,
+                    playerName = _uiState.value.userProfile.name,
+                    accessToken = session?.accessToken
+                )
+            }
+            if (joined.isFailure) {
                 _uiState.update {
                     it.copy(
-                        ludoRoom = it.ludoRoom?.copy(
-                            player1 = updatedP1,
-                            diceValue = rolled,
-                            currentTurnPlayerId = "user_me",
-                            lastEventText = "${currentRoom.player1.name} rolled $rolled and moved. Your turn!",
-                            chatMessages = it.ludoRoom?.chatMessages.orEmpty() + oppRollMsg
-                        )
+                        isCreatingLudoMatch = false,
+                        ludoJoinError = joined.exceptionOrNull()?.message ?: "Could not join."
                     )
                 }
-            } else {
-                _uiState.update {
-                    it.copy(
-                        ludoRoom = it.ludoRoom?.copy(
-                            diceValue = rolled,
-                            currentTurnPlayerId = "user_me",
-                            lastEventText = "${currentRoom.player1.name} rolled $rolled with no moves. Your turn!",
-                            chatMessages = it.ludoRoom?.chatMessages.orEmpty() + oppRollMsg
-                        )
-                    )
+                return@launch
+            }
+            refreshLudoMatchNow()
+            _uiState.update { it.copy(isCreatingLudoMatch = false, isLudoActive = true) }
+            startLudoPolling()
+        }
+    }
+
+    /** Host convenience: fills every empty seat with a bot. */
+    fun fillLudoSeatsWithBots() {
+        val match = _uiState.value.ludoMatch ?: return
+        if (match.mode != LudoMode.ONLINE) return
+        viewModelScope.launch {
+            val session = _uiState.value.authSession
+            runCatching {
+                LudoMatchRepository.fillEmptySeatsWithBots(
+                    matchCode = match.id,
+                    botNames = AppContent.ludoBotNames,
+                    accessToken = session?.accessToken
+                )
+            }.onSuccess {
+                refreshLudoMatchNow()
+            }.onFailure {
+                showToast("Could not add bots: ${it.message}")
+            }
+        }
+    }
+
+    private fun startLudoPolling() {
+        ludoPollJob?.cancel()
+        ludoPollJob = viewModelScope.launch {
+            while (isActive &&
+                _uiState.value.isLudoActive &&
+                _uiState.value.ludoMatch?.mode == LudoMode.ONLINE
+            ) {
+                delay(1200)
+                if (!isActive) break
+                refreshLudoMatchNow(quiet = true)
+                // Drive bots when the host (or solo arena) owns them.
+                maybeDriveBotTurn()
+            }
+        }
+    }
+
+    /** Pulls the authoritative match state (online mode). */
+    private fun refreshLudoMatchNow(quiet: Boolean = false) {
+        val match = _uiState.value.ludoMatch ?: return
+        if (match.mode != LudoMode.ONLINE) return
+        val session = _uiState.value.authSession
+        viewModelScope.launch {
+            runCatching {
+                LudoMatchRepository.fetchMatch(match.id, session?.accessToken)
+            }.onSuccess { remote ->
+                // Never clobber a mid-roll animation with a stale snapshot.
+                if (!_uiState.value.isLudoRolling) {
+                    _uiState.update {
+                        it.copy(ludoMatch = remote.copy(mode = LudoMode.ONLINE))
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Rolls the dice for the CURRENT player.
+     *  - Solo / bots       → local engine roll (800–1200ms animation).
+     *  - Online, my seat   → server-authoritative `roll_ludo_dice` Edge
+     *                        Function, falling back to a local roll + state
+     *                        push when the function is not deployed.
+     *  - Online, bot seat  → only the match host drives bots.
+     */
+    fun rollLudoDice() {
+        val match = _uiState.value.ludoMatch ?: return
+        if (_uiState.value.isLudoRolling) return
+        if (match.phase != LudoPhase.AWAITING_ROLL) return
+
+        val isBotTurn = match.currentPlayer.isBot
+        val mineOrBots = match.isMyTurn || (isBotTurn && iAmLudoHost(match))
+        if (!mineOrBots) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLudoRolling = true) }
+            delay((800..1200).random().toLong()) // 3D-ish tumble animation window
+
+            val dice = when {
+                match.mode == LudoMode.ONLINE && match.isMyTurn -> {
+                    val session = _uiState.value.authSession
+                    runCatching {
+                        LudoMatchRepository.rollDiceRemote(match.id, session?.accessToken)
+                    }.getOrElse {
+                        // Edge Function not deployed — roll locally; the
+                        // shared path below applies the engine state once
+                        // and pushes it to every polling client.
+                        (1..6).random()
+                    }
+                }
+                else -> (1..6).random()
+            }
+
+            val base = _uiState.value.ludoMatch ?: return@launch
+            val rolled = LudoEngine.applyRoll(base, dice)
+            _uiState.update { it.copy(isLudoRolling = false, ludoMatch = rolled) }
+            if (rolled.mode == LudoMode.ONLINE) pushOnlineLudoState(rolled)
+
+            // If the turn passed to a bot (or the roll had no legal move and
+            // the next seat is a bot), drive it.
+            maybeDriveBotTurn()
+        }
+    }
+
+    /**
+     * Applies the chosen token move. Online: the `apply_ludo_move` Edge
+     * Function validates it server-side; on absence it falls back to the
+     * local engine + state push (two-device play still syncs).
+     */
+    fun moveLudoToken(tokenId: Int) {
+        val match = _uiState.value.ludoMatch ?: return
+        if (match.phase != LudoPhase.AWAITING_MOVE) return
+
+        val isBotTurn = match.currentPlayer.isBot
+        val mineOrBots = match.isMyTurn || (isBotTurn && iAmLudoHost(match))
+        if (!mineOrBots) return
+
+        val result = LudoEngine.applyMove(match, tokenId)
+        if (result.match == match) return // illegal move — unchanged
+
+        _uiState.update { it.copy(ludoMatch = result.match) }
+
+        if (match.mode == LudoMode.ONLINE) {
+            viewModelScope.launch {
+                val session = _uiState.value.authSession
+                runCatching {
+                    LudoMatchRepository.applyMoveRemote(match.id, tokenId, session?.accessToken)
+                    refreshLudoMatchNow(quiet = true)
+                }.getOrElse {
+                    // Function absent → push the engine-computed state directly.
+                    pushOnlineLudoState(result.match)
+                }
+                LudoMatchRepository.logMove(
+                    matchCode = match.id,
+                    userId = ludoLocalUserId,
+                    fromCell = 0,
+                    toCell = tokenId,
+                    dice = match.diceValue ?: 0,
+                    accessToken = session?.accessToken
+                )
+            }
+        }
+
+        maybeDriveBotTurn()
+    }
+
+    /** True when this device owns the bot seats (host, or any solo arena). */
+    private fun iAmLudoHost(match: LudoMatch): Boolean =
+        match.mode == LudoMode.SOLO_VS_BOTS ||
+                match.players.getOrNull(0)?.id == match.localUserId ||
+                match.players.getOrNull(0)?.id == ludoLocalUserId
+
+    /** Pushes a locally computed board state to the server (online mode). */
+    private fun pushOnlineLudoState(match: LudoMatch) {
+        viewModelScope.launch {
+            val session = _uiState.value.authSession
+            runCatching {
+                LudoMatchRepository.updateBoardState(
+                    matchCode = match.id,
+                    boardState = LudoMatchRepository.encodeBoardState(match),
+                    accessToken = session?.accessToken
+                )
+            }
+        }
+    }
+
+    /**
+     * Bot driver: when the current turn belongs to a bot this device owns,
+     * roll + pick a move after a short "thinking" delay, then repeat while
+     * the extra-turn rules keep it the bot's turn.
+     */
+    private fun maybeDriveBotTurn() {
+        val match = _uiState.value.ludoMatch ?: return
+        if (match.phase == LudoPhase.FINISHED) return
+        if (!match.currentPlayer.isBot) return
+        if (!iAmLudoHost(match)) return
+        if (ludoBotDriverJob?.isActive == true) return
+
+        ludoBotDriverJob = viewModelScope.launch {
+            delay(900) // let the board breathe before the bot acts
+            var current = _uiState.value.ludoMatch ?: return@launch
+            var guard = 0
+            while (current.currentPlayer.isBot && current.phase != LudoPhase.FINISHED && guard < 40) {
+                guard++
+                if (current.phase == LudoPhase.AWAITING_ROLL) {
+                    _uiState.update { it.copy(isLudoRolling = true) }
+                    delay((800..1200).random().toLong())
+                    val rolled = LudoEngine.applyRoll(_uiState.value.ludoMatch ?: return@launch, (1..6).random())
+                    _uiState.update { it.copy(isLudoRolling = false, ludoMatch = rolled) }
+                    if (rolled.mode == LudoMode.ONLINE) pushOnlineLudoState(rolled)
+                    current = rolled
+                }
+                if (current.phase == LudoPhase.AWAITING_MOVE) {
+                    delay(700)
+                    val tokenId = LudoEngine.pickBotMove(current)
+                    if (tokenId == null) {
+                        // No legal bot move — engine already advanced on roll.
+                        current = _uiState.value.ludoMatch ?: return@launch
+                        continue
+                    }
+                    val result = LudoEngine.applyMove(_uiState.value.ludoMatch ?: return@launch, tokenId)
+                    _uiState.update { it.copy(ludoMatch = result.match) }
+                    if (result.match.mode == LudoMode.ONLINE) pushOnlineLudoState(result.match)
+                    current = result.match
                 }
             }
         }
@@ -2257,17 +2497,17 @@ class SparkViewModel : ViewModel() {
         replyToText: String? = null,
         replyToSender: String? = null
     ) {
-        if (isVoice && !_uiState.value.entitlements.isPremium) {
+        if (isVoice && !PremiumGate.isPremium(_uiState.value.entitlements)) {
             showToast("Voice notes in Ludo require Quicky Gold. Upgrade to unlock!")
             openPremiumStore()
             return
         }
 
-        val currentRoom = _uiState.value.ludoRoom ?: return
+        val currentMatch = _uiState.value.ludoMatch ?: return
         val newMsg = LudoChatMessage(
             id = "lmsg_user_${System.currentTimeMillis()}",
-            roomId = currentRoom.id,
-            senderId = _uiState.value.userProfile.id,
+            roomId = currentMatch.id,
+            senderId = ludoLocalUserId,
             senderName = _uiState.value.userProfile.name,
             isSystem = false,
             text = text,
@@ -2280,10 +2520,28 @@ class SparkViewModel : ViewModel() {
         )
         _uiState.update {
             it.copy(
-                ludoRoom = it.ludoRoom?.copy(
-                    chatMessages = it.ludoRoom?.chatMessages.orEmpty() + newMsg
+                ludoMatch = it.ludoMatch?.copy(
+                    chatMessages = it.ludoMatch?.chatMessages.orEmpty() + newMsg
                 )
             )
+        }
+
+        // Online matches persist room chat server-side.
+        if (currentMatch.mode == LudoMode.ONLINE && SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                val session = _uiState.value.authSession
+                runCatching {
+                    LudoMatchRepository.sendChatMessage(
+                        matchCode = currentMatch.id,
+                        senderId = ludoLocalUserId,
+                        senderName = newMsg.senderName,
+                        text = text,
+                        stickerEmoji = stickerEmoji,
+                        voiceDurationSeconds = if (isVoice) 5 else null,
+                        accessToken = session?.accessToken
+                    )
+                }
+            }
         }
     }
 
@@ -2312,15 +2570,27 @@ class SparkViewModel : ViewModel() {
             showToast("You already own '${pack.name}'!")
             return
         }
+        // v2.1 §3.1: premium-gated packs stay locked without Quicky Gold
+        // (routed through PremiumGate — unlocked for QA on debug builds).
+        if (pack.isPremiumGated && !PremiumGate.isPremium(_uiState.value.entitlements)) {
+            showToast("🔒 '${pack.name}' is a Quicky Gold exclusive pack.")
+            openPremiumStore()
+            return
+        }
 
-        // Simulate Google Play Billing Purchase & Server Entitlement Verification
+        // Simulate Google Play Billing / coin-wallet purchase & server
+        // entitlement verification.
         val updatedPacks = _uiState.value.stickerPacks.map {
             if (it.id == packId) it.copy(isOwned = true) else it
         }
         _uiState.update {
             it.copy(
                 stickerPacks = updatedPacks,
-                toastMessage = "🎉 Google Play purchase successful! '${pack.name}' unlocked for all chats & Ludo rooms."
+                toastMessage = if (pack.priceCoins != null) {
+                    "🎉 Paid ${pack.priceCoins} 🪙 — '${pack.name}' unlocked for all chats & Ludo rooms."
+                } else {
+                    "🎉 Google Play purchase successful! '${pack.name}' unlocked for all chats & Ludo rooms."
+                }
             )
         }
     }

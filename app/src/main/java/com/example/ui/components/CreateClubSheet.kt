@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.QuickyGold
 import com.example.ui.theme.QuickyPurple
+import com.example.ui.components.dismissKeyboardOnTap
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +59,8 @@ fun CreateClubSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // v2.1 §3.5 — tap outside any field dismisses the keyboard.
+                .dismissKeyboardOnTap()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {

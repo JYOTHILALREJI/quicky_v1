@@ -27,9 +27,11 @@ import androidx.core.util.Consumer
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.AdsManager
 import com.example.data.SupabaseAuth
 import com.example.model.AuthGate
 import com.example.model.DiscoveryFilter
+import com.example.model.PremiumGate
 import com.example.ui.SparkTab
 import com.example.ui.SparkViewModel
 import com.example.ui.components.*
@@ -96,6 +98,9 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             }
         }
 
+        // v2.1 §3.6 — AdMob bootstrap (idempotent).
+        LaunchedEffect(Unit) { AdsManager.initialize(context) }
+
         // ---- Authentication session bootstrap (Auth PRD) ----
         // Restore the persisted Supabase session on cold start, then
         // route to the auth screen / onboarding / main app.
@@ -125,8 +130,9 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
         // mid-onboarding — those flows own their back navigation.
         BackHandler(enabled = state.authGate == AuthGate.SIGNED_IN &&
                 state.isOnboardingComplete &&
-                (state.selectedProfileDetail != null || state.selectedMatchForChat != null || state.selectedClubForDetail != null || state.isLudoActive || state.showPersonalInformationSheet || state.currentTab != SparkTab.DISCOVER)) {
+                (state.showSettingsScreen || state.selectedProfileDetail != null || state.selectedMatchForChat != null || state.selectedClubForDetail != null || state.isLudoActive || state.showPersonalInformationSheet || state.currentTab != SparkTab.DISCOVER)) {
             when {
+                state.showSettingsScreen -> viewModel.toggleSettingsScreen(false)
                 state.isLudoActive -> viewModel.closeLudoGame()
                 state.selectedClubForDetail != null -> viewModel.closeClubDetail()
                 state.showPersonalInformationSheet -> viewModel.togglePersonalInformation(false)
@@ -188,13 +194,20 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 )
             }
 
-            state.isLudoActive && state.ludoRoom != null -> {
-            // 2-PLAYER PREMIUM LUDO GAME ARENA (PRD Section 3 - 10)
-            val activeLudoRoom = state.ludoRoom!!
-            LudoGameRoomScreen(
-                room = activeLudoRoom,
-                isPremium = state.entitlements.isPremium,
+            state.isLudoActive -> {
+            // LUDO ARENA (v2.1 §3.2) — lobby + solo/bots + online 4-player.
+            // ludoMatch == null renders the mode lobby.
+            LudoArenaScreen(
+                match = state.ludoMatch,
+                isRolling = state.isLudoRolling,
+                isPremium = PremiumGate.isPremium(state.entitlements),
+                joinError = state.ludoJoinError,
                 onBack = { viewModel.closeLudoGame() },
+                onStartSoloBots = { viewModel.startLudoSoloBots() },
+                onCreateOnline = { viewModel.createLudoOnlineMatch() },
+                onJoinOnline = { code -> viewModel.joinLudoOnlineMatch(code) },
+                onFillBots = { viewModel.fillLudoSeatsWithBots() },
+                onRestartSolo = { viewModel.restartLudoSolo() },
                 onRollDice = { viewModel.rollLudoDice() },
                 onMoveToken = { tokenId -> viewModel.moveLudoToken(tokenId) },
                 onSendMessage = { text, replyText, replySender ->
@@ -214,7 +227,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             ClubDetailScreen(
                 club = club,
                 messages = clubMessages,
-                isPremium = state.entitlements.isPremium,
+                isPremium = PremiumGate.isPremium(state.entitlements),
                 currentUserId = state.userProfile.id,
                 activeClubId = state.activeClubId,
                 myClubName = state.clubs.find { it.id == state.activeClubId }?.name,
@@ -233,6 +246,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 onRemoveMember = { clubId, memberUserId ->
                     viewModel.removeClubMember(clubId, memberUserId)
                 },
+                onDeleteClub = { clubId -> viewModel.deleteClub(clubId) },
                 onJoinClub = { clubId ->
                     viewModel.joinClub(clubId)
                 },
@@ -260,7 +274,8 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                         onBoostClick = { viewModel.activateBoost() },
                         onGamesClick = { viewModel.setTab(SparkTab.GAMES) },
                         onClubsClick = { viewModel.setTab(SparkTab.CLUBS) },
-                        onBackClick = { viewModel.setTab(SparkTab.PROFILE) }
+                        onBackClick = { viewModel.setTab(SparkTab.PROFILE) },
+                        onSettingsClick = { viewModel.toggleSettingsScreen(true) }
                     )
                 }
             },
@@ -297,7 +312,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                         onUnmatch = { viewModel.unmatchUser(selectedChat.id) },
                         onBlock = { viewModel.blockUser(selectedChat.user.id) },
                         onReport = { reason -> viewModel.reportUser(selectedChat.user.id, reason) },
-                        isPremium = state.entitlements.isPremium,
+                        isPremium = PremiumGate.isPremium(state.entitlements),
                         onOpenPremiumStore = { viewModel.openPremiumStore() },
                         onOpenLudo = { viewModel.openLudoGame() },
                         onOpenStickerPicker = { viewModel.openStickerPicker() },
@@ -308,11 +323,14 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                         SparkTab.DISCOVER -> {
                             DiscoverScreen(
                                 deck = state.discoveryDeck,
+                                showAdCard = state.showDiscoveryAdCard,
                                 onLike = { profile, isSuperLike -> viewModel.likeProfile(profile, isSuperLike) },
                                 onPass = { profile -> viewModel.passProfile(profile) },
+                                onDismissAdCard = { viewModel.dismissDiscoveryAdCard() },
                                 onRewind = { viewModel.rewindLastPass() },
                                 onBoost = { viewModel.activateBoost() },
                                 onOpenDetail = { profile -> viewModel.openProfileDetail(profile) },
+                                distanceUnit = state.distanceUnit,
                                 onResetDeck = {
                                     // Deck refresh — served by Supabase once connected
                                     viewModel.resetDiscoveryDeck()
@@ -323,7 +341,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                         SparkTab.MATCHES -> {
                             MatchesScreen(
                                 matches = state.matches,
-                                isPremium = state.entitlements.isPremium,
+                                isPremium = PremiumGate.isPremium(state.entitlements),
                                 onStartChat = { match -> viewModel.openChat(match) },
                                 onPlayTruthOrDare = { match ->
                                     val prompt = state.truthOrDarePrompts.first()
@@ -349,7 +367,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                                 games = state.gamesCatalog,
                                 prompts = state.truthOrDarePrompts,
                                 matches = state.matches,
-                                isPremium = state.entitlements.isPremium,
+                                isPremium = PremiumGate.isPremium(state.entitlements),
                                 onStartGameWithMatch = { match, prompt ->
                                     viewModel.openChat(match)
                                     viewModel.sendTruthOrDareInChat(match.id, prompt, match.user.id)
@@ -378,21 +396,12 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                                 insights = state.interactionInsights,
                                 isInsightsEnabled = state.privacySettings.interactionInsightsEnabled,
                                 isProcessingPhoto = state.isProcessingPhoto,
-                                themeMode = state.themeMode,
-                                onThemeChange = { mode -> viewModel.setThemeMode(mode) },
                                 onEditProfileClick = { showEditProfileSheet = true },
-                                onPersonalInformationClick = { viewModel.togglePersonalInformation(true) },
-                                onDiscoveryPreferencesClick = { viewModel.toggleFilterSheet(true) },
-                                onEditLocationClick = { viewModel.toggleEditLocationSheet(true) },
                                 onStartVerificationClick = { viewModel.startVerificationChallenge() },
                                 onSetPrimaryPhoto = { photoRes -> viewModel.setPrimaryPhoto(photoRes) },
                                 onDeletePhoto = { photoRes -> viewModel.deletePhoto(photoRes) },
                                 onAddPhoto = { uri -> viewModel.addProfilePhoto(context, uri) },
-                                onPremiumStoreClick = { viewModel.openPremiumStore() },
-                                onStickerStoreClick = { viewModel.openStickerStore() },
-                                onSafetyCenterClick = { viewModel.toggleSafetyCenter(true) },
-                                onPrivacyCenterClick = { viewModel.togglePrivacyCenter(true) },
-                                onSettingsClick = { viewModel.toggleSettings(true) }
+                                onPremiumStoreClick = { viewModel.openPremiumStore() }
                             )
                         }
                     }
@@ -423,6 +432,41 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             }
         }
         }
+    }
+
+    // Dedicated Settings screen (v2.1 §3.9) — opened from the gear icon
+    // in the Profile top bar; the Profile page itself is display-only now.
+    if (state.showSettingsScreen) {
+        SettingsScreen(
+            profile = state.userProfile,
+            entitlements = state.entitlements,
+            themeMode = state.themeMode,
+            distanceUnit = state.distanceUnit,
+            notificationPrefs = state.notificationPrefs,
+            showMeOnDiscovery = state.showMeOnDiscovery,
+            privacySettings = state.privacySettings,
+            onBack = { viewModel.toggleSettingsScreen(false) },
+            onThemeChange = { mode -> viewModel.setThemeMode(mode) },
+            onDistanceUnitChange = { unit -> viewModel.setDistanceUnit(unit) },
+            onNotificationPrefChange = { key, value -> viewModel.updateNotificationPref(key, value) },
+            onShowMeOnDiscoveryChange = { show -> viewModel.setShowMeOnDiscovery(show) },
+            onPrivacySettingsChange = { settings -> viewModel.updatePrivacySettings(settings) },
+            onEditProfileClick = { showEditProfileSheet = true },
+            onPersonalInformationClick = { viewModel.togglePersonalInformation(true) },
+            onDiscoveryPreferencesClick = { viewModel.toggleFilterSheet(true) },
+            onEditLocationClick = { viewModel.toggleEditLocationSheet(true) },
+            onStickerStoreClick = { viewModel.openStickerStore() },
+            onSafetyCenterClick = { viewModel.toggleSafetyCenter(true) },
+            onPremiumStoreClick = { viewModel.openPremiumStore() },
+            onStartVerificationClick = { viewModel.startVerificationChallenge() },
+            onLogout = { viewModel.signOut(context) },
+            onDownloadData = {
+                viewModel.showToast("Data export initiated. Download link sent to your verified email.")
+            },
+            onDeleteAccount = {
+                viewModel.showToast("Account deletion requires email confirmation — check your inbox.")
+            }
+        )
     }
 
     // Match Celebration Modal Overlay
@@ -523,23 +567,8 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
         )
     }
 
-    // Settings & Legal Sheet (Account & Legal)
-    if (state.showSettings) {
-        SettingsSheet(
-            currentTheme = state.themeMode,
-            onThemeChange = { mode -> viewModel.setThemeMode(mode) },
-            onLogout = {
-                viewModel.signOut(context)
-            },
-            onDownloadData = {
-                viewModel.showToast("Data export initiated. Download link sent to your verified email.")
-            },
-            onDeleteAccount = {
-                viewModel.showToast("Account deleted.")
-            },
-            onDismiss = { viewModel.toggleSettings(false) }
-        )
-    }
+    // (v2.1 §3.9) The old inline SettingsSheet was replaced by the
+    // dedicated SettingsScreen rendered above.
 
     // Personal Information & Visibility Sheet (PRD Section 65 - 69)
     if (state.showPersonalInformationSheet) {

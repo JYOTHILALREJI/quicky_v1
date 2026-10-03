@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -34,6 +36,7 @@ import com.example.ui.components.ChatBubble
 import com.example.ui.components.QuickyGamesIcon
 import com.example.ui.components.QuickyStickerIcon
 import com.example.ui.components.ReplyPreviewBanner
+import com.example.ui.components.dismissKeyboardOnTap
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
 
@@ -67,6 +70,8 @@ fun ChatDetailScreen(
     var showReportDialog by remember { mutableStateOf(false) }
     var isRecordingVoiceNote by remember { mutableStateOf(false) }
     var voiceRecordSeconds by remember { mutableIntStateOf(0) }
+    // v2.1 §3.3 — tracked list state so new messages auto-scroll into view.
+    val chatListState = rememberLazyListState()
 
     LaunchedEffect(isRecordingVoiceNote) {
         if (isRecordingVoiceNote) {
@@ -75,6 +80,13 @@ fun ChatDetailScreen(
                 delay(1000)
                 voiceRecordSeconds++
             }
+        }
+    }
+
+    // Auto-scroll to the newest message (never clipped behind the composer).
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            chatListState.animateScrollToItem(messages.size) // +1: header tile at index 0
         }
     }
 
@@ -214,13 +226,25 @@ fun ChatDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                // v2.1 §3.3 — the composer always rides above the keyboard
+                // (8dp gap comes from the composer's own bottom padding).
+                .imePadding()
         ) {
-            // Chat Messages List
+            // Chat Messages List — tap on the background dismisses the
+            // keyboard (v2.1 §3.5) and the bottom padding keeps the last
+            // bubble clear of the composer.
             LazyColumn(
+                state = chatListState,
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
-                reverseLayout = false
+                    .fillMaxWidth()
+                    .dismissKeyboardOnTap(),
+                reverseLayout = false,
+                // v2.1 §3.3 spacing grid: 6dp between bubbles, 4dp for
+                // consecutive same-sender bubbles, 12dp between sender
+                // blocks (handled per-item below).
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(bottom = 12.dp)
             ) {
                 // Header notice
                 item {
@@ -250,9 +274,12 @@ fun ChatDetailScreen(
                     }
                 }
 
-                items(messages) { msg ->
+                itemsIndexed(messages, key = { _, msg -> msg.id }) { index, msg ->
+                    val previous = messages.getOrNull(index - 1)
+                    val sameSenderAsPrevious = previous != null && previous.isMine == msg.isMine
                     ChatBubble(
                         message = msg,
+                        modifier = if (sameSenderAsPrevious) Modifier.padding(top = (-2).dp) else Modifier,
                         onReactionClick = { emoji -> onAddReaction(msg.id, emoji) },
                         onAnswerGame = { answer -> onAnswerGame(msg.id, answer) },
                         onSwipeToReply = { replyingToMessage = msg }

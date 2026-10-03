@@ -207,6 +207,8 @@ object AppContent {
     // STICKER STORE CATALOG (in-app purchase inventory).
     // Ownership is NOT bundled — purchases are per-account and must be
     // verified/persisted server-side (Google Play + Supabase).
+    // v2.1 §3.1: mixed coin-priced / free / real-money packs + one
+    // premium-gated showcase pack for the three CTA states.
     // -------------------------------------------------------------
     val stickerPackCatalog = listOf(
         StickerPack(
@@ -214,10 +216,11 @@ object AppContent {
             name = "Gamer Vibes & Memes",
             description = "High-energy reactions, rage quits, victory dances and dice rolls.",
             previewEmoji = "🎮",
-            price = "$0.99",
+            price = "",
             googleProductId = "quicky.stickers.gamers",
             isOwned = false,
             category = "Gaming",
+            priceCoins = 250,
             stickers = listOf(
                 StickerItem("stk_g1", "pack_gamers", "GG Well Played", "🏆", "GG WP!"),
                 StickerItem("stk_g2", "pack_gamers", "Rage Quit", "🤬", "NO WAY!!"),
@@ -232,10 +235,12 @@ object AppContent {
             name = "Flirty Sparks & Hearts",
             description = "Cute blushy emojis, butterfly moments and smooth banter.",
             previewEmoji = "💖",
-            price = "$1.49",
+            price = "",
             googleProductId = "quicky.stickers.flirty",
             isOwned = false,
             category = "Love & Romance",
+            priceCoins = 400,
+            isPremiumGated = true,
             stickers = listOf(
                 StickerItem("stk_f1", "pack_flirty", "Heart Eyes", "😍", "Hypnotized"),
                 StickerItem("stk_f2", "pack_flirty", "Sneaky Wink", "😉", "You know it"),
@@ -250,7 +255,7 @@ object AppContent {
             name = "Malayalam & Desi Masala",
             description = "Iconic mass dialogues, tea time banter, and vibrant desi expressions.",
             previewEmoji = "🌶️",
-            price = "$0.99",
+            price = "",
             googleProductId = "quicky.stickers.desi",
             isOwned = false,
             category = "Regional Vibes",
@@ -268,7 +273,7 @@ object AppContent {
             name = "Cute Puppies & Cats",
             description = "Adorable paws, wholesome hugs and playful cheekiness.",
             previewEmoji = "🐾",
-            price = "$0.99",
+            price = "",
             googleProductId = "quicky.stickers.cute",
             isOwned = false,
             category = "Animals",
@@ -284,39 +289,51 @@ object AppContent {
     )
 
     // -------------------------------------------------------------
-    // LUDO — fresh 2-player room factory (no pre-seeded game state)
+    // LUDO ARENA — fresh 4-player match factory (v2.1 §3.2)
+    // The local user takes the RED seat; three bots fill the remaining
+    // seats for SOLO_VS_BOTS. Online matches replace bots as humans join.
     // -------------------------------------------------------------
-    fun freshLudoRoom(playerName: String): LudoRoom {
+    fun freshSoloLudoMatch(playerName: String): LudoMatch {
+        val bots = listOf(
+            LudoPlayer(
+                id = "bot_green",
+                name = "Maya (Bot)",
+                avatarRes = R.drawable.img_profile_sarah,
+                seat = 1,
+                isBot = true
+            ),
+            LudoPlayer(
+                id = "bot_yellow",
+                name = "Arjun (Bot)",
+                avatarRes = R.drawable.img_profile_alex,
+                seat = 2,
+                isBot = true
+            ),
+            LudoPlayer(
+                id = "bot_blue",
+                name = "Riya (Bot)",
+                avatarRes = R.drawable.img_profile_alex_1790673648998,
+                seat = 3,
+                isBot = true
+            )
+        )
         val me = LudoPlayer(
-            id = "user_me",
+            id = LudoMatch.LOCAL_USER_ID,
             name = playerName.ifBlank { "You" },
             avatarRes = R.drawable.img_onboarding_hero,
-            colorHex = 0xFFFF2A6D, // Quicky Pink
-            colorName = "Pink",
-            score = 0
+            seat = 0
         )
-        val opponent = LudoPlayer(
-            id = "user_opponent",
-            name = "Opponent",
-            avatarRes = R.drawable.img_profile_alex,
-            colorHex = 0xFF06B6D4, // Cyan/Blue
-            colorName = "Blue",
-            score = 0
-        )
-        return LudoRoom(
+        return LudoMatch(
             id = "ludo_${System.currentTimeMillis()}",
-            player1 = opponent,
-            player2 = me,
-            currentTurnPlayerId = me.id,
-            diceValue = 6,
-            isRolling = false,
-            canMoveToken = false,
-            status = "IN_PROGRESS",
-            winnerId = null,
-            lastEventText = "🎲 Game started! Roll the dice to begin.",
-            chatMessages = emptyList(),
-            startedAt = "Just now",
-            duration = "00:00"
+            mode = LudoMode.SOLO_VS_BOTS,
+            players = listOf(me) + bots,
+            turnIndex = 0,
+            diceValue = null,
+            phase = LudoPhase.AWAITING_ROLL,
+            statusText = "Your turn — roll the dice!"
         )
     }
+
+    /** Bot display names for filling empty online seats. */
+    val ludoBotNames = listOf("Maya", "Arjun", "Riya", "Dev", "Nithya")
 }

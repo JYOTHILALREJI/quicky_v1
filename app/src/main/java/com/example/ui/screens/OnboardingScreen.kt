@@ -55,6 +55,7 @@ import com.example.model.OnboardingDraft
 import com.example.ui.components.CassyGradientButton
 import com.example.ui.components.cassyCinematicBrush
 import com.example.ui.theme.*
+import com.example.ui.components.dismissKeyboardOnTap
 
 /**
  * ============================================================
@@ -120,6 +121,8 @@ fun OnboardingScreen(
                 // Cassy cinematic full-bleed gradient (PRD §5.4): a warm
                 // ivory-to-blush wash that deepens towards the bottom.
                 .background(cassyCinematicBrush())
+                // v2.1 §3.5 — tap anywhere dismisses the keyboard.
+                .dismissKeyboardOnTap()
         ) {
         if (stage == 0) {
             WelcomeStage(

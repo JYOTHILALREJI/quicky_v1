@@ -31,12 +31,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
-import com.example.model.AppThemeMode
 import com.example.model.Entitlements
 import com.example.model.InteractionInsight
 import com.example.model.UserProfile
+import com.example.ui.components.PremiumBadge
 import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
+import com.example.ui.components.dismissKeyboardOnTap
 
 @Composable
 fun ProfileScreen(
@@ -45,21 +46,12 @@ fun ProfileScreen(
     insights: List<InteractionInsight>,
     isInsightsEnabled: Boolean,
     isProcessingPhoto: Boolean,
-    themeMode: AppThemeMode,
-    onThemeChange: (AppThemeMode) -> Unit,
     onEditProfileClick: () -> Unit,
-    onPersonalInformationClick: () -> Unit,
-    onDiscoveryPreferencesClick: () -> Unit,
-    onEditLocationClick: () -> Unit,
     onStartVerificationClick: () -> Unit,
     onSetPrimaryPhoto: (Int) -> Unit,
     onDeletePhoto: (Int) -> Unit,
     onAddPhoto: (Uri) -> Unit,
     onPremiumStoreClick: () -> Unit,
-    onStickerStoreClick: () -> Unit,
-    onSafetyCenterClick: () -> Unit,
-    onPrivacyCenterClick: () -> Unit,
-    onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     // Real photo picker for the empty slots — uploads go through the
@@ -78,6 +70,8 @@ fun ProfileScreen(
             // clear above the floating liquid-glass navigation bar.
             .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + glassNavBarOverlayHeight())
             .testTag("my_profile_screen"),
+            // v2.1 §3.5 — tap anywhere dismisses the keyboard.
+            .dismissKeyboardOnTap(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // PRD Section 11 & 12: CENTER ALIGNED Hero Profile Card
@@ -453,17 +447,8 @@ fun ProfileScreen(
                                 color = Color.White
                             )
                             if (entitlements.isPremium) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = ActionLike
-                                ) {
-                                    Text(
-                                        text = "ACTIVE",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = Color.White,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
+                                // v2.1 §5 — redesigned champagne-gold badge
+                                PremiumBadge(label = "ACTIVE")
                             }
                         }
 
@@ -594,131 +579,8 @@ fun ProfileScreen(
             }
         }
 
-        // Section: Personal Information & Settings (PRD Section 65-69)
-        Card(
-            shape = RoundedCornerShape(22.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                // Personal Information & Field Visibility
-                ListItem(
-                    headlineContent = { Text("Personal Information & Visibility", fontWeight = FontWeight.SemiBold) },
-                    supportingContent = { Text("Height, education, occupation, interests & visibility") },
-                    leadingContent = { Icon(Icons.Outlined.Badge, contentDescription = null, tint = QuickyPink) },
-                    trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier.clickable { onPersonalInformationClick() }
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                // Discovery Preferences
-                ListItem(
-                    headlineContent = { Text("Discovery Preferences", fontWeight = FontWeight.SemiBold) },
-                    supportingContent = { Text("Who you want to see, age range, distance, height") },
-                    leadingContent = { Icon(Icons.Outlined.Tune, contentDescription = null, tint = QuickyPurple) },
-                    trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier.clickable { onDiscoveryPreferencesClick() }
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                // Edit Location (change request #5) — updates the saved
-                // GPS coordinates + city that power distance matching.
-                ListItem(
-                    headlineContent = { Text("Location", fontWeight = FontWeight.SemiBold) },
-                    supportingContent = {
-                        Text(
-                            if (userProfile.city.isBlank()) "Set your location for distance matching"
-                            else "${userProfile.city} · used for distance matching"
-                        )
-                    },
-                    leadingContent = {
-                        Icon(
-                            Icons.Outlined.LocationOn,
-                            contentDescription = null,
-                            tint = QuickyPink
-                        )
-                    },
-                    trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier
-                        .clickable { onEditLocationClick() }
-                        .testTag("edit_location_row")
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                // Theme Mode Selector (PRD Section 3 & 61: Light default, Dark, System)
-                ListItem(
-                    headlineContent = { Text("Appearance Theme", fontWeight = FontWeight.SemiBold) },
-                    supportingContent = { Text("Current: ${themeMode.name.lowercase().replaceFirstChar { c -> c.uppercase() }} (Default: Light)") },
-                    leadingContent = { Icon(Icons.Outlined.Palette, contentDescription = null, tint = QuickyGold) },
-                    trailingContent = {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            FilledTonalButton(
-                                onClick = { onThemeChange(if (themeMode == AppThemeMode.LIGHT) AppThemeMode.DARK else AppThemeMode.LIGHT) },
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
-                            ) {
-                                Text(if (themeMode == AppThemeMode.LIGHT) "Dark Mode" else "Light Mode")
-                            }
-                        }
-                    },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                // Sticker Store
-                ListItem(
-                    headlineContent = { Text("Sticker Store", fontWeight = FontWeight.SemiBold) },
-                    supportingContent = { Text("Buy digital packs for Personal, Club, and Ludo chats") },
-                    leadingContent = { Text("💖", fontSize = 20.sp) },
-                    trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier.clickable { onStickerStoreClick() }
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                // Safety Center
-                ListItem(
-                    headlineContent = { Text("Safety & Protection", fontWeight = FontWeight.SemiBold) },
-                    supportingContent = { Text("Dating guidelines, reporting and zero-tolerance policy") },
-                    leadingContent = { Icon(Icons.Outlined.Security, contentDescription = null, tint = ActionLike) },
-                    trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier.clickable { onSafetyCenterClick() }
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                // Privacy Center
-                ListItem(
-                    headlineContent = { Text("Privacy Controls", fontWeight = FontWeight.SemiBold) },
-                    supportingContent = { Text("Incognito, online status, character badge visibility") },
-                    leadingContent = { Icon(Icons.Outlined.Lock, contentDescription = null, tint = QuickyPurple) },
-                    trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier.clickable { onPrivacyCenterClick() }
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                // Account & Legal
-                ListItem(
-                    headlineContent = { Text("Account & Legal", fontWeight = FontWeight.SemiBold) },
-                    supportingContent = { Text("Theme mode, download data, terms, delete account") },
-                    leadingContent = { Icon(Icons.Outlined.Settings, contentDescription = null) },
-                    trailingContent = { Icon(Icons.Filled.ChevronRight, contentDescription = null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier.clickable { onSettingsClick() }
-                )
-            }
-        }
+        // (v2.1 §3.9) All settings rows moved to the dedicated Settings
+        // screen — reachable via the gear icon in the top bar. The
+        // Profile page is now a pure display surface.
     }
 }

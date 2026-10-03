@@ -49,6 +49,15 @@ object SupabaseConfig {
     const val TABLE_GAME_PROMPTS = "game_prompts"
 
     // ------------------------------------------------------------
+    // Ludo Arena (v2.1 §3.2.4) — online match tables
+    // ------------------------------------------------------------
+    const val TABLE_LUDO_MATCHES = "ludo_matches"
+    const val TABLE_LUDO_PLAYERS = "ludo_players"
+    const val TABLE_LUDO_GAME_STATE = "ludo_game_state"
+    const val TABLE_LUDO_MOVES = "ludo_moves"
+    const val TABLE_LUDO_CHAT_MESSAGES = "ludo_chat_messages"
+
+    // ------------------------------------------------------------
     // PostgREST RPC functions (v2 "Premium Cassy" hardening —
     // deploy via supabase/schema.sql, section v2.3 / v2.4)
     // ------------------------------------------------------------

@@ -33,6 +33,7 @@ import com.example.model.MatchItem
 import com.example.model.UserProfile
 import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
+import com.example.ui.components.dismissKeyboardOnTap
 
 @Composable
 fun MatchesScreen(
@@ -50,6 +51,8 @@ fun MatchesScreen(
         modifier = modifier
             .fillMaxSize()
             .testTag("matches_screen"),
+            // v2.1 §3.5 — tap anywhere dismisses the keyboard.
+            .dismissKeyboardOnTap(),
         // Extra bottom padding so the last card can scroll clear above
         // the floating liquid-glass navigation bar.
         contentPadding = PaddingValues(

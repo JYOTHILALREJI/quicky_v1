@@ -417,6 +417,27 @@ object SupabaseRepository {
     }
 
     /**
+     * Deletes a club (v2.1 §3.8 — OWNER ONLY).
+     * Security is enforced server-side: the `clubs_delete` RLS policy
+     * allows the delete only when `owner_id = auth.uid()`, FK cascades wipe
+     * club_members / club_messages / club_events, and the
+     * `notify_club_deletion` trigger pushes a notification to every member.
+     */
+    suspend fun deleteClub(clubId: String, accessToken: String?): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "DELETE",
+                path = "/rest/v1/${SupabaseConfig.TABLE_CLUBS}",
+                query = mapOf("id" to "eq.$clubId"),
+                accessToken = accessToken,
+                prefer = "return=minimal"
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
      * Persists the completed onboarding draft into the `profiles` table
      * (upsert — safe even when the signup trigger already created the
      * row) and syncs the normalized `user_interests` rows behind it.

@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.Club
 import com.example.ui.theme.*
+import com.example.ui.components.dismissKeyboardOnTap
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -90,6 +91,8 @@ fun ClubsScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
                 .testTag("clubs_screen"),
+                // v2.1 §3.5 — tap anywhere dismisses the keyboard.
+                .dismissKeyboardOnTap(),
             contentPadding = PaddingValues(
                 start = 16.dp,
                 top = 8.dp,
