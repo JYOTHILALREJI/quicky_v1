@@ -66,9 +66,11 @@ object LudoRealtime {
         }
     }
 
-    /** Opaque handle — [close] tears the subscription down. */
-    class Subscription internal constructor(private val impl: RealtimeSocket) {
-        fun close() = impl.shutdown()
+    /** Opaque handle — [close] tears the subscription down.
+     *  Holds a shutdown closure instead of the socket itself so the
+     *  private [RealtimeSocket] type is never exposed. */
+    class Subscription internal constructor(private val closeAction: () -> Unit) {
+        fun close() = closeAction()
     }
 
     fun subscribe(
@@ -78,7 +80,7 @@ object LudoRealtime {
     ): Subscription {
         val socket = RealtimeSocket(matchCode, accessToken, listener)
         socket.connect()
-        return Subscription(socket)
+        return Subscription { socket.shutdown() }
     }
 
     // ------------------------------------------------------------------

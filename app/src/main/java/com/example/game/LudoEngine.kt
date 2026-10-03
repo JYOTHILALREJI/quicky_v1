@@ -3,6 +3,7 @@ package com.example.game
 import com.example.model.LudoGameResult
 import com.example.model.LudoMatch
 import com.example.model.LudoPhase
+import com.example.model.LudoPlayer
 import com.example.model.LudoRules
 import com.example.model.LudoToken
 
