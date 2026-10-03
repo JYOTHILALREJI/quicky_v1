@@ -26,7 +26,11 @@ object PremiumGate {
      * v2.1: forced true for QA.
      * v2.2: revert to the real check (`entitlements.isPremium` only).
      */
-    const val FORCE_UNLOCKED: Boolean = BuildConfig.DEBUG || BuildConfig.FORCE_PREMIUM_UNLOCK
+    // NOTE: `const` is impossible here — AGP emits BuildConfig.DEBUG as a
+    // `Boolean.parseBoolean(...)` initializer, which is not a compile-time
+    // constant. A plain val is evaluated once at class-load and is safe
+    // because BuildConfig fields never change at runtime.
+    val FORCE_UNLOCKED: Boolean = BuildConfig.DEBUG || BuildConfig.FORCE_PREMIUM_UNLOCK
 
     /** True while the temporary QA unlock is active (drives "Testing: All unlocked" copy). */
     val isTestingUnlockActive: Boolean get() = FORCE_UNLOCKED

@@ -90,7 +90,7 @@ fun ClubsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .testTag("clubs_screen"),
+                .testTag("clubs_screen")
                 // v2.1 §3.5 — tap anywhere dismisses the keyboard.
                 .dismissKeyboardOnTap(),
             contentPadding = PaddingValues(

@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
+// NOTE: `androidx.compose.animation.AnimatedVisibility` is intentionally
+// NOT imported — the single call site below uses the fully-qualified name
+// to avoid the K2 ColumnScope-extension resolution trap.
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -432,7 +434,12 @@ private fun LudoArenaMatchScreen(
             )
 
             // Online: host can fill empty seats with bots before/while playing.
-            AnimatedVisibility(
+            // NOTE: fully-qualified call — with K2 + Compose 1.7 the plain
+            // `AnimatedVisibility` inside a Box that is nested in the outer
+            // Column resolves to the deprecated ColumnScope extension and
+            // fails with "cannot be called in this context with an implicit
+            // receiver". Qualifying forces the top-level overload.
+            androidx.compose.animation.AnimatedVisibility(
                 visible = match.mode == com.example.model.LudoMode.ONLINE &&
                         match.players.size < 4 &&
                         match.phase != LudoPhase.FINISHED,
@@ -780,7 +787,7 @@ private fun LudoArenaBoard(
                 onClick = {
                     if (isMovable) {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onMoveToken(placement.token.id)
+                        onTokenClick(placement.token.id)
                     }
                 }
             )

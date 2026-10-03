@@ -45,7 +45,7 @@ fun ChatsScreen(
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .testTag("chats_screen"),
+            .testTag("chats_screen")
             // v2.1 §3.5 — tap anywhere dismisses the keyboard.
             .dismissKeyboardOnTap(),
         // Extra bottom padding so the last chat can scroll clear above

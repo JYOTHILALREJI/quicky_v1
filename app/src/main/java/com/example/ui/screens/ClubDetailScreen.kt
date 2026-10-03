@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material3.*

@@ -7,6 +7,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -48,9 +52,7 @@ fun DiscoverScreen(
     ) {
         // Countdown gate for the Sponsored card (v2.1 §3.6.1) — dismissal
         // unlocks only after the 5s ring completes.
-        var adCountdownDone by androidx.compose.runtime.remember(showAdCard) {
-            androidx.compose.runtime.mutableStateOf(false)
-        }
+        var adCountdownDone by remember(showAdCard) { mutableStateOf(false) }
 
         when {
             // v2.1 §3.6.1 — Sponsored card injected every N swipes. Not

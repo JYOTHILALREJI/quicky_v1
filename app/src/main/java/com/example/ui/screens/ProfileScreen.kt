@@ -69,7 +69,7 @@ fun ProfileScreen(
             // Extra bottom padding so the last settings row can scroll
             // clear above the floating liquid-glass navigation bar.
             .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + glassNavBarOverlayHeight())
-            .testTag("my_profile_screen"),
+            .testTag("my_profile_screen")
             // v2.1 §3.5 — tap anywhere dismisses the keyboard.
             .dismissKeyboardOnTap(),
         verticalArrangement = Arrangement.spacedBy(16.dp)

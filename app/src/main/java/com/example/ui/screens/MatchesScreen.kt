@@ -50,7 +50,7 @@ fun MatchesScreen(
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .testTag("matches_screen"),
+            .testTag("matches_screen")
             // v2.1 §3.5 — tap anywhere dismisses the keyboard.
             .dismissKeyboardOnTap(),
         // Extra bottom padding so the last card can scroll clear above
