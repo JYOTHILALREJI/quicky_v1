@@ -698,6 +698,7 @@ returns table (
   interests          text[],
   compatibility_score int,
   is_verified         boolean,
+  relationship_intent text,
   last_active         timestamptz
 )
 language plpgsql
@@ -722,6 +723,7 @@ begin
     ranked.interests,
     ranked.compat as compatibility_score,
     ranked.is_verified,
+    ranked.relationship_intent,
     ranked.last_active
   from (
     select
@@ -751,6 +753,7 @@ begin
         + case when p.is_online then 10 else 0 end
       )::int as compat,
       p.is_verified,
+      p.relationship_intent,
       p.updated_at as last_active
     from public.profiles p
     cross join public.profiles up

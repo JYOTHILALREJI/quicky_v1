@@ -301,6 +301,9 @@ object SupabaseRepository {
                             bio = row.optString("bio"),
                             city = row.optString("city"),
                             distanceKm = row.optDouble("distance_km", 0.0).toInt(),
+                            relationshipIntent = row.optString("relationship_intent")
+                                .takeIf { it.isNotBlank() && it != "null" }
+                                ?: "Long-term partner",
                             photoUris = row.optJSONArray("photo_urls").toStringList(),
                             interests = row.optJSONArray("interests").toStringList(),
                             isVerified = row.optBoolean("is_verified", false),
