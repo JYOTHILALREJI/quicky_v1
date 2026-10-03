@@ -1290,3 +1290,240 @@ begin
   return v_dice;
 end;
 $$;
+
+-- ----------------------------------------------------------------------------
+-- v3 LUDO MULTIPLAYER — timers, scores, results, stats, realtime
+-- (run AFTER the v2.1 section; every statement is idempotent)
+-- ----------------------------------------------------------------------------
+
+-- 1) ludo_game_state: absolute turn deadlines (PRD §28) + completed stamp.
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'ludo_game_state'
+                   and column_name = 'roll_deadline_at') then
+    alter table public.ludo_game_state
+      add column roll_deadline_at timestamptz;
+  end if;
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'ludo_game_state'
+                   and column_name = 'move_deadline_at') then
+    alter table public.ludo_game_state
+      add column move_deadline_at timestamptz;
+  end if;
+end
+$$;
+
+-- 2) ludo_matches: completion timestamp (game-end transaction, PRD §25).
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'ludo_matches'
+                   and column_name = 'completed_at') then
+    alter table public.ludo_matches
+      add column completed_at timestamptz;
+  end if;
+end
+$$;
+
+-- 3) ludo_players: real profile photos for room-chat avatars (PRD §46).
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'ludo_players'
+                   and column_name = 'avatar_url') then
+    alter table public.ludo_players
+      add column avatar_url text;
+  end if;
+end
+$$;
+
+-- 4) ludo_moves: mark timer-expiry auto moves (PRD §10).
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'ludo_moves'
+                   and column_name = 'is_auto') then
+    alter table public.ludo_moves
+      add column is_auto boolean not null default false;
+  end if;
+end
+$$;
+
+-- 5) Permanent per-user match results (PRD §23) — written once by the
+--    apply_ludo_move Edge Function when the third player completes.
+create table if not exists public.ludo_game_results (
+    id              uuid primary key default gen_random_uuid(),
+    match_id        text not null references public.ludo_matches (id) on delete cascade,
+    user_id         text not null,
+    seat            int  not null check (seat between 0 and 3),
+    score           int  not null default 0,
+    finished_tokens int  not null default 0,
+    finish_position int  not null check (finish_position between 1 and 4),
+    coins_home      int  not null default 0,
+    created_at      timestamptz not null default now(),
+    unique (match_id, user_id)
+);
+
+create index if not exists ludo_results_user_idx
+  on public.ludo_game_results (user_id, created_at desc);
+
+alter table public.ludo_game_results enable row level security;
+drop policy if exists "ludo_results_select" on public.ludo_game_results;
+create policy "ludo_results_select" on public.ludo_game_results
+  for select using (auth.role() = 'authenticated');
+drop policy if exists "ludo_results_insert_own" on public.ludo_game_results;
+create policy "ludo_results_insert_own" on public.ludo_game_results
+  for insert with check (user_id = auth.uid()::text);
+-- Updates/deletes happen only through the service-role Edge Function.
+
+-- 6) Persistent per-user stats incl. the required last_score (PRD §24/§27).
+create table if not exists public.ludo_user_stats (
+    user_id             text primary key,
+    games_played        int not null default 0,
+    games_completed     int not null default 0,
+    total_score         int not null default 0,
+    last_score          int not null default 0,
+    best_score          int not null default 0,
+    first_place_count   int not null default 0,
+    second_place_count  int not null default 0,
+    third_place_count   int not null default 0,
+    updated_at          timestamptz not null default now()
+);
+
+alter table public.ludo_user_stats enable row level security;
+drop policy if exists "ludo_stats_select_own" on public.ludo_user_stats;
+create policy "ludo_stats_select_own" on public.ludo_user_stats
+  for select using (user_id = auth.uid()::text);
+
+-- Service-role upsert used by apply_ludo_move's completion transaction.
+create or replace function public.upsert_ludo_user_stats(
+    p_user_id         text,
+    p_score           int,
+    p_finish_position int,
+    p_completed       boolean
+)
+returns void
+language plpgsql
+security definer
+as $$
+begin
+  insert into public.ludo_user_stats as s (
+    user_id, games_played, games_completed, total_score,
+    last_score, best_score,
+    first_place_count, second_place_count, third_place_count, updated_at
+  ) values (
+    p_user_id, 1, case when p_completed then 1 else 0 end, p_score,
+    p_score, p_score,
+    case when p_finish_position = 1 then 1 else 0 end,
+    case when p_finish_position = 2 then 1 else 0 end,
+    case when p_finish_position = 3 then 1 else 0 end,
+    now()
+  )
+  on conflict (user_id) do update set
+    games_played      = s.games_played + 1,
+    games_completed   = s.games_completed + case when p_completed then 1 else 0 end,
+    total_score       = s.total_score + p_score,
+    last_score        = p_score,
+    best_score        = greatest(s.best_score, p_score),
+    first_place_count = s.first_place_count + case when p_finish_position = 1 then 1 else 0 end,
+    second_place_count = s.second_place_count + case when p_finish_position = 2 then 1 else 0 end,
+    third_place_count = s.third_place_count + case when p_finish_position = 3 then 1 else 0 end,
+    updated_at        = now();
+end
+$$;
+
+-- 7) Realtime broadcast for the authoritative game state + room chat
+--    (postgres_changes — the PRIMARY multiplayer sync path, PRD §14).
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public'
+      and tablename = 'ludo_game_state'
+  ) then
+    alter publication supabase_realtime add table public.ludo_game_state;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public'
+      and tablename = 'ludo_chat_messages'
+  ) then
+    alter publication supabase_realtime add table public.ludo_chat_messages;
+  end if;
+exception
+  when undefined_object then null; -- publication missing on fresh projects
+end
+$$;
+
+-- 8) v3 SQL roll RPC — keeps the always-available fallback consistent with
+--    the engine: seq bump + 30s move deadline (or pass + 10s roll deadline).
+create or replace function public.roll_ludo_dice(p_match_id text)
+returns int
+language plpgsql
+security definer
+as $$
+declare
+  v_dice   int;
+  v_state  jsonb;
+  v_phase  text;
+  v_seat   int;
+  v_has_move boolean;
+  v_next_turn int;
+begin
+  select board_state into v_state
+    from public.ludo_game_state where match_id = p_match_id
+    for update;
+
+  if v_state is null then
+    raise exception 'LUDO_MATCH_NOT_FOUND';
+  end if;
+  if (v_state->>'phase') = 'FINISHED' then
+    raise exception 'LUDO_MATCH_FINISHED';
+  end if;
+
+  v_dice := 1 + floor(random() * 6)::int;
+  v_seat := coalesce((v_state->>'turn_index')::int, 0);
+  v_phase := 'AWAITING_MOVE';
+  v_has_move := true; -- conservative default; corrected below for forfeits
+
+  -- Three consecutive sixes forfeit the turn.
+  if v_dice = 6 and coalesce((v_state->>'consecutive_sixes')::int, 0) + 1 >= 3 then
+    v_next_turn := (v_seat + 1)
+      % jsonb_array_length(v_state->'players');
+    v_state := v_state
+      || jsonb_build_object(
+           'dice_value', v_dice,
+           'phase', 'AWAITING_ROLL',
+           'turn_index', v_next_turn,
+           'consecutive_sixes', 0,
+           'status_text', 'Third 6 — turn forfeited!',
+           'seq', coalesce((v_state->>'seq')::bigint, 0) + 1,
+           'roll_deadline_at', to_char(now() + interval '10 seconds', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+           'move_deadline_at', null
+         );
+  else
+    v_state := v_state
+      || jsonb_build_object(
+           'dice_value', v_dice,
+           'phase', v_phase,
+           'consecutive_sixes', case when v_dice = 6
+             then coalesce((v_state->>'consecutive_sixes')::int, 0) + 1 else 0 end,
+           'seq', coalesce((v_state->>'seq')::bigint, 0) + 1,
+           'roll_deadline_at', null,
+           'move_deadline_at', to_char(now() + interval '30 seconds', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+         );
+  end if;
+
+  update public.ludo_game_state
+     set board_state = v_state,
+         dice_value = v_dice,
+         turn = coalesce((v_state->>'turn_index')::int, 0),
+         roll_deadline_at = nullif(v_state->>'roll_deadline_at', '')::timestamptz,
+         move_deadline_at = nullif(v_state->>'move_deadline_at', '')::timestamptz,
+         updated_at = now()
+   where match_id = p_match_id;
+
+  return v_dice;
+end;
+$$;

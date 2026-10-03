@@ -14,6 +14,7 @@ import com.example.BuildConfig
 import com.example.data.AdConfig
 import com.example.data.AppContent
 import com.example.data.LudoMatchRepository
+import com.example.data.LudoRealtime
 import com.example.data.SupabaseAuth
 import com.example.data.SupabaseRepository
 import com.example.game.LudoEngine
@@ -117,6 +118,8 @@ data class SparkUiState(
     val isLudoRolling: Boolean = false,
     val ludoJoinError: String? = null,
     val isCreatingLudoMatch: Boolean = false,
+    /** v3: Realtime socket health — drives the "Connection lost" chip. */
+    val ludoConnected: Boolean = true,
 
     // Sticker Store state
     val stickerPacks: List<StickerPack> = AppContent.stickerPackCatalog,
@@ -362,7 +365,8 @@ class SparkViewModel : ViewModel() {
                     ludoMatch = null,
                     isLudoActive = false,
                     isLudoRolling = false,
-                    ludoJoinError = null
+                    ludoJoinError = null,
+                    ludoConnected = true
                 )
             }
         }
@@ -2162,13 +2166,20 @@ class SparkViewModel : ViewModel() {
     }
 
     // -------------------------------------------------------------
-    // LUDO ARENA METHODS (v2.1 §3.2 — 4-player rewrite)
+    // LUDO ARENA METHODS (v3 — full playable multiplayer)
     // Solo-vs-bots plays fully offline through LudoEngine; online
-    // matches sync through ludo_* tables + Edge Functions with a
-    // ~1.2s polling fallback for Realtime.
+    // matches sync through ludo_* tables + Edge Functions with
+    // SUPABASE REALTIME as the primary path (v3 PRD §14) and a slow
+    // 10s poll as the recovery fallback ONLY.
     // -------------------------------------------------------------
-    private var ludoPollJob: Job? = null
+    private var ludoRealtimeSub: LudoRealtime.Subscription? = null
+    private var ludoRecoveryJob: Job? = null
+    private var ludoTimerJob: Job? = null
     private var ludoBotDriverJob: Job? = null
+    /** Highest authoritative seq this device has applied (ordering, PRD §69). */
+    private var ludoLastAppliedSeq: Long = 0L
+    /** In-flight auto action guard (PRD §31 — one expiry action per turn). */
+    private val ludoAutoActionInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
     /** Host-side id of the local user inside online matches. */
     private val ludoLocalUserId: String get() = _uiState.value.userProfile.id
 
@@ -2185,15 +2196,25 @@ class SparkViewModel : ViewModel() {
     }
 
     fun closeLudoGame() {
-        ludoPollJob?.cancel(); ludoPollJob = null
+        ludoRealtimeSub?.close(); ludoRealtimeSub = null
+        ludoRecoveryJob?.cancel(); ludoRecoveryJob = null
+        ludoTimerJob?.cancel(); ludoTimerJob = null
         ludoBotDriverJob?.cancel(); ludoBotDriverJob = null
+        ludoLastAppliedSeq = 0L
         _uiState.update {
-            it.copy(isLudoActive = false, ludoMatch = null, isLudoRolling = false, ludoJoinError = null)
+            it.copy(
+                isLudoActive = false,
+                ludoMatch = null,
+                isLudoRolling = false,
+                ludoJoinError = null,
+                ludoConnected = true
+            )
         }
     }
 
     fun startLudoSoloBots() {
-        ludoPollJob?.cancel(); ludoPollJob = null
+        ludoRealtimeSub?.close(); ludoRealtimeSub = null
+        ludoRecoveryJob?.cancel(); ludoRecoveryJob = null
         ludoBotDriverJob?.cancel(); ludoBotDriverJob = null
         _uiState.update {
             it.copy(
@@ -2203,10 +2224,25 @@ class SparkViewModel : ViewModel() {
                 ludoJoinError = null
             )
         }
+        startLudoTimerWatch()
+        maybeDriveBotTurn()
     }
 
     /** "Play again" from the winner dialog — fresh solo match. */
     fun restartLudoSolo() = startLudoSoloBots()
+
+    /**
+     * "Play Again" from the result screen (PRD §26): solo → fresh arena;
+     * online → a BRAND-NEW match (the finished one is immutable history).
+     */
+    fun playLudoAgain() {
+        val match = _uiState.value.ludoMatch ?: return
+        if (match.mode == LudoMode.ONLINE) createLudoOnlineMatch() else restartLudoSolo()
+    }
+
+    /** Remote profile photo for room-chat avatars (PRD §46), if any. */
+    private fun ludoAvatarUrl(): String? =
+        _uiState.value.userProfile.photoUris.firstOrNull { it.startsWith("http") }
 
     /** Creates an online 4-player match and shows the shareable code. */
     fun createLudoOnlineMatch() {
@@ -2221,7 +2257,8 @@ class SparkViewModel : ViewModel() {
                 LudoMatchRepository.createOnlineMatch(
                     hostUserId = ludoLocalUserId,
                     hostName = _uiState.value.userProfile.name,
-                    accessToken = session?.accessToken
+                    accessToken = session?.accessToken,
+                    avatarUrl = ludoAvatarUrl()
                 )
             }.getOrElse { e ->
                 _uiState.update { it.copy(isCreatingLudoMatch = false, ludoJoinError = e.message) }
@@ -2238,15 +2275,17 @@ class SparkViewModel : ViewModel() {
                         id = ludoLocalUserId,
                         name = _uiState.value.userProfile.name,
                         avatarRes = R.drawable.img_onboarding_hero,
-                        seat = 0
+                        seat = 0,
+                        avatarUrl = ludoAvatarUrl()
                     )
                 ),
                 statusText = "Share code $code — fill seats or wait for players",
                 localUserId = ludoLocalUserId
             )
+            ludoLastAppliedSeq = match.seq
             _uiState.update { it.copy(isCreatingLudoMatch = false, ludoMatch = match, isLudoActive = true) }
             showToast("Match created! Code: $code")
-            startLudoPolling()
+            startLudoRealtime()
         }
     }
 
@@ -2265,7 +2304,8 @@ class SparkViewModel : ViewModel() {
                     matchCode = code,
                     userId = ludoLocalUserId,
                     playerName = _uiState.value.userProfile.name,
-                    accessToken = session?.accessToken
+                    accessToken = session?.accessToken,
+                    avatarUrl = ludoAvatarUrl()
                 )
             }
             if (joined.isFailure) {
@@ -2279,7 +2319,7 @@ class SparkViewModel : ViewModel() {
             }
             refreshLudoMatchNow()
             _uiState.update { it.copy(isCreatingLudoMatch = false, isLudoActive = true) }
-            startLudoPolling()
+            startLudoRealtime()
         }
     }
 
@@ -2297,29 +2337,119 @@ class SparkViewModel : ViewModel() {
                 )
             }.onSuccess {
                 refreshLudoMatchNow()
+                maybeDriveBotTurn()
             }.onFailure {
                 showToast("Could not add bots: ${it.message}")
             }
         }
     }
 
-    private fun startLudoPolling() {
-        ludoPollJob?.cancel()
-        ludoPollJob = viewModelScope.launch {
+    /**
+     * REALTIME SUBSCRIPTION (v3 PRD §14) — the primary sync path for online
+     * play. One socket per active match; callbacks marshal through the
+     * seq-guarded appliers below. A slow 10s poll runs alongside purely as
+     * a recovery fallback (gap healing + host-owned bot driving).
+     */
+    private fun startLudoRealtime() {
+        val match = _uiState.value.ludoMatch ?: return
+        if (match.mode != LudoMode.ONLINE) return
+        ludoRealtimeSub?.close()
+        ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, match.seq)
+        val session = _uiState.value.authSession
+        ludoRealtimeSub = LudoMatchRepository.subscribeRealtime(
+            matchCode = match.id,
+            accessToken = session?.accessToken,
+            onGameState = { row -> onRemoteLudoState(row) },
+            onChatMessage = { row -> onRemoteLudoChat(row) },
+            onConnection = { online -> _uiState.update { it.copy(ludoConnected = online) } }
+        )
+        ludoRecoveryJob?.cancel()
+        ludoRecoveryJob = viewModelScope.launch {
             while (isActive &&
                 _uiState.value.isLudoActive &&
                 _uiState.value.ludoMatch?.mode == LudoMode.ONLINE
             ) {
-                delay(1200)
+                delay(10_000)
                 if (!isActive) break
                 refreshLudoMatchNow(quiet = true)
-                // Drive bots when the host (or solo arena) owns them.
                 maybeDriveBotTurn()
             }
         }
+        startLudoTimerWatch()
     }
 
-    /** Pulls the authoritative match state (online mode). */
+    /** Applies a realtime game-state row (seq-guarded, PRD §69/§70). */
+    private fun onRemoteLudoState(row: JSONObject) {
+        val current = _uiState.value.ludoMatch ?: return
+        if (current.mode != LudoMode.ONLINE) return
+        val remote = runCatching {
+            LudoMatchRepository.stateRowToMatch(current.id, row)
+        }.getOrNull() ?: return
+        if (remote.seq < ludoLastAppliedSeq) return // stale duplicate — drop
+        if (remote.seq > ludoLastAppliedSeq + 1) {   // gap → full recovery fetch
+            refreshLudoMatchNow(quiet = true)
+            return
+        }
+        applyRemoteLudoMatch(remote)
+    }
+
+    /** Merges a single realtime chat INSERT (dedupe + pending replace). */
+    private fun onRemoteLudoChat(row: JSONObject) {
+        val current = _uiState.value.ludoMatch ?: return
+        if (current.mode != LudoMode.ONLINE) return
+        val message = runCatching { LudoMatchRepository.chatRowToMessage(row) }.getOrNull() ?: return
+        _uiState.update { state ->
+            val chat = mergeLudoChat(state.ludoMatch?.chatMessages.orEmpty(), listOf(message))
+            state.copy(ludoMatch = state.ludoMatch?.copy(chatMessages = chat))
+        }
+    }
+
+    /** Seq-guarded application of an authoritative online snapshot. */
+    private fun applyRemoteLudoMatch(remote: LudoMatch) {
+        _uiState.update { state ->
+            val current = state.ludoMatch
+            if (current != null && remote.seq < current.seq) {
+                return@update state // an old event after a newer local apply
+            }
+            val chat = mergeLudoChat(current?.chatMessages.orEmpty(), remote.chatMessages)
+            // Don't kill the dice tumble animation mid-flight when the roll
+            // event is exactly what the animation is portraying.
+            val stillRolling = state.isLudoRolling && remote.phase == LudoPhase.AWAITING_MOVE
+            state.copy(
+                ludoMatch = remote.copy(mode = LudoMode.ONLINE, chatMessages = chat),
+                isLudoRolling = stillRolling
+            )
+        }
+        val applied = _uiState.value.ludoMatch ?: return
+        ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, applied.seq)
+        maybeDriveBotTurn()
+    }
+
+    /**
+     * Chat merge (PRD §55): server rows win; my optimistic pending bubble
+     * disappears the moment its server counterpart (same sender + text)
+     * lands — the message never shows twice.
+     */
+    private fun mergeLudoChat(
+        current: List<LudoChatMessage>,
+        incoming: List<LudoChatMessage>
+    ): List<LudoChatMessage> {
+        if (incoming.isEmpty()) return current
+        val result = current.toMutableList()
+        incoming.forEach { msg ->
+            if (msg.senderId == ludoLocalUserId) {
+                val pendingIdx = result.indexOfFirst {
+                    it.isPending && it.senderId == ludoLocalUserId &&
+                            it.text == msg.text && it.stickerEmoji == msg.stickerEmoji
+                }
+                if (pendingIdx >= 0) result.removeAt(pendingIdx)
+            }
+            if (result.none { it.id == msg.id }) result.add(msg)
+        }
+        return result
+    }
+
+    /** Pulls the authoritative match state (recovery path, PRD §14). */
     private fun refreshLudoMatchNow(quiet: Boolean = false) {
         val match = _uiState.value.ludoMatch ?: return
         if (match.mode != LudoMode.ONLINE) return
@@ -2330,26 +2460,134 @@ class SparkViewModel : ViewModel() {
             }.onSuccess { remote ->
                 // Never clobber a mid-roll animation with a stale snapshot.
                 if (!_uiState.value.isLudoRolling) {
-                    _uiState.update {
-                        it.copy(ludoMatch = remote.copy(mode = LudoMode.ONLINE))
-                    }
+                    applyRemoteLudoMatch(remote)
                 }
             }
         }
+    }
+
+    // -------------------------------------------------------------
+    // TURN TIMERS (v3 PRD §5/§6/§9/§10) — 10s roll / 30s move,
+    // server-timestamp based; expiry triggers the AUTOMATIC roll or
+    // the deterministic timeout move (the player is never skipped).
+    // -------------------------------------------------------------
+
+    private fun startLudoTimerWatch() {
+        ludoTimerJob?.cancel()
+        ludoTimerJob = viewModelScope.launch {
+            while (isActive && _uiState.value.isLudoActive) {
+                val match = _uiState.value.ludoMatch
+                if (match == null) break
+                if (match.phase != LudoPhase.FINISHED && match.isStarted) {
+                    val now = System.currentTimeMillis()
+                    val rollExpired = match.phase == LudoPhase.AWAITING_ROLL &&
+                            (match.rollDeadlineAt ?: Long.MAX_VALUE) < now - 1500L
+                    val moveExpired = match.phase == LudoPhase.AWAITING_MOVE &&
+                            (match.moveDeadlineAt ?: Long.MAX_VALUE) < now - 1500L
+                    if (rollExpired || moveExpired) {
+                        triggerLudoTimeoutAction(rollPhase = rollExpired)
+                    }
+                }
+                delay(500)
+            }
+        }
+    }
+
+    /** Fires exactly one timeout action per expiry window (PRD §31). */
+    private fun triggerLudoTimeoutAction(rollPhase: Boolean) {
+        if (!ludoAutoActionInFlight.compareAndSet(false, true)) return
+        viewModelScope.launch {
+            try {
+                val match = _uiState.value.ludoMatch ?: return@launch
+                if (match.phase == LudoPhase.FINISHED) return@launch
+                val mineOrBots = match.isMyTurn || (match.currentPlayer.isBot && iAmLudoHost(match))
+                when {
+                    // Solo arena — this device IS the authority (LudoEngine).
+                    match.mode == LudoMode.SOLO_VS_BOTS && mineOrBots && rollPhase ->
+                        autoRollSolo(match)
+                    match.mode == LudoMode.SOLO_VS_BOTS && mineOrBots ->
+                        autoMoveSolo()
+                    // Online — nudge the server; the Edge Function performs
+                    // and MARKS the automatic action (idempotent validation).
+                    match.mode == LudoMode.ONLINE && rollPhase -> {
+                        val session = _uiState.value.authSession
+                        runCatching {
+                            LudoMatchRepository.rollDiceRemote(match.id, session?.accessToken, auto = true)
+                        }.onSuccess { dice ->
+                            val base = _uiState.value.ludoMatch
+                            if (base != null && base.phase == LudoPhase.AWAITING_ROLL &&
+                                base.id == match.id && base.isMyTurn
+                            ) {
+                                val rolled = LudoEngine.applyRoll(base, dice)
+                                _uiState.update { it.copy(ludoMatch = rolled) }
+                                maybeDriveBotTurn()
+                            }
+                        }
+                    }
+                    match.mode == LudoMode.ONLINE -> {
+                        val session = _uiState.value.authSession
+                        runCatching {
+                            LudoMatchRepository.applyMoveRemote(
+                                match.id, null, session?.accessToken, auto = true
+                            )
+                        }.onSuccess {
+                            refreshLudoMatchNow(quiet = true)
+                        }
+                    }
+                }
+            } finally {
+                delay(3000) // give the server + realtime broadcast time to land
+                ludoAutoActionInFlight.set(false)
+            }
+        }
+    }
+
+    /** Solo roll timeout → engine rolls for the player (PRD §6). */
+    private suspend fun autoRollSolo(match: LudoMatch) {
+        _uiState.update { it.copy(isLudoRolling = true) }
+        delay((800..1200).random().toLong())
+        val base = _uiState.value.ludoMatch ?: return
+        if (base.phase != LudoPhase.AWAITING_ROLL) {
+            _uiState.update { it.copy(isLudoRolling = false) }
+            return
+        }
+        val rolled = LudoEngine.applyRoll(base, (1..6).random())
+        _uiState.update { it.copy(isLudoRolling = false, ludoMatch = rolled) }
+        maybeDriveBotTurn()
+    }
+
+    /** Solo move timeout → deterministic priority move (PRD §10). */
+    private suspend fun autoMoveSolo() {
+        val base = _uiState.value.ludoMatch ?: return
+        if (base.phase != LudoPhase.AWAITING_MOVE) return
+        val tokenId = LudoEngine.pickTimeoutMove(base)
+        if (tokenId == null) {
+            _uiState.update { it.copy(ludoMatch = LudoEngine.advanceTurn(base)) }
+            return
+        }
+        val result = LudoEngine.applyMove(base, tokenId)
+        _uiState.update { it.copy(ludoMatch = result.match) }
+        maybeDriveBotTurn()
     }
 
     /**
      * Rolls the dice for the CURRENT player.
      *  - Solo / bots       → local engine roll (800–1200ms animation).
      *  - Online, my seat   → server-authoritative `roll_ludo_dice` Edge
-     *                        Function, falling back to a local roll + state
-     *                        push when the function is not deployed.
+     *                        Function (10s timer enforced server-side),
+     *                        falling back to a local roll + state push
+     *                        when the function is not deployed.
      *  - Online, bot seat  → only the match host drives bots.
      */
     fun rollLudoDice() {
         val match = _uiState.value.ludoMatch ?: return
         if (_uiState.value.isLudoRolling) return
         if (match.phase != LudoPhase.AWAITING_ROLL) return
+        // v3 PRD §15: no rolls until every seat is filled (MATCH_STARTED).
+        if (!match.isStarted) {
+            showToast("Waiting for all 4 players — share the code or fill bots.")
+            return
+        }
 
         val isBotTurn = match.currentPlayer.isBot
         val mineOrBots = match.isMyTurn || (isBotTurn && iAmLudoHost(match))
@@ -2367,16 +2605,24 @@ class SparkViewModel : ViewModel() {
                     }.getOrElse {
                         // Edge Function not deployed — roll locally; the
                         // shared path below applies the engine state once
-                        // and pushes it to every polling client.
+                        // and pushes it to every realtime/polling client.
                         (1..6).random()
                     }
                 }
                 else -> (1..6).random()
             }
 
+            // v3: the realtime broadcast may have applied the server's roll
+            // while the tumble animation played — never apply a second roll
+            // on top of it (PRD §31 anti-double-application).
             val base = _uiState.value.ludoMatch ?: return@launch
+            if (base.phase != LudoPhase.AWAITING_ROLL) {
+                _uiState.update { it.copy(isLudoRolling = false) }
+                return@launch
+            }
             val rolled = LudoEngine.applyRoll(base, dice)
             _uiState.update { it.copy(isLudoRolling = false, ludoMatch = rolled) }
+            ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, rolled.seq)
             if (rolled.mode == LudoMode.ONLINE) pushOnlineLudoState(rolled)
 
             // If the turn passed to a bot (or the roll had no legal move and
@@ -2386,38 +2632,55 @@ class SparkViewModel : ViewModel() {
     }
 
     /**
-     * Applies the chosen token move. Online: the `apply_ludo_move` Edge
-     * Function validates it server-side; on absence it falls back to the
-     * local engine + state push (two-device play still syncs).
+     * Applies the chosen token move (PRD §8/§59). The tap is only legal on
+     * a highlighted token; the SERVER re-validates everything. Optimistic
+     * local application animates instantly, then the authoritative response
+     * overwrites it (same rules → same state, seq-aligned).
      */
     fun moveLudoToken(tokenId: Int) {
         val match = _uiState.value.ludoMatch ?: return
         if (match.phase != LudoPhase.AWAITING_MOVE) return
-
-        val isBotTurn = match.currentPlayer.isBot
-        val mineOrBots = match.isMyTurn || (isBotTurn && iAmLudoHost(match))
-        if (!mineOrBots) return
+        // v3: only the CURRENT player moves (PRD §16) — bot seats are driven
+        // by the bot driver, not by manual taps.
+        if (!match.isMyTurn) return
 
         val result = LudoEngine.applyMove(match, tokenId)
         if (result.match == match) return // illegal move — unchanged
 
         _uiState.update { it.copy(ludoMatch = result.match) }
+        ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, result.match.seq)
 
         if (match.mode == LudoMode.ONLINE) {
             viewModelScope.launch {
                 val session = _uiState.value.authSession
                 runCatching {
                     LudoMatchRepository.applyMoveRemote(match.id, tokenId, session?.accessToken)
-                    refreshLudoMatchNow(quiet = true)
+                }.onSuccess { response ->
+                    // The server response is authoritative — adopt it wholesale.
+                    val remoteBoard = response.optJSONObject("board_state")
+                    if (remoteBoard != null) {
+                        val current = _uiState.value.ludoMatch
+                        val remote = runCatching {
+                            LudoMatchRepository.fromJson(
+                                match.id, remoteBoard, current?.chatMessages.orEmpty()
+                            )
+                        }.getOrNull()
+                        if (remote != null && (current == null || remote.seq >= current.seq)) {
+                            ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, remote.seq)
+                            _uiState.update {
+                                it.copy(ludoMatch = remote.copy(mode = LudoMode.ONLINE))
+                            }
+                        }
+                    }
                 }.getOrElse {
                     // Function absent → push the engine-computed state directly.
                     pushOnlineLudoState(result.match)
                 }
                 LudoMatchRepository.logMove(
                     matchCode = match.id,
-                    userId = ludoLocalUserId,
-                    fromCell = 0,
-                    toCell = tokenId,
+                    userId = match.currentPlayer.id,
+                    fromCell = result.fromStep,
+                    toCell = result.toStep,
                     dice = match.diceValue ?: 0,
                     accessToken = session?.accessToken
                 )
@@ -2433,17 +2696,20 @@ class SparkViewModel : ViewModel() {
                 match.players.getOrNull(0)?.id == match.localUserId ||
                 match.players.getOrNull(0)?.id == ludoLocalUserId
 
-    /** Pushes a locally computed board state to the server (online mode). */
-    private fun pushOnlineLudoState(match: LudoMatch) {
-        viewModelScope.launch {
-            val session = _uiState.value.authSession
-            runCatching {
-                LudoMatchRepository.updateBoardState(
-                    matchCode = match.id,
-                    boardState = LudoMatchRepository.encodeBoardState(match),
-                    accessToken = session?.accessToken
-                )
-            }
+    /** Pushes a locally computed board state to the server (online mode).
+     *  CAS-guarded on the PREVIOUS server seq — a late push loses cleanly
+     *  instead of rolling back a newer authoritative write (PRD §31).
+     *  Suspend + inline-call so consecutive pushes from one coroutine
+     *  (e.g. the bot driver's roll→move) stay ordered. */
+    private suspend fun pushOnlineLudoState(match: LudoMatch) {
+        val session = _uiState.value.authSession
+        runCatching {
+            LudoMatchRepository.updateBoardState(
+                matchCode = match.id,
+                boardState = LudoMatchRepository.encodeBoardState(match),
+                accessToken = session?.accessToken,
+                expectedServerSeq = match.seq - 1
+            )
         }
     }
 
@@ -2470,6 +2736,7 @@ class SparkViewModel : ViewModel() {
                     delay((800..1200).random().toLong())
                     val rolled = LudoEngine.applyRoll(_uiState.value.ludoMatch ?: return@launch, (1..6).random())
                     _uiState.update { it.copy(isLudoRolling = false, ludoMatch = rolled) }
+                    ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, rolled.seq)
                     if (rolled.mode == LudoMode.ONLINE) pushOnlineLudoState(rolled)
                     current = rolled
                 }
@@ -2483,6 +2750,7 @@ class SparkViewModel : ViewModel() {
                     }
                     val result = LudoEngine.applyMove(_uiState.value.ludoMatch ?: return@launch, tokenId)
                     _uiState.update { it.copy(ludoMatch = result.match) }
+                    ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, result.match.seq)
                     if (result.match.mode == LudoMode.ONLINE) pushOnlineLudoState(result.match)
                     current = result.match
                 }
@@ -2516,7 +2784,10 @@ class SparkViewModel : ViewModel() {
             timestamp = "Just now",
             isMine = true,
             replyToText = replyToText,
-            replyToSender = replyToSender
+            replyToSender = replyToSender,
+            // v3 PRD §55 — optimistic bubble, replaced by the server row
+            // the moment the realtime INSERT lands (never shown twice).
+            isPending = true
         )
         _uiState.update {
             it.copy(

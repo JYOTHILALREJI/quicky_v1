@@ -347,7 +347,7 @@ fun GamesHubScreen(
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Real-rules Ludo with a full board, animated dice and captures. Play solo against bots or a 4-player online match with room chat.",
+                            text = "Real-rules Ludo with a full board, animated dice, turn timers and captures. Play solo against bots or a realtime 4-player online match with room chat. Game ends when the third player brings all 4 coins home.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

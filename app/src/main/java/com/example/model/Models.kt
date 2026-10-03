@@ -402,6 +402,22 @@ enum class LudoMode { SOLO_VS_BOTS, ONLINE }
 /** Which input the match is waiting for. */
 enum class LudoPhase { AWAITING_ROLL, AWAITING_MOVE, FINISHED }
 
+// -------------------------------------------------------------
+// v3 MULTIPLAYER CONSTANTS (PRD §5/§9/§12/§18/§20)
+// -------------------------------------------------------------
+object LudoRules {
+    /** Seconds a player has to press Roll Dice (PRD §5). */
+    const val ROLL_WINDOW_MS: Long = 10_000L
+    /** Seconds a player has to select + move a coin after the roll (PRD §9). */
+    const val MOVE_WINDOW_MS: Long = 30_000L
+    /** Points awarded per coin brought home (PRD §20). */
+    const val POINTS_PER_TOKEN: Int = 50
+    /** The game ends when this many players have all 4 coins home (PRD §18). */
+    const val GAME_END_COMPLETED_PLAYERS: Int = 3
+    /** Per-cell animation duration for step-by-step coin movement (PRD §12). */
+    const val CELL_HOP_MS: Int = 160
+}
+
 data class LudoToken(
     val id: Int, // 0..3
     val stepCount: Int = 0 // see encoding above
@@ -417,11 +433,19 @@ data class LudoPlayer(
     val avatarRes: Int,
     val seat: Int, // 0=RED, 1=GREEN, 2=YELLOW, 3=BLUE
     val isBot: Boolean = false,
-    val tokens: List<LudoToken> = (0..3).map { LudoToken(id = it) }
+    val tokens: List<LudoToken> = (0..3).map { LudoToken(id = it) },
+    /** Server-awarded points: 50 per finished coin (v3 PRD §20). */
+    val score: Int = 0,
+    /** 1..4 — assigned the moment this player brings all 4 coins home (v3 PRD §19). */
+    val finishPosition: Int? = null,
+    /** Remote profile photo (preferred over the bundled seat avatar in chat, v3 PRD §46). */
+    val avatarUrl: String? = null
 ) {
     val color: LudoColor get() = LudoColor.entries.getOrElse(seat) { LudoColor.RED }
     val finishedTokens: Int get() = tokens.count { it.isFinished }
     val hasWon: Boolean get() = tokens.all { it.isFinished }
+    /** Sum of step progress — tie-breaker for the final 4th-place ranking. */
+    val progressSteps: Int get() = tokens.sumOf { it.stepCount }
 }
 
 /**
@@ -443,16 +467,39 @@ data class LudoMatch(
     /** Short human status for the strip under the board (no chat spam). */
     val statusText: String = "Roll the dice to start",
     /** Player id owned by THIS device — "user_me" for solo, the Supabase uid online. */
-    val localUserId: String = LOCAL_USER_ID
+    val localUserId: String = LOCAL_USER_ID,
+    // --- v3 multiplayer fields (PRD §5/§9/§28/§69) ---
+    /** Monotonic per-match event sequence — every authoritative mutation +1. */
+    val seq: Long = 0,
+    /** Epoch-ms deadline to press Roll Dice for the current turn (server clock). */
+    val rollDeadlineAt: Long? = null,
+    /** Epoch-ms deadline to move a coin for the current turn (server clock). */
+    val moveDeadlineAt: Long? = null,
+    /** How many players have already brought all 4 coins home (0..3, PRD §61). */
+    val completedPlayers: Int = 0,
+    /** Player ids in finishing order — index 0 is 1st place (PRD §19). */
+    val finishOrder: List<String> = emptyList()
 ) {
     val currentPlayer: LudoPlayer get() = players[turnIndex.coerceIn(0, players.lastIndex)]
     val isMyTurn: Boolean get() = currentPlayer.id == localUserId
+    /** True once every seat is taken — rolling is blocked before that (online). */
+    val isStarted: Boolean get() = players.size >= 4
 
     companion object {
         /** Marker id for the local user inside a solo Ludo match. */
         const val LOCAL_USER_ID = "user_me"
     }
 }
+
+/** One row of the final standings (result screen + ludo_game_results, PRD §23). */
+data class LudoGameResult(
+    val playerId: String,
+    val playerName: String,
+    val seat: Int,
+    val score: Int,
+    val finishedTokens: Int,
+    val finishPosition: Int
+)
 
 /** A player seat description for joining an online match. */
 data class LudoSeatInfo(
@@ -474,7 +521,9 @@ data class LudoChatMessage(
     val timestamp: String = "Just now",
     val isMine: Boolean = false,
     val replyToText: String? = null,
-    val replyToSender: String? = null
+    val replyToSender: String? = null,
+    /** Optimistic UI flag — replaced when the server row arrives (PRD §55). */
+    val isPending: Boolean = false
 )
 
 // (v2.1) The old 2-player `LudoRoom` was removed — Ludo Arena is a

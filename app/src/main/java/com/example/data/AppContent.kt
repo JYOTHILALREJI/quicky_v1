@@ -330,6 +330,8 @@ object AppContent {
             turnIndex = 0,
             diceValue = null,
             phase = LudoPhase.AWAITING_ROLL,
+            // v3 PRD §5 — arm the first 10s roll deadline immediately.
+            rollDeadlineAt = System.currentTimeMillis() + LudoRules.ROLL_WINDOW_MS,
             statusText = "Your turn — roll the dice!"
         )
     }

@@ -195,19 +195,20 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             }
 
             state.isLudoActive -> {
-            // LUDO ARENA (v2.1 §3.2) — lobby + solo/bots + online 4-player.
-            // ludoMatch == null renders the mode lobby.
+            // LUDO ARENA (v3) — realtime multiplayer: lobby → match →
+            // result screen (ludoMatch == null renders the mode lobby;
+            // phase FINISHED renders the standings).
             LudoArenaScreen(
                 match = state.ludoMatch,
                 isRolling = state.isLudoRolling,
                 isPremium = PremiumGate.isPremium(state.entitlements),
                 joinError = state.ludoJoinError,
+                connectionOnline = state.ludoConnected,
                 onBack = { viewModel.closeLudoGame() },
                 onStartSoloBots = { viewModel.startLudoSoloBots() },
                 onCreateOnline = { viewModel.createLudoOnlineMatch() },
                 onJoinOnline = { code -> viewModel.joinLudoOnlineMatch(code) },
                 onFillBots = { viewModel.fillLudoSeatsWithBots() },
-                onRestartSolo = { viewModel.restartLudoSolo() },
                 onRollDice = { viewModel.rollLudoDice() },
                 onMoveToken = { tokenId -> viewModel.moveLudoToken(tokenId) },
                 onSendMessage = { text, replyText, replySender ->
@@ -216,7 +217,8 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 onSendSticker = { emoji -> viewModel.sendLudoChatMessage("", stickerEmoji = emoji) },
                 onSendVoiceMessage = { viewModel.sendLudoChatMessage("", isVoice = true) },
                 onOpenStickerPicker = { viewModel.openStickerPicker() },
-                onOpenPremiumStore = { viewModel.openPremiumStore() }
+                onOpenPremiumStore = { viewModel.openPremiumStore() },
+                onPlayAgain = { viewModel.playLudoAgain() }
             )
             }
 

@@ -1,7 +1,9 @@
 package com.example.game
 
+import com.example.model.LudoGameResult
 import com.example.model.LudoMatch
 import com.example.model.LudoPhase
+import com.example.model.LudoRules
 import com.example.model.LudoToken
 
 /**
@@ -26,7 +28,13 @@ import com.example.model.LudoToken
  *     home cell needs an EXACT roll — overshooting is illegal.
  *  6. Extra turn is also granted after a capture or after finishing a
  *     token (classic rules).
- *  7. Win: first player to bring all 4 tokens home wins the match.
+ *  7. Game end (v3 PRD §18): the match finishes when the THIRD player
+ *     brings all 4 tokens home — not the first. Earlier finishers keep
+ *     their rank (1st/2nd/3rd); the remaining player takes 4th by
+ *     progress. Every finished coin is worth 50 points.
+ *  8. Turn timers (v3 PRD §5/§9): every AWAITING_ROLL carries a 10s
+ *     deadline, every AWAITING_MOVE a 30s deadline. Expiry triggers a
+ *     server/VM automatic roll / deterministic auto-move — never a skip.
  *
  * TRACK GEOMETRY — 15x15 grid, 52-cell clockwise main path.
  * Each seat s starts at TRACK[s * 13] and enters its private home column
@@ -182,6 +190,10 @@ object LudoEngine {
     fun hasAnyLegalMove(match: LudoMatch, dice: Int): Boolean =
         match.currentPlayer.tokens.any { isMoveLegal(match, it, dice) }
 
+    /** Main-track steps a token of [seat] passes through from [fromStep] to [newStep]. */
+    fun stepsOnPath(fromStep: Int, newStep: Int): List<Int> =
+        (maxOf(fromStep, 0) + 1..newStep).toList()
+
     // --------------------------------------------------------------
     // Roll application
     // --------------------------------------------------------------
@@ -189,9 +201,10 @@ object LudoEngine {
     /**
      * Applies a dice roll: stores the value, enforces the three-six rule and
      * switches to AWAITING_MOVE — or passes the turn when no legal move
-     * exists. Returns the updated match.
+     * exists. Bumps [LudoMatch.seq] by exactly 1 and maintains the server
+     * timer deadlines (v3 PRD §5/§9). Returns the updated match.
      */
-    fun applyRoll(match: LudoMatch, dice: Int): LudoMatch {
+    fun applyRoll(match: LudoMatch, dice: Int, nowMs: Long = System.currentTimeMillis()): LudoMatch {
         require(dice in 1..6) { "Dice out of range: $dice" }
         if (match.phase == LudoPhase.FINISHED) return match
 
@@ -200,8 +213,14 @@ object LudoEngine {
 
         // Three consecutive 6s → forfeit the turn (the third six is not played).
         if (dice == 6 && newConsecutive >= 3) {
-            val forfeited = match.copy(diceValue = dice, consecutiveSixes = 0)
-            val advanced = advanceTurn(forfeited)
+            val forfeited = match.copy(
+                diceValue = dice,
+                consecutiveSixes = 0,
+                rollDeadlineAt = null,
+                moveDeadlineAt = null,
+                seq = match.seq + 1
+            )
+            val advanced = advanceTurn(forfeited, nowMs)
             return advanced.copy(
                 statusText = "${current.name} rolled a third 6 — turn forfeited!"
             )
@@ -210,7 +229,10 @@ object LudoEngine {
         val rolled = match.copy(
             diceValue = dice,
             consecutiveSixes = newConsecutive,
-            phase = LudoPhase.AWAITING_MOVE
+            phase = LudoPhase.AWAITING_MOVE,
+            rollDeadlineAt = null,
+            moveDeadlineAt = nowMs + LudoRules.MOVE_WINDOW_MS,
+            seq = match.seq + 1
         )
 
         return if (hasAnyLegalMove(rolled, dice)) {
@@ -220,7 +242,7 @@ object LudoEngine {
             )
         } else {
             // No legal move: the dice is shown, then the turn passes.
-            advanceTurn(rolled).copy(
+            advanceTurn(rolled, nowMs).copy(
                 statusText = "${current.name} rolled $dice — no legal moves, turn passes."
             )
         }
@@ -230,20 +252,29 @@ object LudoEngine {
     // Move application
     // --------------------------------------------------------------
 
-    /** Outcome of applying a move — powers haptics + status text. */
+    /** Outcome of applying a move — powers haptics + status text + animations. */
     data class MoveResult(
         val match: LudoMatch,
         val capturedOpponent: Boolean = false,
         val finishedToken: Boolean = false,
-        val extraTurnGranted: Boolean = false
+        val extraTurnGranted: Boolean = false,
+        /** Main-track steps the moved coin traveled through (animation path). */
+        val path: List<Int> = emptyList(),
+        /** Steps the token had before the move (0 = released from yard). */
+        val fromStep: Int = 0,
+        val toStep: Int = 0,
+        /** +50 awarded by this move (server mirrors the same math). */
+        val scoreAwarded: Int = 0
     )
 
     /**
      * Applies the chosen [tokenId] move for the current player. The caller
      * must have verified legality (dice present, phase AWAITING_MOVE).
+     * Awards +50 per newly finished coin, assigns finish positions and ends
+     * the match when the THIRD player completes all 4 coins (v3 PRD §18).
      * Returns [MoveResult] with the next match state.
      */
-    fun applyMove(match: LudoMatch, tokenId: Int): MoveResult {
+    fun applyMove(match: LudoMatch, tokenId: Int, nowMs: Long = System.currentTimeMillis()): MoveResult {
         val dice = match.diceValue ?: return MoveResult(match)
         val token = match.currentPlayer.tokens.find { it.id == tokenId }
             ?: return MoveResult(match)
@@ -278,45 +309,82 @@ object LudoEngine {
             }
         }
 
-        // --- Move the token itself ---
+        // --- Move the token itself + award the finish score (v3 PRD §21) ---
         val finishedToken = newStep == FINISH_STEP
+        val scoreAwarded = if (finishedToken) LudoRules.POINTS_PER_TOKEN else 0
         updatedPlayers = updatedPlayers.mapIndexed { playerIndex, player ->
             if (playerIndex == seat) player.copy(
                 tokens = player.tokens.map {
                     if (it.id == tokenId) LudoToken(id = it.id, stepCount = newStep) else it
-                }
+                },
+                score = player.score + scoreAwarded
             ) else player
         }
 
         val mover = updatedPlayers[seat]
-        val winner = if (mover.hasWon) mover.id else null
-        val extraTurn = winner == null && (dice == 6 || capturedOpponent || finishedToken)
+        val moverCompleted = mover.hasWon // all 4 coins home
+
+        // --- Finish-position assignment + third-player game end (v3 PRD §18/§19/§61) ---
+        var completedPlayers = match.completedPlayers
+        var finishOrder = match.finishOrder
+        var winnerId = match.winnerId
+        var gameFinished = false
+        if (moverCompleted && mover.finishPosition == null) {
+            val position = finishOrder.size + 1
+            updatedPlayers = updatedPlayers.mapIndexed { playerIndex, player ->
+                if (playerIndex == seat) player.copy(finishPosition = position) else player
+            }
+            finishOrder = finishOrder + mover.id
+            if (winnerId == null) winnerId = mover.id
+            completedPlayers += 1
+            if (completedPlayers >= LudoRules.GAME_END_COMPLETED_PLAYERS) {
+                gameFinished = true
+            }
+        }
+
+        // Extra turn: NOT granted when the mover just completed all 4 coins
+        // (their race is over — the turn rotates to remaining players).
+        val extraTurn = !moverCompleted && !gameFinished &&
+                (dice == 6 || capturedOpponent || finishedToken)
 
         val afterMove = match.copy(
             players = updatedPlayers,
             diceValue = null,
-            phase = if (winner != null) LudoPhase.FINISHED else LudoPhase.AWAITING_ROLL,
-            winnerId = winner ?: match.winnerId,
-            consecutiveSixes = if (dice == 6) match.consecutiveSixes else 0
+            phase = when {
+                gameFinished -> LudoPhase.FINISHED
+                else -> LudoPhase.AWAITING_ROLL
+            },
+            winnerId = winnerId,
+            completedPlayers = completedPlayers,
+            finishOrder = finishOrder,
+            consecutiveSixes = if (dice == 6) match.consecutiveSixes else 0,
+            rollDeadlineAt = null,
+            moveDeadlineAt = null,
+            seq = match.seq + 1
         )
 
         val nextMatch = when {
-            winner != null -> afterMove.copy(
-                statusText = "🏆 ${mover.name} brought all 4 tokens home — victory!"
+            gameFinished -> afterMove.copy(
+                statusText = "🏁 ${finishOrder.size} players finished — game complete!"
+            )
+            moverCompleted -> advanceTurn(afterMove, nowMs).copy(
+                statusText = "🏆 ${mover.name} brought all 4 coins home — rank #${mover.finishPosition}!"
             )
             extraTurn -> afterMove.copy(
+                // Extra roll = a fresh 10s window for the same player (PRD §5).
+                rollDeadlineAt = nowMs + LudoRules.ROLL_WINDOW_MS,
                 statusText = "${mover.name}" + when {
                     capturedOpponent -> " captured a token — extra roll!"
-                    finishedToken -> " sent a token home — extra roll!"
+                    finishedToken -> " sent a token home (+${LudoRules.POINTS_PER_TOKEN}) — extra roll!"
                     else -> " rolled a 6 — extra roll!"
                 }
             )
-            else -> advanceTurn(afterMove).copy(
+            else -> advanceTurn(afterMove, nowMs).copy(
                 statusText = buildString {
                     append(mover.name)
                     append(" moved")
                     if (capturedOpponent) append(" and captured a token!")
-                    else if (finishedToken) append(" a token home!")
+                    else if (finishedToken) append(" a token home (+${LudoRules.POINTS_PER_TOKEN})!")
                     else append('.')
                 }
             )
@@ -326,20 +394,95 @@ object LudoEngine {
             match = nextMatch,
             capturedOpponent = capturedOpponent,
             finishedToken = finishedToken,
-            extraTurnGranted = extraTurn && winner == null
+            extraTurnGranted = extraTurn,
+            path = stepsOnPath(from, newStep),
+            fromStep = from,
+            toStep = newStep,
+            scoreAwarded = scoreAwarded
         )
     }
 
-    /** Moves the turn to the next seat clockwise, clearing per-turn state. */
-    fun advanceTurn(match: LudoMatch): LudoMatch {
+    /**
+     * Moves the turn to the next seat clockwise, clearing per-turn state and
+     * arming a fresh 10s roll deadline (v3 PRD §5). Players who already
+     * brought all 4 coins home are SKIPPED — they are done racing.
+     */
+    fun advanceTurn(match: LudoMatch, nowMs: Long = System.currentTimeMillis()): LudoMatch {
         if (match.phase == LudoPhase.FINISHED) return match
-        val nextIndex = (match.turnIndex + 1) % match.players.size
+        if (match.players.isEmpty()) return match
+        val active = match.players.withIndex().filter { !it.value.hasWon }
+        if (active.isEmpty()) return match.copy(phase = LudoPhase.FINISHED)
+        var nextIndex = match.turnIndex
+        var guard = 0
+        do {
+            nextIndex = (nextIndex + 1) % match.players.size
+            guard++
+        } while (match.players[nextIndex].hasWon && guard <= match.players.size)
         return match.copy(
             turnIndex = nextIndex,
             diceValue = null,
             phase = LudoPhase.AWAITING_ROLL,
-            consecutiveSixes = 0
+            consecutiveSixes = 0,
+            rollDeadlineAt = nowMs + LudoRules.ROLL_WINDOW_MS,
+            moveDeadlineAt = null
         )
+    }
+
+    // --------------------------------------------------------------
+    // Timeout auto-move (v3 PRD §10) — DETERMINISTIC priority:
+    // 1. finish a coin  2. capture  3. release from yard  4. highest progress
+    // --------------------------------------------------------------
+
+    fun pickTimeoutMove(match: LudoMatch): Int? {
+        val dice = match.diceValue ?: return null
+        val seat = match.turnIndex
+        val legal = match.currentPlayer.tokens.filter { isMoveLegal(match, it, dice) }
+        if (legal.isEmpty()) return null
+
+        // 1) Finish a coin.
+        legal.firstOrNull { (if (it.stepCount == 0) 1 else it.stepCount + dice) == FINISH_STEP }
+            ?.let { return it.id }
+
+        // 2) Capture an opponent.
+        legal.firstOrNull { token ->
+            val newStep = if (token.stepCount == 0) 1 else token.stepCount + dice
+            val landed = if (newStep <= HOME_ENTRY_STEP) absoluteIndex(seat, newStep) else -1
+            landed >= 0 && landed !in SAFE_CELLS && opponentsOn(match, seat, landed) == 1
+        }?.let { return it.id }
+
+        // 3) Release from the yard.
+        legal.firstOrNull { it.stepCount == 0 }?.let { return it.id }
+
+        // 4) Highest-progress legal coin.
+        return legal.maxByOrNull { it.stepCount }?.id
+    }
+
+    // --------------------------------------------------------------
+    // Final standings (result screen, v3 PRD §19/§26)
+    // --------------------------------------------------------------
+
+    /**
+     * Ranked result rows: finishers by position, then the remaining players
+     * by finished coins and progress steps. Player 4 never has to finish —
+     * their rank is decided by current progress (v3 PRD §19).
+     */
+    fun rankedResults(match: LudoMatch): List<LudoGameResult> {
+        val finishers = match.players
+            .filter { it.finishPosition != null }
+            .sortedBy { it.finishPosition }
+        val remaining = match.players
+            .filter { it.finishPosition == null }
+            .sortedWith(compareByDescending<LudoPlayer> { it.finishedTokens }.thenByDescending { it.progressSteps })
+        return (finishers + remaining).mapIndexed { index, player ->
+            LudoGameResult(
+                playerId = player.id,
+                playerName = player.name,
+                seat = player.seat,
+                score = player.score,
+                finishedTokens = player.finishedTokens,
+                finishPosition = index + 1
+            )
+        }
     }
 
     // --------------------------------------------------------------

@@ -6,6 +6,7 @@ package com.example.ui.screens
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -19,7 +20,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -33,10 +33,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,14 +40,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PersonAddAlt1
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.Mic
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -63,9 +53,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -81,6 +68,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -96,31 +84,35 @@ import com.example.game.LudoEngine
 import com.example.model.LudoMatch
 import com.example.model.LudoPhase
 import com.example.model.LudoPlayer
+import com.example.model.LudoRules
 import com.example.model.LudoToken
 import com.example.ui.components.PremiumBadge
-import com.example.ui.components.QuickyStickerIcon
 import com.example.ui.components.dismissKeyboardOnTap
 import com.example.ui.theme.QuickyGold
 import com.example.ui.theme.QuickyPink
 import com.example.ui.theme.QuickyPurple
+import kotlinx.coroutines.delay
 
 /**
  * ============================================================================
- * LUDO ARENA — Quicky v2.1 §3.2 (complete rewrite)
+ * LUDO ARENA — Quicky v3 (full playable multiplayer)
  *
- * Two-zone vertical layout (PRD §3.2.3):
+ * Two-zone vertical layout:
  *   ┌───────────────────────────┐
- *   │ ← Ludo Arena      [badge] │
- *   │   Player chips (4 seats)  │
- *   │   LUDO BOARD (~60%)       │
- *   │   Turn: You · Dice: 6     │ ← status strip
+ *   │ ← Ludo Arena  [code] [⚡] │   ← connection state when offline
+ *   │   Player chips (4 seats)  │   ← YOUR TURN / WAITING + score
+ *   │   LUDO BOARD (~60%)       │   ← step-by-step animated coins
+ *   │   Turn: You · Dice: 6 · 24s│  ← server-deadline countdown strip
  *   │   Room Chat               │
  *   │   [list ~40%]             │
- *   │   [🎤][ message…  ][➤]   │ ← composer (ime-aware)
+ *   │   [🎤][ message…  ][➤]   │   ← composer (ime-aware)
  *   └───────────────────────────┘
  *
- * The room chat carries HUMAN messages only — system logs were removed.
- * Voice messages are premium-gated (routed through PremiumGate).
+ * v3 upgrades over v2.1:
+ *  - 10s roll / 30s move countdowns driven by SERVER deadlines (PRD §5/§9).
+ *  - Coins travel cell-by-cell (160ms/hop) — never teleport (PRD §12).
+ *  - Capture flash + "+50" finish popup (PRD §36/§37).
+ *  - Third-player-completion result screen (PRD §18/§26).
  * ============================================================================
  */
 @Composable
@@ -129,12 +121,12 @@ fun LudoArenaScreen(
     isRolling: Boolean,
     isPremium: Boolean,
     joinError: String?,
+    connectionOnline: Boolean,
     onBack: () -> Unit,
     onStartSoloBots: () -> Unit,
     onCreateOnline: () -> Unit,
     onJoinOnline: (String) -> Unit,
     onFillBots: () -> Unit,
-    onRestartSolo: () -> Unit,
     onRollDice: () -> Unit,
     onMoveToken: (Int) -> Unit,
     onSendMessage: (text: String, replyToText: String?, replyToSender: String?) -> Unit,
@@ -142,10 +134,11 @@ fun LudoArenaScreen(
     onSendVoiceMessage: () -> Unit,
     onOpenStickerPicker: () -> Unit,
     onOpenPremiumStore: () -> Unit,
+    onPlayAgain: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    if (match == null) {
-        LudoArenaLobby(
+    when {
+        match == null -> LudoArenaLobby(
             joinError = joinError,
             onBack = onBack,
             onStartSoloBots = onStartSoloBots,
@@ -153,14 +146,21 @@ fun LudoArenaScreen(
             onJoinOnline = onJoinOnline,
             modifier = modifier
         )
-    } else {
-        LudoArenaMatchScreen(
+        // v3 PRD §26 — the game ends when the THIRD player completes; show
+        // the full standings screen instead of the board.
+        match.phase == LudoPhase.FINISHED -> LudoResultScreen(
+            match = match,
+            onPlayAgain = onPlayAgain,
+            onBack = onBack,
+            modifier = modifier
+        )
+        else -> LudoArenaMatchScreen(
             match = match,
             isRolling = isRolling,
             isPremium = isPremium,
+            connectionOnline = connectionOnline,
             onBack = onBack,
             onFillBots = onFillBots,
-            onRestartSolo = onRestartSolo,
             onRollDice = onRollDice,
             onMoveToken = onMoveToken,
             onSendMessage = onSendMessage,
@@ -217,7 +217,7 @@ private fun LudoArenaLobby(
         }
 
         Text(
-            text = "The classic board, real rules, 4 seats. Roll a 6 to release a token, capture rivals, race all 4 tokens home.",
+            text = "The classic board, real rules, 4 seats. 10s to roll, 30s to move — the server rolls for you if the timer runs out. Game ends when the third player gets all 4 coins home.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 12.dp)
@@ -342,9 +342,9 @@ private fun LudoArenaMatchScreen(
     match: LudoMatch,
     isRolling: Boolean,
     isPremium: Boolean,
+    connectionOnline: Boolean,
     onBack: () -> Unit,
     onFillBots: () -> Unit,
-    onRestartSolo: () -> Unit,
     onRollDice: () -> Unit,
     onMoveToken: (Int) -> Unit,
     onSendMessage: (text: String, replyToText: String?, replyToSender: String?) -> Unit,
@@ -355,7 +355,18 @@ private fun LudoArenaMatchScreen(
     modifier: Modifier = Modifier
 ) {
     val haptics = LocalHapticFeedback.current
-    var showWinner by remember { mutableStateOf(false) }
+
+    // --- Server-deadline clock (PRD §29): refresh 4x/second so the
+    //     countdown ticks exactly once per second for every device. ---
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(match.phase, match.turnIndex, match.rollDeadlineAt, match.moveDeadlineAt) {
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            delay(250)
+        }
+    }
+    val rollSecondsLeft = secondsLeft(match.rollDeadlineAt, nowMs)
+    val moveSecondsLeft = secondsLeft(match.moveDeadlineAt, nowMs)
 
     // Haptic on dice settle (value lands).
     LaunchedEffect(match.diceValue) {
@@ -363,8 +374,6 @@ private fun LudoArenaMatchScreen(
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         }
     }
-    // Winner overlay once the match completes.
-    LaunchedEffect(match.phase) { showWinner = match.phase == LudoPhase.FINISHED }
 
     Column(
         modifier = modifier
@@ -400,6 +409,19 @@ private fun LudoArenaMatchScreen(
             PremiumBadge(label = "GOLD")
         }
 
+        // --- Connection banner (PRD §68): realtime dropped, recovering. ---
+        if (!connectionOnline) {
+            Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Connection lost. Reconnecting…",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(vertical = 3.dp)
+                )
+            }
+        }
+
         // --- Player chips (4 seats) ---
         Row(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -407,10 +429,10 @@ private fun LudoArenaMatchScreen(
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 6.dp)
         ) {
-            match.players.forEach { player ->
+            match.players.forEachIndexed { seatIndex, player ->
                 LudoSeatChip(
                     player = player,
-                    isCurrentTurn = match.players.indexOf(player) == match.turnIndex,
+                    isCurrentTurn = seatIndex == match.turnIndex,
                     isLocalPlayer = player.id == match.localUserId,
                     modifier = Modifier.weight(1f)
                 )
@@ -433,7 +455,7 @@ private fun LudoArenaMatchScreen(
                     .align(Alignment.Center)
             )
 
-            // Online: host can fill empty seats with bots before/while playing.
+            // Online + not started: host can fill empty seats with bots.
             // NOTE: fully-qualified call — with K2 + Compose 1.7 the plain
             // `AnimatedVisibility` inside a Box that is nested in the outer
             // Column resolves to the deprecated ColumnScope extension and
@@ -441,8 +463,7 @@ private fun LudoArenaMatchScreen(
             // receiver". Qualifying forces the top-level overload.
             androidx.compose.animation.AnimatedVisibility(
                 visible = match.mode == com.example.model.LudoMode.ONLINE &&
-                        match.players.size < 4 &&
-                        match.phase != LudoPhase.FINISHED,
+                        match.players.size < 4,
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
                 OutlinedButton(
@@ -458,7 +479,7 @@ private fun LudoArenaMatchScreen(
             }
         }
 
-        // --- Status strip ---
+        // --- Status strip + server countdown (PRD §38/§39/§40) ---
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
             modifier = Modifier.fillMaxWidth()
@@ -469,9 +490,26 @@ private fun LudoArenaMatchScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column(modifier = Modifier.weight(1f)) {
+                    val timerText = when {
+                        !match.isStarted ->
+                            "Waiting for players (${match.players.size}/4)…"
+                        match.phase == LudoPhase.AWAITING_ROLL && match.isMyTurn ->
+                            "YOUR TURN — roll in ${rollSecondsLeft ?: 10}s"
+                        match.phase == LudoPhase.AWAITING_ROLL ->
+                            "Waiting for ${match.currentPlayer.name}…"
+                        match.phase == LudoPhase.AWAITING_MOVE && match.isMyTurn ->
+                            "SELECT A COIN — ${moveSecondsLeft ?: 30}s"
+                        else ->
+                            "Turn: ${if (match.isMyTurn) "You" else match.currentPlayer.name} · Dice: ${match.diceValue ?: "–"}"
+                    }
+                    val urgent = (match.phase == LudoPhase.AWAITING_ROLL && match.isMyTurn &&
+                            (rollSecondsLeft ?: 10) <= 3) ||
+                            (match.phase == LudoPhase.AWAITING_MOVE && match.isMyTurn &&
+                                    (moveSecondsLeft ?: 30) <= 3)
                     Text(
-                        text = "Turn: ${if (match.isMyTurn) "You" else match.currentPlayer.name}  ·  Dice: ${match.diceValue ?: "–"}",
-                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                        text = timerText,
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = if (urgent) MaterialTheme.colorScheme.error else Color.Unspecified
                     )
                     Text(
                         text = match.statusText,
@@ -485,7 +523,10 @@ private fun LudoArenaMatchScreen(
                 LudoDiceButton(
                     diceValue = match.diceValue,
                     isRolling = isRolling,
-                    enabled = match.isMyTurn && match.phase == LudoPhase.AWAITING_ROLL && !isRolling,
+                    enabled = match.isStarted && match.isMyTurn &&
+                            match.phase == LudoPhase.AWAITING_ROLL && !isRolling,
+                    countdownSeconds = if (match.phase == LudoPhase.AWAITING_ROLL && match.isMyTurn)
+                        rollSecondsLeft else null,
                     onRoll = {
                         haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onRollDice()
@@ -510,38 +551,14 @@ private fun LudoArenaMatchScreen(
                 .weight(0.40f)
         )
     }
-
-    // --- Winner dialog ---
-    if (showWinner) {
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text("🏆 Victory!") },
-            text = {
-                val winner = match.players.find { it.id == match.winnerId } ?: match.currentPlayer
-                Text("${winner.name} brought all 4 tokens home first.")
-            },
-            confirmButton = {
-                if (match.mode == com.example.model.LudoMode.SOLO_VS_BOTS) {
-                    Button(
-                        onClick = {
-                            showWinner = false
-                            onRestartSolo()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = QuickyPurple)
-                    ) { Text("Play Again") }
-                } else {
-                    Button(onClick = onBack) { Text("Leave Match") }
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showWinner = false; onBack() }) { Text("Exit") }
-            }
-        )
-    }
 }
 
+/** Whole seconds remaining on a server deadline (PRD §29). */
+private fun secondsLeft(deadlineAt: Long?, nowMs: Long): Int? =
+    deadlineAt?.let { (((it - nowMs) / 1000L) + 1L).toInt().coerceIn(0, 99) }
+
 // =====================================================================
-// SEAT CHIP
+// SEAT CHIP — YOUR TURN / WAITING + live score (PRD §38)
 // =====================================================================
 
 @Composable
@@ -552,12 +569,24 @@ private fun LudoSeatChip(
     modifier: Modifier = Modifier
 ) {
     val color = Color(player.color.colorHex)
+    // Animated glow border for the active seat.
+    val infiniteTransition = rememberInfiniteTransition(label = "seatGlow")
+    val glow by infiniteTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(700, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glowAlpha"
+    )
+
     Surface(
         color = if (isCurrentTurn) color.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(12.dp),
         border = androidx.compose.foundation.BorderStroke(
-            if (isCurrentTurn) 1.5.dp else 1.dp,
-            if (isCurrentTurn) color else MaterialTheme.colorScheme.outlineVariant
+            if (isCurrentTurn) 2.dp else 1.dp,
+            if (isCurrentTurn) color.copy(alpha = glow) else MaterialTheme.colorScheme.outlineVariant
         ),
         modifier = modifier.testTag("ludo_seat_${player.seat}")
     ) {
@@ -595,6 +624,11 @@ private fun LudoSeatChip(
                 modifier = Modifier.padding(top = 3.dp)
             )
             Text(
+                text = if (isCurrentTurn) "▶ ${player.score} pts" else "${player.score} pts",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                color = if (isCurrentTurn) color else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
                 text = "🏁 ${player.finishedTokens}/4",
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
                 color = color
@@ -604,8 +638,41 @@ private fun LudoSeatChip(
 }
 
 // =====================================================================
-// BOARD
+// BOARD — Canvas + step-by-step animated tokens (PRD §12/§33/§34/§35)
 // =====================================================================
+
+/** Fractional grid position of a token (col, row in cell units). */
+private data class TokenPosition(val col: Float, val row: Float)
+
+private fun lerpPosition(a: TokenPosition, b: TokenPosition, t: Float): TokenPosition =
+    TokenPosition(a.col + (b.col - a.col) * t, a.row + (b.row - a.row) * t)
+
+/** Authoritative visual position of a token (mirrors the placements rules). */
+private fun tokenPositionFor(seat: Int, tokenId: Int, stepCount: Int): TokenPosition = when {
+    stepCount <= 0 -> {
+        val (originCol, originRow) = LudoEngine.YARD_ORIGINS[seat.coerceIn(0, 3)]
+        val slot = LudoEngine.YARD_SLOT_OFFSETS[tokenId.coerceIn(0, 3)]
+        TokenPosition(originCol + slot.first, originRow + slot.second)
+    }
+    stepCount <= LudoEngine.HOME_ENTRY_STEP -> {
+        val (c, r) = LudoEngine.TRACK[LudoEngine.absoluteIndex(seat, stepCount)]
+        TokenPosition(c + 0.5f, r + 0.5f)
+    }
+    stepCount < LudoEngine.FINISH_STEP -> {
+        val (c, r) = LudoEngine.HOME_COLUMNS[seat.coerceIn(0, 3)][stepCount - 52]
+        TokenPosition(c + 0.5f, r + 0.5f)
+    }
+    else -> {
+        // Finished tokens rest inside their seat's center triangle.
+        val along = (tokenId - 1.5f) * 0.22f
+        when (seat) {
+            0 -> TokenPosition(6.1f, 7f + along)          // RED left triangle
+            1 -> TokenPosition(7f + along, 6.1f)          // GREEN top triangle
+            2 -> TokenPosition(7.9f, 7f + along)          // YELLOW right triangle
+            else -> TokenPosition(7f + along, 7.9f)       // BLUE bottom triangle
+        }
+    }
+}
 
 @Composable
 private fun LudoArenaBoard(
@@ -617,6 +684,122 @@ private fun LudoArenaBoard(
     val movableTokenIds = remember(match) {
         if (match.isMyTurn && match.phase == LudoPhase.AWAITING_MOVE) LudoEngine.legalMoves(match)
         else emptyList()
+    }
+
+    // ------------------------------------------------------------------
+    // VISUAL ANIMATION STATE (PRD §33) — kept strictly separate from the
+    // authoritative match. visualPositions overrides rendering during the
+    // step-by-step hops; lastSteps is the diff base; lastRenderedSeq gates
+    // gaps (reconnect / missed events snap instead of replaying, §32/§70).
+    // ------------------------------------------------------------------
+    var visualPositions by remember { mutableStateOf<Map<Pair<Int, Int>, TokenPosition>>(emptyMap()) }
+    var lastSteps by remember { mutableStateOf<Map<Pair<Int, Int>, Int>?>(null) }
+    var lastRenderedSeq by remember { mutableStateOf<Long?>(null) }
+    var lastMatchId by remember { mutableStateOf<String?>(null) }
+    var scorePopup by remember { mutableStateOf<String?>(null) }
+    var captureFlashAt by remember { mutableStateOf<TokenPosition?>(null) }
+
+    LaunchedEffect(match.id, match.seq) {
+        if (lastRenderedSeq == match.seq) return@LaunchedEffect // no change
+        // A cancelled predecessor (new event mid-animation) may have left
+        // its overlays behind — clear them defensively.
+        scorePopup = null
+        captureFlashAt = null
+        val authoritative: Map<Pair<Int, Int>, Int> = buildMap {
+            match.players.forEachIndexed { seat, player ->
+                player.tokens.forEach { put(seat to it.id, it.stepCount) }
+            }
+        }
+        val previous = lastSteps
+        val isNewMatch = lastMatchId != match.id
+        val gap = lastRenderedSeq != null && match.seq > lastRenderedSeq!! + 1
+
+        if (previous == null || isNewMatch || gap) {
+            // First render or recovery: snap to the authoritative board.
+            lastSteps = authoritative
+        } else {
+            val changed = authoritative.filterKeys { previous[it] != authoritative[it] }
+
+            // MOVER: the token whose step count increased (release/advance).
+            val mover = changed.entries.firstOrNull { (key, to) -> to > (previous[key] ?: 0) }
+            // CAPTURED: opponent tokens sent back to their yard.
+            val captured = changed.entries.filter { (key, to) -> to == 0 && (previous[key] ?: 0) > 0 }
+
+            // Freeze captured tokens at their PRE-move cells until the
+            // attacker arrives — otherwise the authoritative yard position
+            // would render a premature teleport (PRD §36 ordering).
+            captured.forEach { (key, _) ->
+                val holdPos = tokenPositionFor(key.first, key.second, previous[key] ?: 1)
+                visualPositions = visualPositions.toMutableMap().apply { put(key, holdPos) }
+            }
+
+            if (mover != null) {
+                val (key, toStep) = mover
+                val seat = key.first
+                val tokenId = key.second
+                val fromStep = previous[key] ?: 0
+
+                // Cell-by-cell hops (PRD §12): each intermediate cell is
+                // rendered for CELL_HOP_MS with FastOutSlowIn easing.
+                var currentPos = visualPositions[key]
+                    ?: tokenPositionFor(seat, tokenId, fromStep)
+                val pathSteps = (fromStep + 1..toStep).toList()
+                for (step in pathSteps) {
+                    val target = tokenPositionFor(seat, tokenId, step)
+                    animate(
+                        0f, 1f,
+                        animationSpec = tween(
+                            if (fromStep == 0) 260 else LudoRules.CELL_HOP_MS,
+                            easing = FastOutSlowInEasing
+                        )
+                    ) { v, _ ->
+                        visualPositions = visualPositions.toMutableMap().apply {
+                            put(key, lerpPosition(currentPos, target, v))
+                        }
+                    }
+                    currentPos = target
+                }
+
+                // Finish effect: "+50" floats above the center (PRD §37).
+                if (toStep >= LudoEngine.FINISH_STEP) {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    scorePopup = "+${LudoRules.POINTS_PER_TOKEN}"
+                    delay(900)
+                    scorePopup = null
+                }
+            }
+
+            if (captured.isNotEmpty()) {
+                // Capture sequence (PRD §36): attacker already arrived →
+                // impact flash → captured coin travels back to its yard.
+                val firstCaptured = captured.first()
+                val flashPos = visualPositions[firstCaptured.key]
+                    ?: tokenPositionFor(
+                        firstCaptured.key.first, firstCaptured.key.second,
+                        previous[firstCaptured.key] ?: 1
+                    )
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                captureFlashAt = flashPos
+                delay(650)
+                captureFlashAt = null
+                captured.forEach { (key, _) ->
+                    val fromPos = visualPositions[key]
+                        ?: tokenPositionFor(key.first, key.second, previous[key] ?: 1)
+                    val yardPos = tokenPositionFor(key.first, key.second, 0)
+                    animate(0f, 1f, animationSpec = tween(420, easing = FastOutSlowInEasing)) { v, _ ->
+                        visualPositions = visualPositions.toMutableMap().apply {
+                            put(key, lerpPosition(fromPos, yardPos, v))
+                        }
+                    }
+                }
+            }
+
+            lastSteps = authoritative
+        }
+        lastRenderedSeq = match.seq
+        lastMatchId = match.id
+        // Clear overrides → authoritative rendering takes over.
+        visualPositions = emptyMap()
     }
 
     BoxWithConstraints(modifier = modifier) {
@@ -724,35 +907,23 @@ private fun LudoArenaBoard(
 
         // ---------------------------------------------------------
         // Tokens — interactive composables positioned by grid cell.
+        // During animation the VISUAL position renders instead of the
+        // authoritative one (PRD §33: game state stays untouched).
         // Tokens sharing the same cell fan out so both stay visible.
         // ---------------------------------------------------------
-        data class TokenPlacement(val seat: Int, val token: LudoToken, val col: Float, val row: Float)
+        data class TokenPlacement(
+            val seat: Int,
+            val token: LudoToken,
+            val col: Float,
+            val row: Float
+        )
 
         val placements: List<TokenPlacement> = buildList {
             match.players.forEachIndexed { seat, player ->
                 player.tokens.forEach { token ->
-                    val (col, row) = when {
-                        token.isInYard -> {
-                            val (originCol, originRow) = LudoEngine.YARD_ORIGINS[seat]
-                            val slot = LudoEngine.YARD_SLOT_OFFSETS[token.id]
-                            (originCol + slot.first) to (originRow + slot.second)
-                        }
-                        else -> {
-                            val (c, r) = LudoEngine.cellForStep(seat, token.stepCount)
-                            if (token.isFinished) {
-                                // Finished tokens rest inside their seat's center
-                                // triangle, fanned along its edge.
-                                val along = (token.id - 1.5f) * 0.22f
-                                when (seat) {
-                                    0 -> 6.1f to (7f + along)          // RED left triangle
-                                    1 -> (7f + along) to 6.1f          // GREEN top triangle
-                                    2 -> 7.9f to (7f + along)          // YELLOW right triangle
-                                    else -> (7f + along) to 7.9f        // BLUE bottom triangle
-                                }
-                            } else (c + 0.5f) to (r + 0.5f)
-                        }
-                    }
-                    add(TokenPlacement(seat, token, col, row))
+                    val override = visualPositions[seat to token.id]
+                    val pos = override ?: tokenPositionFor(seat, token.id, token.stepCount)
+                    add(TokenPlacement(seat, token, pos.col, pos.row))
                 }
             }
         }
@@ -760,7 +931,7 @@ private fun LudoArenaBoard(
         // Fan-out offsets for stacked tokens (non-yard, non-finished).
         val stackSpread: Map<Pair<Int, LudoToken>, Float> = buildMap {
             placements
-                .filter { !it.token.isInYard && !it.token.isFinished }
+                .filter { it.token.stepCount > 0 && !it.token.isFinished }
                 .groupBy { it.col to it.row }
                 .forEach { (_, group) ->
                     if (group.size > 1) {
@@ -792,14 +963,40 @@ private fun LudoArenaBoard(
                 }
             )
         }
-    }
-}
 
-private fun yardSlotOffset(tokenId: Int): Pair<Float, Float> = when (tokenId) {
-    0 -> 1.75f to 1.75f
-    1 -> 3.75f to 1.75f
-    2 -> 1.75f to 3.75f
-    else -> 3.75f to 3.75f
+        // --- Capture impact flash (PRD §36) ---
+        captureFlashAt?.let { flash ->
+            Text(
+                text = "💥",
+                fontSize = 26.sp,
+                modifier = Modifier
+                    .offset(
+                        x = (flash.col * cellDp.value - 12).dp,
+                        y = (flash.row * cellDp.value - 12).dp
+                    )
+                    .testTag("ludo_capture_flash")
+            )
+        }
+
+        // --- "+50" score popup over the center (PRD §37) ---
+        scorePopup?.let { popup ->
+            val popupAlpha by animateFloatAsState(
+                targetValue = if (scorePopup != null) 1f else 0f,
+                animationSpec = tween(250),
+                label = "scorePopupAlpha"
+            )
+            Text(
+                text = popup,
+                color = QuickyGold,
+                fontSize = 26.sp,
+                fontWeight = FontWeight.ExtraBold,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .graphicsLayer { alpha = popupAlpha; translationY = -30f }
+                    .testTag("ludo_score_popup")
+            )
+        }
+    }
 }
 
 @Composable
@@ -855,7 +1052,7 @@ private fun LudoArenaToken(
 }
 
 // =====================================================================
-// DICE
+// DICE — roll timer, rolling state, server result (PRD §41)
 // =====================================================================
 
 @Composable
@@ -863,6 +1060,7 @@ private fun LudoDiceButton(
     diceValue: Int?,
     isRolling: Boolean,
     enabled: Boolean,
+    countdownSeconds: Int?,
     onRoll: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "diceRoll")
@@ -883,13 +1081,19 @@ private fun LudoDiceButton(
             kotlinx.coroutines.delay(90)
         }
     }
+    val urgent = enabled && (countdownSeconds ?: 10) <= 3
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = if (enabled) QuickyPink else MaterialTheme.colorScheme.surfaceVariant,
             border = androidx.compose.foundation.BorderStroke(
-                2.dp, if (enabled) QuickyGold else Color.Transparent
+                2.dp,
+                when {
+                    urgent -> MaterialTheme.colorScheme.error
+                    enabled -> QuickyGold
+                    else -> Color.Transparent
+                }
             ),
             shadowElevation = 6.dp,
             modifier = Modifier
@@ -913,11 +1117,16 @@ private fun LudoDiceButton(
         Text(
             text = when {
                 isRolling -> "ROLLING…"
+                enabled && countdownSeconds != null -> "ROLL · ${countdownSeconds}s"
                 enabled -> "TAP ROLL"
                 else -> "WAITING"
             },
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 9.sp),
-            color = if (enabled) QuickyPink else MaterialTheme.colorScheme.onSurfaceVariant,
+            color = when {
+                urgent -> MaterialTheme.colorScheme.error
+                enabled -> QuickyPink
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
             modifier = Modifier.padding(top = 2.dp)
         )
     }
@@ -935,251 +1144,4 @@ fun DiceFaceDots(value: Int) {
         color = if (value == 6) QuickyGold else Color.White,
         fontWeight = FontWeight.ExtraBold
     )
-}
-
-// =====================================================================
-// ROOM CHAT (human messages only — system logs removed per §3.2.3)
-// =====================================================================
-
-@Composable
-private fun LudoRoomChat(
-    match: LudoMatch,
-    isPremium: Boolean,
-    onSendMessage: (text: String, replyToText: String?, replyToSender: String?) -> Unit,
-    onSendSticker: (String) -> Unit,
-    onSendVoiceMessage: () -> Unit,
-    onOpenStickerPicker: () -> Unit,
-    onOpenPremiumStore: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var messageText by remember { mutableStateOf("") }
-    var replyingTo by remember { mutableStateOf<com.example.model.LudoChatMessage?>(null) }
-    val listState = rememberLazyListState()
-    val humanMessages = remember(match.chatMessages) { match.chatMessages.filterNot { it.isSystem } }
-
-    LaunchedEffect(humanMessages.size) {
-        if (humanMessages.isNotEmpty()) {
-            listState.animateScrollToItem(humanMessages.size - 1)
-        }
-    }
-
-    Column(
-        modifier = modifier
-            .background(MaterialTheme.colorScheme.surface)
-            .dismissKeyboardOnTap()
-    ) {
-        // Header: "Room Chat" only.
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Room Chat",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf("🎲 Roll!", "🔥 GG", "👀 Nice", "🏆 Crown").forEach { quickReact ->
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.clickable { onSendMessage(quickReact, null, null) }
-                    ) {
-                        Text(
-                            text = quickReact,
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-            }
-        }
-
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(vertical = 4.dp)
-        ) {
-            items(humanMessages, key = { it.id }) { msg ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = if (msg.isMine) Arrangement.End else Arrangement.Start
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (msg.isMine) QuickyPink else MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.widthIn(max = 260.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
-                            Text(
-                                text = msg.senderName,
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = if (msg.isMine) Color.White.copy(alpha = 0.85f) else QuickyPurple
-                            )
-                            if (msg.replyToText != null) {
-                                Text(
-                                    text = "↩ ${msg.replyToSender ?: "Player"}: ${msg.replyToText}",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-                                    color = if (msg.isMine) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(vertical = 2.dp)
-                                )
-                            }
-                            if (msg.stickerEmoji != null) {
-                                Text(msg.stickerEmoji, fontSize = 28.sp, modifier = Modifier.padding(vertical = 2.dp))
-                            }
-                            if (msg.text.isNotBlank()) {
-                                Text(
-                                    text = msg.text,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (msg.isMine) Color.White else MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                            if (msg.voiceDurationSeconds != null) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Filled.PlayArrow,
-                                        contentDescription = null,
-                                        tint = if (msg.isMine) Color.White else QuickyPink,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Text(
-                                        "Voice · 0:0${msg.voiceDurationSeconds}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (msg.isMine) Color.White else MaterialTheme.colorScheme.onSurface
-                                    )
-                                }
-                            }
-                            Text(
-                                text = msg.timestamp,
-                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
-                                color = if (msg.isMine) Color.White.copy(alpha = 0.55f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                modifier = Modifier.align(Alignment.End)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Reply preview.
-        if (replyingTo != null) {
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        text = "↩ Replying to ${replyingTo!!.senderName}",
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(onClick = { replyingTo = null }, modifier = Modifier.size(22.dp)) {
-                        Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(14.dp))
-                    }
-                }
-            }
-        }
-
-        // Composer.
-        Surface(
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 4.dp,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                IconButton(onClick = onOpenStickerPicker, modifier = Modifier.size(36.dp)) {
-                    Icon(
-                        imageVector = QuickyStickerIcon,
-                        contentDescription = "Stickers",
-                        tint = QuickyPink,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                // Voice message (premium-gated — currently unlocked for QA, §3.7).
-                IconButton(
-                    onClick = {
-                        if (isPremium) onSendVoiceMessage() else onOpenPremiumStore()
-                    },
-                    modifier = Modifier
-                        .size(36.dp)
-                        .testTag("ludo_voice_button")
-                ) {
-                    Icon(
-                        imageVector = if (isPremium) Icons.Outlined.Mic else Icons.Outlined.Lock,
-                        contentDescription = "Voice note",
-                        tint = if (isPremium) QuickyPink else QuickyGold,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                TextField(
-                    value = messageText,
-                    onValueChange = { messageText = it },
-                    placeholder = { Text("Message the room…", style = MaterialTheme.typography.bodySmall) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(44.dp)
-                        .testTag("ludo_chat_input"),
-                    shape = RoundedCornerShape(22.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
-                    ),
-                    singleLine = true
-                )
-
-                IconButton(
-                    onClick = {
-                        if (messageText.isNotBlank()) {
-                            onSendMessage(
-                                messageText,
-                                replyingTo?.text?.take(60),
-                                if (replyingTo != null) replyingTo!!.senderName else null
-                            )
-                            messageText = ""
-                            replyingTo = null
-                        }
-                    },
-                    enabled = messageText.isNotBlank(),
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint = if (messageText.isNotBlank()) QuickyPink else MaterialTheme.colorScheme.outlineVariant
-                    )
-                }
-            }
-        }
-    }
 }

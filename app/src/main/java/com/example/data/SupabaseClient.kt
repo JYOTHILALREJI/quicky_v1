@@ -141,6 +141,30 @@ object SupabaseClient {
     fun parseArray(raw: String): JSONArray = JSONArray(raw.ifEmpty { "[]" })
 
     /**
+     * Server wall-clock sample in epoch-ms, read from the HTTP `Date` response
+     * header of a lightweight HEAD request (Ludo timer sync, v3 PRD §29).
+     * Clients compute  offset = serverTime() - System.currentTimeMillis()
+     * and apply it when converting server deadlines to local epoch-ms.
+     */
+    suspend fun serverTime(): Long? = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url(
+                    buildUrl(
+                        "/rest/v1/${SupabaseConfig.TABLE_LUDO_MATCHES}",
+                        mapOf("select" to "id", "limit" to "1")
+                    )
+                )
+                .apply { authHeaders(null).forEach { (k, v) -> header(k, v) } }
+                .head()
+                .build()
+            http.newCall(request).execute().use { response ->
+                response.headers.getDate("Date")?.time
+            }
+        }.getOrNull()
+    }
+
+    /**
      * Invokes a Supabase Edge Function (Deno) deployed under
      * `{SUPABASE_URL}/functions/v1/{name}` — e.g. the server-authoritative
      * Ludo Arena dice roll / move validation (v2.1 §3.2.2 / §3.2.4).
