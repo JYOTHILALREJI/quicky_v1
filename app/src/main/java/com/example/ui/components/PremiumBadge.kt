@@ -4,7 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.EmojiEvents
@@ -27,11 +27,14 @@ private val ChampagneDeep = Color(0xFF96733F)
 
 /**
  * ============================================================================
- * PREMIUM BADGE — Quicky v2.1 §5 (redesign)
+ * PREMIUM BADGE — Quicky v2.1 §5 (redesign, vertical-fit patch)
  *
- * Champagne-gold pill: crown icon + "PLUS"/"GOLD" label, 10sp bold
- * uppercase, 4dp horizontal / 2dp vertical padding, gradient background,
- * 12dp corner radius. Dark text on the champagne gradient keeps a ≥ 4.5:1
+ * Champagne-gold pill: trophy icon + "PLUS"/"GOLD" label, 10sp bold
+ * uppercase with an explicit 12sp line height. The pill uses a MINIMUM
+ * height of 20dp instead of a fixed one, so the letters never clip when
+ * the device font scale inflates the text metrics (the old fixed 20dp row
+ * "pressed down" the glyphs — user report on the Games Center + Game
+ * Room pages). Dark text on the champagne gradient keeps a ≥ 4.5:1
  * contrast ratio on BOTH the light and dark Cassy surfaces.
  * ============================================================================
  */
@@ -44,27 +47,28 @@ fun PremiumBadge(
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
-            .height(20.dp)
+            .heightIn(min = 20.dp)
             .background(
                 brush = Brush.horizontalGradient(listOf(QuickyGold, ChampagneDeep)),
                 shape = RoundedCornerShape(12.dp)
             )
-            .padding(horizontal = 4.dp, vertical = 2.dp)
+            .padding(horizontal = 5.dp, vertical = 3.dp)
     ) {
         Icon(
             imageVector = Icons.Filled.EmojiEvents,
             contentDescription = null,
             tint = tint,
-            modifier = Modifier.size(11.dp)
+            modifier = Modifier.size(12.dp)
         )
         Text(
             text = label.uppercase(),
             fontSize = 10.sp,
+            lineHeight = 12.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 0.8.sp,
             color = tint,
             maxLines = 1,
-            modifier = Modifier.padding(start = 2.dp)
+            modifier = Modifier.padding(start = 3.dp)
         )
     }
 }

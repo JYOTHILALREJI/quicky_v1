@@ -19,9 +19,11 @@
 //      `auto: true` requests the timeout move directly (any participant may
 //      trigger it once the deadline passes — the server decides).
 //   3. Validate the token ownership + full rule set (release-on-6, ANY dice
-//      for active coins, exact finish, blocks, safe cells) — the SAME rules
+//      for active coins, exact finish, safe cells) — the SAME rules
 //      as LudoEngine.kt. Rejections carry a `reason` code: BASE_REQUIRES_SIX,
-//      MOVE_EXCEEDS_HOME, TOKEN_ALREADY_HOME, BLOCKED_PATH.
+//      MOVE_EXCEEDS_HOME, TOKEN_ALREADY_HOME, ILLEGAL_MOVE.
+//      NOTE: the block rule was REMOVED — coins always pass over opponent
+//      stacks, and landing on a non-safe cell captures ALL tokens there.
 //   4. Apply the move + capture in ONE transaction; award +50 per newly
 //      finished coin; assign finish positions.
 //   5. THIRD player to bring all 4 coins home ends the game (PRD §18):
@@ -126,13 +128,9 @@ function isMoveLegal(board: Board, seat: number, tokenId: number, dice: number):
   const newStep = step === 0 ? 1 : step + dice;
   if (newStep > FINISH_STEP) return false; // exact roll to finish only
 
-  const cells = step === 0
-    ? [absoluteIndex(seat, 1)]
-    : range(step + 1, newStep)
-        .filter((s) => s >= 1 && s <= HOME_ENTRY_STEP)
-        .map((s) => absoluteIndex(seat, s));
-
-  return cells.every((c) => opponentsOn(board.players, seat, c) < 2);
+  // No block rule — coins always pass over opponents; landing on a
+  // non-safe cell captures ALL tokens there (block-rule removal patch).
+  return true;
 }
 
 function range(from: number, to: number): number[] {
@@ -154,7 +152,8 @@ function illegalMoveReason(board: Board, seat: number, tokenId: number, dice: nu
   if (step >= FINISH_STEP) return "TOKEN_ALREADY_HOME";
   if (step === 0 && dice !== 6) return "BASE_REQUIRES_SIX";
   if ((step === 0 ? 1 : step + dice) > FINISH_STEP) return "MOVE_EXCEEDS_HOME";
-  return "BLOCKED_PATH"; // 2+ opponents on a cell along the path
+  // The block rule was removed — this is the unreachable catch-all.
+  return "ILLEGAL_MOVE";
 }
 
 /** Steps the moved coin travels through (animation path, PRD §13). */
@@ -180,12 +179,12 @@ function pickTimeoutMove(board: Board, seat: number, dice: number): number | nul
     if ((step === 0 ? 1 : step + dice) === FINISH_STEP) return tokenId;
   }
 
-  // 2) Capture an opponent.
+  // 2) Capture opponent(s) — any stack size on the landing cell.
   for (const tokenId of legal) {
     const step = tokens[tokenId];
     const newStep = step === 0 ? 1 : step + dice;
     const landed = newStep <= HOME_ENTRY_STEP ? absoluteIndex(seat, newStep) : -1;
-    if (landed >= 0 && !SAFE_CELLS.has(landed) && opponentsOn(board.players, seat, landed) === 1) {
+    if (landed >= 0 && !SAFE_CELLS.has(landed) && opponentsOn(board.players, seat, landed) >= 1) {
       return tokenId;
     }
   }
@@ -399,10 +398,14 @@ Deno.serve(async (req) => {
           .map((step, idx) => ({ step, idx }))
           .filter(({ step }) => step >= 1 && step <= HOME_ENTRY_STEP &&
             absoluteIndex(playerIndex, step) === landedAbs);
-        if (onCell.length === 1) {
+        // Block-rule removal patch: capture ALL opponent tokens stacked
+        // on the landing cell — not just a solo one.
+        if (onCell.length >= 1) {
           capturedPlayerId = p.id;
           capturedTokenId = onCell[0].idx;
-          p.tokens[onCell[0].idx] = 0; // sent home
+          onCell.forEach(({ idx }) => {
+            p.tokens[idx] = 0; // sent home
+          });
         }
       });
     }

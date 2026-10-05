@@ -1134,7 +1134,15 @@ private fun LudoDiceButton(
                         strokeWidth = 2.dp
                     )
                 } else {
-                    DiceFaceDots(value = diceValue ?: rollingFace)
+                    // Theme-aware pip color (user report: white dice invisible
+                    // in light theme): black in light, white in dark. While
+                    // ENABLED the pink face keeps white/gold pips in BOTH themes.
+                    DiceFaceDots(
+                        value = diceValue ?: rollingFace,
+                        tint = if (enabled) Color.Unspecified
+                        else if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White
+                        else Color.Black
+                    )
                 }
             }
         }
@@ -1159,7 +1167,7 @@ private fun LudoDiceButton(
 }
 
 @Composable
-fun DiceFaceDots(value: Int) {
+fun DiceFaceDots(value: Int, tint: Color = Color.Unspecified) {
     val emoji = when (value) {
         1 -> "⚀"; 2 -> "⚁"; 3 -> "⚂"; 4 -> "⚃"; 5 -> "⚄"
         else -> "⚅"
@@ -1167,7 +1175,11 @@ fun DiceFaceDots(value: Int) {
     Text(
         emoji,
         fontSize = 34.sp,
-        color = if (value == 6) QuickyGold else Color.White,
+        color = when {
+            tint != Color.Unspecified -> tint
+            value == 6 -> QuickyGold
+            else -> Color.White
+        },
         fontWeight = FontWeight.ExtraBold
     )
 }

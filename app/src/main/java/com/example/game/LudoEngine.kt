@@ -21,9 +21,11 @@ import com.example.model.LudoToken
  *     a coin already on the track moves on ANY roll 1–6 (movement patch §3/§4).
  *  2. Extra turn on a 6; three consecutive 6s forfeit the turn (the third
  *     six is not played).
- *  3. Capture: landing on a cell occupied by exactly ONE opponent token
- *     sends it back to its yard. Landing on 2+ opponent tokens is a
- *     BLOCK — the move (and passing through it) is illegal.
+ *  3. Capture: landing on a non-safe cell occupied by opponent token(s)
+ *     sends ALL of them back to their yards. Coins may always PASS OVER
+ *     other coins — there is NO block rule, so a player is never stuck
+ *     behind a stack of two (block-rule removal patch: "2 coins in front
+ *     = I can't move" user report).
  *  4. Safe cells: the four star cells + the four colored start cells —
  *     no capture can happen there.
  *  5. Home column: entered only past the player's home entry; the final
@@ -132,17 +134,11 @@ object LudoEngine {
         else -> 7 to 7 // center home
     }
 
-    /** All main-track absolute cells a token of [seat] passes through moving to [newStep]. */
-    private fun pathAbsoluteCells(seat: Int, fromStep: Int, newStep: Int): List<Int> =
-        (maxOf(fromStep, 0) + 1..newStep)
-            .filter { it in 1..HOME_ENTRY_STEP }
-            .map { absoluteIndex(seat, it) }
-
     // --------------------------------------------------------------
     // Occupancy helpers
     // --------------------------------------------------------------
 
-    /** Opponent tokens (excluding players[[seat]]) occupying [absCell] on the main track. */
+    /** Opponent tokens (excluding players[seat]) occupying [absCell] on the main track. */
     private fun opponentsOn(match: LudoMatch, seat: Int, absCell: Int): Int =
         match.players.asSequence()
             .mapIndexed { playerIndex, player -> playerIndex to player }
@@ -159,12 +155,13 @@ object LudoEngine {
     /**
      * True when [token] of the current player can legally move [dice] steps.
      *
-     * Rules (movement patch §3/§4/§9):
+     * Rules (movement patch §3/§4/§9 + block-rule removal):
      *  - YARD coin: movable ONLY on a 6 (releases onto the seat's start cell).
      *  - ACTIVE coin (1..56): movable on ANY dice 1–6 as long as the
      *    destination does not overshoot the exact home step (57).
      *  - FINISHED coin: never movable.
-     *  - Block rule: cannot pass through or land on 2+ opponent tokens.
+     *  - No block rule: coins always pass over opponent stacks. Landing
+     *    on a non-safe cell captures EVERY opponent token there.
      */
     fun isMoveLegal(match: LudoMatch, token: LudoToken, dice: Int): Boolean {
         if (dice !in 1..6) return false
@@ -173,21 +170,16 @@ object LudoEngine {
         // A yard coin needs a six to leave; an ACTIVE coin never does.
         if (token.isInYard && dice != 6) return false
 
-        val seat = match.turnIndex
         val from = token.stepCount
         val newStep = if (from == 0) 1 else from + dice
 
         // Exact roll to finish — overshoot into home is illegal.
         if (newStep > FINISH_STEP) return false
 
-        // Block rule: cannot PASS THROUGH (or land on) 2+ opponent tokens.
-        val absCells = if (from == 0) {
-            // Release: only the landing cell matters (the start cell).
-            listOf(absoluteIndex(seat, 1))
-        } else {
-            pathAbsoluteCells(seat, from, newStep)
-        }
-        return absCells.all { opponentsOn(match, seat, it) < 2 }
+        // No block rule — the coin may always pass over (and land on)
+        // opponents. Landing on a non-safe cell with opponent token(s)
+        // captures ALL of them in applyMove.
+        return true
     }
 
     /** Token ids of the current player that can legally move with [match.diceValue]. */
@@ -299,7 +291,7 @@ object LudoEngine {
         var capturedOpponent = false
         var updatedPlayers = match.players
 
-        // --- Capture: single opponent token on a non-safe landing cell ---
+        // --- Capture: ALL opponent tokens on a non-safe landing cell ---
         if (landedAbs >= 0 && landedAbs !in SAFE_CELLS) {
             updatedPlayers = updatedPlayers.mapIndexed { playerIndex, player ->
                 if (playerIndex == seat) player
@@ -310,7 +302,7 @@ object LudoEngine {
                                     absoluteIndex(playerIndex, it.stepCount) == landedAbs
                         }
                         .map { it.id }
-                    if (capturedIds.size == 1) {
+                    if (capturedIds.isNotEmpty()) {
                         capturedOpponent = true
                         player.copy(tokens = player.tokens.map {
                             if (it.id in capturedIds) LudoToken(id = it.id, stepCount = 0) else it
@@ -454,11 +446,11 @@ object LudoEngine {
         legal.firstOrNull { (if (it.stepCount == 0) 1 else it.stepCount + dice) == FINISH_STEP }
             ?.let { return it.id }
 
-        // 2) Capture an opponent.
+        // 2) Capture opponent(s) — any stack size on the landing cell.
         legal.firstOrNull { token ->
             val newStep = if (token.stepCount == 0) 1 else token.stepCount + dice
             val landed = if (newStep <= HOME_ENTRY_STEP) absoluteIndex(seat, newStep) else -1
-            landed >= 0 && landed !in SAFE_CELLS && opponentsOn(match, seat, landed) == 1
+            landed >= 0 && landed !in SAFE_CELLS && opponentsOn(match, seat, landed) >= 1
         }?.let { return it.id }
 
         // 3) Release from the yard.
@@ -510,11 +502,11 @@ object LudoEngine {
         val legal = match.currentPlayer.tokens.filter { isMoveLegal(match, it, dice) }
         if (legal.isEmpty()) return null
 
-        // 1) Capture if possible.
+        // 1) Capture if possible (any stack size on the landing cell).
         legal.firstOrNull { token ->
             val newStep = if (token.stepCount == 0) 1 else token.stepCount + dice
             val landed = if (newStep <= HOME_ENTRY_STEP) absoluteIndex(seat, newStep) else -1
-            landed >= 0 && landed !in SAFE_CELLS && opponentsOn(match, seat, landed) == 1
+            landed >= 0 && landed !in SAFE_CELLS && opponentsOn(match, seat, landed) >= 1
         }?.let { return it.id }
 
         // 2) Finish a token.

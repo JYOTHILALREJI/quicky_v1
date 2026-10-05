@@ -93,20 +93,6 @@ function absoluteIndex(seat: number, stepCount: number): number {
   return (START_INDEX[seat] + stepCount - 1) % 52;
 }
 
-/** Opponent tokens (excluding players[seat]) sitting on absCell. */
-function opponentsOn(players: Player[], seat: number, absCell: number): number {
-  let count = 0;
-  players.forEach((p, playerIndex) => {
-    if (playerIndex === seat) return;
-    p.tokens.forEach((step) => {
-      if (step >= 1 && step <= HOME_ENTRY_STEP && absoluteIndex(playerIndex, step) === absCell) {
-        count++;
-      }
-    });
-  });
-  return count;
-}
-
 /** Does the seat hold ANY legal move for the dice? (mirror of LudoEngine) */
 function hasAnyLegalMove(board: Board, seat: number, dice: number): boolean {
   if (dice < 1 || dice > 6) return false;
@@ -119,20 +105,11 @@ function hasAnyLegalMove(board: Board, seat: number, dice: number): boolean {
     if (step === 0 && dice !== 6) continue;
     const newStep = step === 0 ? 1 : step + dice;
     if (newStep > FINISH_STEP) continue;
-    const cells = step === 0
-      ? [absoluteIndex(seat, 1)]
-      : range(step + 1, newStep)
-          .filter((s) => s >= 1 && s <= HOME_ENTRY_STEP)
-          .map((s) => absoluteIndex(seat, s));
-    if (cells.every((c) => opponentsOn(board.players, seat, c) < 2)) return true;
+    // No block rule — coins always pass over opponent stacks; landing on
+    // a non-safe cell captures ALL tokens there (block-rule removal patch).
+    return true;
   }
   return false;
-}
-
-function range(from: number, to: number): number[] {
-  const out: number[] = [];
-  for (let i = from; i <= to; i++) out.push(i);
-  return out;
 }
 
 /** Next seat clockwise, skipping players who already finished all 4 coins. */
