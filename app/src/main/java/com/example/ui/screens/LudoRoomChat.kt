@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -30,8 +29,10 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -236,6 +237,9 @@ fun LudoRoomChat(
         if (replyingTo != null) {
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                // Alpha-modified container: pin the content color explicitly
+                // so the preview text never falls back to black on dark theme.
+                contentColor = MaterialTheme.colorScheme.onSurface,
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -249,6 +253,7 @@ fun LudoRoomChat(
                         Text(
                             text = "↩ Replying to ${replyingTo!!.senderName}",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -268,6 +273,11 @@ fun LudoRoomChat(
         }
 
         // --- Composer (keyboard- + navbar-safe, §47) ---
+        // Mirrors the personal-chat composer: the TextField keeps its natural
+        // Material height (a forced 44dp squeezed it below the 56dp minimum and
+        // pushed the text/placeholder toward the top of the pill), the sticker
+        // picker lives INSIDE the field as the trailing icon, and the mic +
+        // send circles sit outside at 44dp — all vertically centered.
         Surface(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 4.dp,
@@ -277,45 +287,31 @@ fun LudoRoomChat(
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                IconButton(onClick = onOpenStickerPicker, modifier = Modifier.size(36.dp)) {
-                    Icon(
-                        imageVector = QuickyStickerIcon,
-                        contentDescription = "Stickers",
-                        tint = QuickyPink,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                // Voice message (premium-gated — §53).
-                IconButton(
-                    onClick = {
-                        if (isPremium) onSendVoiceMessage() else onOpenPremiumStore()
-                    },
-                    modifier = Modifier
-                        .size(36.dp)
-                        .testTag("ludo_voice_button")
-                ) {
-                    Icon(
-                        imageVector = if (isPremium) Icons.Outlined.Mic else Icons.Outlined.Lock,
-                        contentDescription = "Voice note",
-                        tint = if (isPremium) QuickyPink else QuickyGold,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
                 TextField(
                     value = messageText,
                     onValueChange = { messageText = it },
-                    placeholder = { Text("Message the room…", style = MaterialTheme.typography.bodySmall) },
+                    placeholder = { Text("Message the room…", style = MaterialTheme.typography.bodyMedium) },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = onOpenStickerPicker,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = QuickyStickerIcon,
+                                contentDescription = "Stickers",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    },
                     modifier = Modifier
                         .weight(1f)
-                        .height(44.dp)
                         .testTag("ludo_chat_input"),
-                    shape = RoundedCornerShape(22.dp),
+                    shape = RoundedCornerShape(24.dp),
                     colors = TextFieldDefaults.colors(
                         focusedIndicatorColor = Color.Transparent,
                         unfocusedIndicatorColor = Color.Transparent,
@@ -325,26 +321,53 @@ fun LudoRoomChat(
                     singleLine = true
                 )
 
+                // Voice note (premium-gated — §53) — OUTSIDE the composer, right side.
                 IconButton(
                     onClick = {
-                        if (messageText.isNotBlank()) {
-                            onSendMessage(
-                                messageText,
-                                replyingTo?.text?.take(60),
-                                if (replyingTo != null) replyingTo!!.senderName else null
-                            )
-                            messageText = ""
-                            replyingTo = null
-                        }
+                        if (isPremium) onSendVoiceMessage() else onOpenPremiumStore()
                     },
-                    enabled = messageText.isNotBlank(),
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .testTag("ludo_voice_button")
                 ) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint = if (messageText.isNotBlank()) QuickyPink else MaterialTheme.colorScheme.outlineVariant
+                        imageVector = if (isPremium) Icons.Outlined.Mic else Icons.Outlined.Lock,
+                        contentDescription = "Voice note",
+                        tint = if (isPremium) MaterialTheme.colorScheme.primary else QuickyGold,
+                        modifier = Modifier.size(22.dp)
                     )
+                }
+
+                // Send — filled rose circle while there is text to send.
+                if (messageText.isNotBlank()) {
+                    FilledIconButton(
+                        onClick = {
+                            if (messageText.isNotBlank()) {
+                                onSendMessage(
+                                    messageText,
+                                    replyingTo?.text?.take(60),
+                                    if (replyingTo != null) replyingTo!!.senderName else null
+                                )
+                                messageText = ""
+                                replyingTo = null
+                            }
+                        },
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = QuickyPink,
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("ludo_send_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
         }

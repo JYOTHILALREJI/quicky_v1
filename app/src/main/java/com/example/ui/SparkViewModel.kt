@@ -13,6 +13,7 @@ import com.example.R
 import com.example.BuildConfig
 import com.example.data.AdConfig
 import com.example.data.AppContent
+import com.example.data.FaceVerifier
 import com.example.data.LudoMatchRepository
 import com.example.data.LudoRealtime
 import com.example.data.SupabaseAuth
@@ -98,6 +99,10 @@ data class SparkUiState(
     val showPrivacyCenter: Boolean = false,
     val showPersonalInformationSheet: Boolean = false,
     val showVerificationDialog: Boolean = false,
+    /** Get Verified: busy while the live selfie is being matched on-device. */
+    val isVerifyingFace: Boolean = false,
+    /** Get Verified: outcome of the last live-selfie match attempt (null = fresh). */
+    val faceVerificationOutcome: FaceVerifier.Result? = null,
     val showSettings: Boolean = false,
     val showNotificationsSheet: Boolean = false,
     val activeVoiceCallMatch: MatchItem? = null,
@@ -1324,7 +1329,55 @@ class SparkViewModel : ViewModel() {
     }
 
     fun startVerificationChallenge() {
-        _uiState.update { it.copy(showVerificationDialog = true) }
+        _uiState.update {
+            it.copy(
+                showVerificationDialog = true,
+                isVerifyingFace = false,
+                faceVerificationOutcome = null
+            )
+        }
+    }
+
+    /**
+     * Get Verified (PRD §34–§39) — the user completed the live camera task;
+     * match the captured selfie against every uploaded profile photo and
+     * grant the badge only when at least one photo hits the 60% threshold.
+     * The selfie file is a temporary FileProvider capture — it is deleted
+     * once the match finishes so nothing extra is ever stored.
+     */
+    fun submitVerificationSelfie(context: Context, selfieUri: Uri) {
+        val references = _uiState.value.userProfile.photoUris
+        _uiState.update { it.copy(isVerifyingFace = true, faceVerificationOutcome = null) }
+        viewModelScope.launch {
+            val result = FaceVerifier.verifyLiveSelfie(context, selfieUri, references)
+            if (result.verified) {
+                completeVerificationChallenge()
+                _uiState.update {
+                    it.copy(
+                        isVerifyingFace = false,
+                        faceVerificationOutcome = result
+                    )
+                }
+                // Keep the row in sync so the badge survives a re-login.
+                persistProfileFields(JSONObject().put("is_verified", true))
+            } else {
+                _uiState.update {
+                    it.copy(isVerifyingFace = false, faceVerificationOutcome = result)
+                }
+            }
+            // The capture was a temp cache file — best-effort cleanup.
+            runCatching { context.contentResolver.delete(selfieUri, null, null) }
+        }
+    }
+
+    fun dismissVerificationDialog() {
+        _uiState.update {
+            it.copy(
+                showVerificationDialog = false,
+                isVerifyingFace = false,
+                faceVerificationOutcome = null
+            )
+        }
     }
 
     fun completeVerificationChallenge() {

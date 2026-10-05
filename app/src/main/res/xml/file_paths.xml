@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Live Face Verification (Get Verified): temp camera captures taken
+         via ActivityResultContracts.TakePicture are written here and
+         deleted right after the on-device match completes. -->
+    <cache-path
+        name="verification_selfies"
+        path="verification/" />
+</paths>

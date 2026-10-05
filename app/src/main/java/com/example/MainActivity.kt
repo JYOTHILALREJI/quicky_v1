@@ -8,8 +8,10 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
@@ -23,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.core.content.FileProvider
 import androidx.core.util.Consumer
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -38,6 +41,7 @@ import com.example.ui.components.*
 import com.example.ui.screens.*
 import com.example.ui.theme.SparkTheme
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -557,6 +561,34 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
     if (state.showSafetyCenter) {
         SafetyCenterSheet(
             onDismiss = { viewModel.toggleSafetyCenter(false) }
+        )
+    }
+
+    // Live Face Verification sheet (Get Verified card → "Verify"): the
+    // system camera writes into a FileProvider cache file; the captured
+    // selfie is then matched on-device against the uploaded profile
+    // photos (ML Kit face detection + similarity, ≥ 60% required).
+    val verificationSelfieUri = remember {
+        val dir = File(context.cacheDir, "verification").apply { mkdirs() }
+        val file = File(dir, "live_selfie.jpg")
+        FileProvider.getUriForFile(
+            context,
+            "${BuildConfig.APPLICATION_ID}.fileprovider",
+            file
+        )
+    }
+    val verificationCameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { captured ->
+        if (captured) viewModel.submitVerificationSelfie(context, verificationSelfieUri)
+    }
+    if (state.showVerificationDialog) {
+        VerificationSheet(
+            isVerifying = state.isVerifyingFace,
+            result = state.faceVerificationOutcome,
+            isVerified = state.userProfile.isVerified,
+            onOpenCamera = { verificationCameraLauncher.launch(verificationSelfieUri) },
+            onDismiss = { viewModel.dismissVerificationDialog() }
         )
     }
 

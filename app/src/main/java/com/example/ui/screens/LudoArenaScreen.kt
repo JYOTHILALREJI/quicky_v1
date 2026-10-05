@@ -207,11 +207,17 @@ private fun LudoArenaLobby(
                 .fillMaxWidth()
         ) {
             IconButton(onClick = onBack, modifier = Modifier.testTag("ludo_lobby_back")) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
             }
             Text(
                 text = "Ludo Arena",
-                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.ExtraBold)
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.ExtraBold),
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f)
             )
             PremiumBadge(label = "GOLD")
         }
@@ -391,11 +397,16 @@ private fun LudoArenaMatchScreen(
                 .statusBarsPadding()
         ) {
             IconButton(onClick = onBack, modifier = Modifier.testTag("ludo_back_button")) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
             }
             Text(
                 text = "Ludo Arena",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold),
+                color = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.weight(1f)
             )
             if (match.mode == com.example.model.LudoMode.ONLINE) {
@@ -406,7 +417,10 @@ private fun LudoArenaMatchScreen(
                     modifier = Modifier.padding(end = 4.dp)
                 )
             }
-            PremiumBadge(label = "GOLD")
+            // 4dp row inset + 8dp trailing pad = 12dp from the screen edge —
+            // the same margin the board and seat chips use, so the badge
+            // no longer crams against the bezel.
+            PremiumBadge(label = "GOLD", modifier = Modifier.padding(end = 8.dp))
         }
 
         // --- Connection banner (PRD §68): realtime dropped, recovering. ---
@@ -480,8 +494,13 @@ private fun LudoArenaMatchScreen(
         }
 
         // --- Status strip + server countdown (PRD §38/§39/§40) ---
+        // NOTE: the container color is an alpha-modified surfaceVariant, which
+        // contentColorFor() can no longer resolve to onSurfaceVariant — without
+        // the explicit contentColor the timer text fell back to BLACK and was
+        // invisible on the dark theme.
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -509,7 +528,8 @@ private fun LudoArenaMatchScreen(
                     Text(
                         text = timerText,
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                        color = if (urgent) MaterialTheme.colorScheme.error else Color.Unspecified
+                        color = if (urgent) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurface
                     )
                     Text(
                         text = match.statusText,
@@ -583,6 +603,9 @@ private fun LudoSeatChip(
 
     Surface(
         color = if (isCurrentTurn) color.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surface,
+        // The active-turn container uses an alpha-modified color, so the
+        // contentColor must be pinned explicitly (same trap as the status strip).
+        contentColor = MaterialTheme.colorScheme.onSurface,
         shape = RoundedCornerShape(12.dp),
         border = androidx.compose.foundation.BorderStroke(
             if (isCurrentTurn) 2.dp else 1.dp,
@@ -619,6 +642,7 @@ private fun LudoSeatChip(
             Text(
                 text = if (isLocalPlayer) "You" else player.name,
                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 3.dp)
@@ -1124,7 +1148,9 @@ private fun LudoDiceButton(
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 9.sp),
             color = when {
                 urgent -> MaterialTheme.colorScheme.error
-                enabled -> QuickyPink
+                // Theme-aware primary: the bright soft-rose dark variant keeps
+                // the countdown readable on the dark strip (rosewood was too dim).
+                enabled -> MaterialTheme.colorScheme.primary
                 else -> MaterialTheme.colorScheme.onSurfaceVariant
             },
             modifier = Modifier.padding(top = 2.dp)

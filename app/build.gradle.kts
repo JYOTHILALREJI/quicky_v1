@@ -112,6 +112,10 @@ dependencies {
   implementation(libs.coil.compose)
   // ML Kit face detection: on-device validation of onboarding photos
   implementation(libs.mlkit.face.detection)
+  // JPEG EXIF orientation handling — the live verification selfie and the
+  // uploaded profile photos carry rotation in EXIF, which must be applied
+  // before face detection/cropping (Get Verified, PRD §34–§39).
+  implementation(libs.androidx.exifinterface)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   // Uncomment to use Firestore:

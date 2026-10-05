@@ -94,11 +94,16 @@ fun SettingsScreen(
                 .padding(horizontal = 4.dp)
         ) {
             IconButton(onClick = onBack, modifier = Modifier.testTag("settings_back_button")) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
             }
             Text(
                 text = "Settings",
                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
+                color = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.weight(1f)
             )
         }
