@@ -3,12 +3,14 @@ package com.example.data
 import android.content.Context
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -26,9 +28,11 @@ import java.util.concurrent.TimeUnit
  *   POST /auth/v1/recover                  (password reset email)
  *   GET  /auth/v1/authorize?provider=google&redirect_to=…  (OAuth)
  *
- * Sessions are persisted locally (SharedPreferences) so the correct
- * screen appears instantly on cold start without a network round-trip,
- * then validated/refreshed in the background.
+ * Sessions are persisted locally (SharedPreferences) and SURVIVE normal
+ * app closure: the persisted session is only ever destroyed when the
+ * auth server itself rejects it (explicit sign-out, revocation) — never
+ * because of a transient network problem at cold start, which is exactly
+ * when apps race the radio coming up.
  *
  * No passwords are ever stored — only Supabase tokens.
  */
@@ -120,15 +124,25 @@ object SupabaseAuth {
         return msg?.takeIf { it.isNotBlank() } ?: body.take(180).ifEmpty { "Unknown error" }
     }
 
+    /**
+     * Parses a Supabase auth response into a session. Handles BOTH wire
+     * shapes: tokens flattened at the root (password / refresh-token /
+     * verify grants) and tokens nested under a "session" object (the
+     * modern signup response).
+     */
     private fun sessionFromJson(json: JSONObject): AuthSession {
-        val user = json.optJSONObject("user") ?: JSONObject()
+        val nested = json.optJSONObject("session")
+        val source = if (!nested?.optString("access_token").isNullOrEmpty()) nested else json
+        val user = source.optJSONObject("user") ?: json.optJSONObject("user") ?: JSONObject()
         return AuthSession(
-            accessToken = json.optString("access_token"),
-            refreshToken = json.optString("refresh_token"),
-            userId = user.optString("id").ifEmpty { json.optString("user_id") },
-            email = user.optString("email").ifEmpty { json.optString("email") },
+            accessToken = source.optString("access_token"),
+            refreshToken = source.optString("refresh_token"),
+            userId = user.optString("id")
+                .ifEmpty { source.optString("id").ifEmpty { json.optString("id") } },
+            email = user.optString("email")
+                .ifEmpty { source.optString("email").ifEmpty { json.optString("email") } },
             expiresAtMillis = System.currentTimeMillis() +
-                    json.optLong("expires_in", 3600) * 1000L
+                    source.optLong("expires_in", 3600) * 1000L
         )
     }
 
@@ -144,9 +158,10 @@ object SupabaseAuth {
                 .toString()
             val raw = httpCall("/auth/v1/signup", body)
             val json = JSONObject(raw.ifEmpty { "{}" })
-            val session = json.optJSONObject("session")
-            if (session != null && !session.optString("access_token").isNullOrEmpty()) {
-                val parsed = sessionFromJson(json)
+            // Works for both wire shapes: tokens flattened at the root
+            // (confirm-email off) or nested under "session" (modern GoTrue).
+            val parsed = sessionFromJson(json)
+            if (parsed.accessToken.isNotEmpty()) {
                 writeSession(context, parsed)
                 initializeProfileRecord(parsed)
                 AuthResult(true, session = parsed)
@@ -179,7 +194,12 @@ object SupabaseAuth {
                 .put("password", password)
                 .toString()
             val raw = httpCall("/auth/v1/token?grant_type=password", body)
-            val parsed = sessionFromJson(JSONObject(raw))
+            val parsed = sessionFromJson(JSONObject(raw.ifEmpty { "{}" }))
+            if (parsed.accessToken.isEmpty()) {
+                throw IllegalStateException(
+                    "Authentication failed. Please check your details and try again."
+                )
+            }
             writeSession(context, parsed)
             AuthResult(true, session = parsed)
         }.getOrElse {
@@ -242,48 +262,129 @@ object SupabaseAuth {
         }.getOrElse { AuthResult(false, errorMessage = parseThrowable(it)) }
     }
 
+    /** Outcome of talking to the auth server: OK / rejected / unreachable. */
+    private enum class TokenStatus { VALID, REJECTED, NETWORK }
+
+    /** Result of a refresh attempt (network failure must NOT destroy the session). */
+    private class RefreshResult(val session: AuthSession?, val networkError: Boolean = false)
+
     /**
      * Validates the persisted access token against the auth server and
-     * refreshes it when expired. Returns the live session or null.
+     * refreshes it when expired — while making the session SURVIVE app
+     * closure and transient connectivity problems:
+     *
+     *  - Access token locally unexpired → confirmed against /auth/v1/user.
+     *  - Expired or rejected → refreshed with the stored refresh token,
+     *    retried once for the cold-start "radio not up yet" window.
+     *  - The persisted session is ONLY cleared when the auth server
+     *    definitively rejects it (revocation / password changed elsewhere).
+     *    Network failures never sign the user out — the refresh token was
+     *    not consumed by a failed call, so the next launch retries safely.
      */
     suspend fun restoreSession(context: Context): AuthSession? {
         val stored = readSession(context) ?: return null
-        return runCatching {
-            if (stored.expiresAtMillis - System.currentTimeMillis() > 60_000L) {
-                // Still (probably) valid — verify it is actually alive.
-                val request = okhttp3.Request.Builder()
+        // Defensive: never adopt corrupt/empty persisted tokens.
+        if (stored.accessToken.isEmpty() || stored.refreshToken.isEmpty()) {
+            clearSession(context)
+            return null
+        }
+
+        // 1) Access token (probably) still valid — verify with the server.
+        if (stored.expiresAtMillis - System.currentTimeMillis() > 60_000L) {
+            when (validateAccessToken(stored)) {
+                TokenStatus.VALID -> {
+                    return stored
+                }
+                TokenStatus.NETWORK -> {
+                    // Unreachable (e.g. the app started before the radio
+                    // connected). The token is locally unexpired — trust it
+                    // optimistically; the in-app watcher re-verifies later.
+                    return stored
+                }
+                TokenStatus.REJECTED -> Unit // fall through and refresh
+            }
+        }
+
+        // 2) Expired or server-rejected: refresh, retrying once for
+        //    cold-start network hiccups.
+        var result = refresh(context, stored)
+        if (result.session == null && result.networkError) {
+            delay(1_500L)
+            result = refresh(context, stored)
+        }
+
+        return when {
+            result.session != null -> result.session
+            result.networkError ->
+                // Still unreachable — keep the persisted session instead of
+                // forcing a re-login; the next launch retries the refresh.
+                stored
+            else -> {
+                // The auth server itself rejected the refresh token: a real
+                // sign-out, not a connectivity problem.
+                clearSession(context)
+                null
+            }
+        }
+    }
+
+    /** GET /auth/v1/user — confirms the access token is still alive. */
+    private suspend fun validateAccessToken(stored: AuthSession): TokenStatus =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val request = Request.Builder()
                     .url("${SupabaseConfig.SUPABASE_URL}/auth/v1/user")
                     .header("apikey", SupabaseConfig.SUPABASE_ANON_KEY)
                     .header("Authorization", "Bearer ${stored.accessToken}")
                     .get()
                     .build()
                 http().newCall(request).execute().use { response ->
-                    if (response.isSuccessful) {
-                        val user = JSONObject(response.body?.string().orEmpty())
-                        stored.copy(
-                            userId = user.optString("id").ifEmpty { stored.userId },
-                            email = user.optString("email").ifEmpty { stored.email }
-                        )
-                    } else {
-                        refresh(context, stored) ?: clearSession(context).let { null }
+                    when {
+                        response.isSuccessful -> TokenStatus.VALID
+                        response.code >= 500 -> TokenStatus.NETWORK
+                        else -> TokenStatus.REJECTED
                     }
                 }
-            } else {
-                refresh(context, stored) ?: clearSession(context).let { null }
+            }.getOrElse {
+                if (it is IOException) TokenStatus.NETWORK else TokenStatus.REJECTED
             }
-        }.getOrElse {
-            null
         }
-    }
 
-    private suspend fun refresh(context: Context, stored: AuthSession): AuthSession? =
-        runCatching {
-            val body = JSONObject().put("refresh_token", stored.refreshToken).toString()
-            val raw = httpCall("/auth/v1/token?grant_type=refresh_token", body)
-            val parsed = sessionFromJson(JSONObject(raw))
-            writeSession(context, parsed)
-            parsed
-        }.getOrNull()
+    /**
+     * Exchanges the stored refresh token for a fresh session. Distinguishes
+     * "server rejected the token" (definitive sign-out) from "network
+     * unreachable" (transient — must never destroy the local session).
+     */
+    private suspend fun refresh(context: Context, stored: AuthSession): RefreshResult =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val body = JSONObject().put("refresh_token", stored.refreshToken).toString()
+                val request = Request.Builder()
+                    .url("${SupabaseConfig.SUPABASE_URL}/auth/v1/token?grant_type=refresh_token")
+                    .header("apikey", SupabaseConfig.SUPABASE_ANON_KEY)
+                    .header("Content-Type", "application/json")
+                    .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                http().newCall(request).execute().use { response ->
+                    val raw = response.body?.string().orEmpty()
+                    when {
+                        response.isSuccessful -> {
+                            val parsed = sessionFromJson(JSONObject(raw.ifEmpty { "{}" }))
+                            if (parsed.accessToken.isEmpty()) {
+                                RefreshResult(null, networkError = false)
+                            } else {
+                                writeSession(context, parsed)
+                                RefreshResult(parsed)
+                            }
+                        }
+                        response.code >= 500 -> RefreshResult(null, networkError = true)
+                        else -> RefreshResult(null, networkError = false)
+                    }
+                }
+            }.getOrElse {
+                RefreshResult(null, networkError = it is IOException)
+            }
+        }
 
     /** Sends the password-recovery email. */
     suspend fun requestPasswordReset(email: String): AuthResult {

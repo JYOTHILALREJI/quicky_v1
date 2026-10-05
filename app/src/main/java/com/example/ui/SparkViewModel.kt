@@ -200,6 +200,9 @@ class SparkViewModel : ViewModel() {
     fun onAppStart(context: Context) {
         if (appContext != null) return
         appContext = context.applicationContext
+        // Remote catalogs are non-critical content: load them in the
+        // background so a slow fetch can never delay (or block) the auth
+        // gate on the cold-start critical path.
         viewModelScope.launch {
             if (SupabaseRepository.isConfigured()) {
                 // Admins can extend the catalogs without an app release.
@@ -210,6 +213,12 @@ class SparkViewModel : ViewModel() {
                     _uiState.update { it.copy(hobbyCatalog = remote) }
                 }
             }
+        }
+        // Restore the persisted Supabase session (validating/refreshing
+        // tokens) and route the app to the auth screen, onboarding or the
+        // main experience. Sessions survive normal app closure — only an
+        // explicit sign-out or a server-side revocation signs the user out.
+        viewModelScope.launch {
             val session = SupabaseAuth.restoreSession(context)
             if (session == null) {
                 _uiState.update { it.copy(authGate = AuthGate.SIGNED_OUT) }
@@ -331,6 +340,7 @@ class SparkViewModel : ViewModel() {
      */
     fun signOut(context: Context) {
         viewModelScope.launch {
+            sessionRefreshJob?.cancel()
             SupabaseAuth.signOut(context)
             onboardingPhotoBytes.clear()
             _uiState.update {
@@ -426,6 +436,31 @@ class SparkViewModel : ViewModel() {
             }
             // v2: fill the discovery deck from the server-side ranked RPC.
             if (remote.onboardingCompleted) autoLoadDiscoveryDeck()
+        }
+        // Keep the JWT fresh while the app stays open (Supabase access
+        // tokens expire ~1h) — the session itself lives in SharedPreferences
+        // and survives app closure until the user explicitly signs out.
+        scheduleSessionRefresh(session)
+    }
+
+    /** Hourly session keeper — refreshes the JWT shortly before it expires. */
+    private var sessionRefreshJob: Job? = null
+
+    private fun scheduleSessionRefresh(session: SupabaseAuth.AuthSession) {
+        sessionRefreshJob?.cancel()
+        val msLeft = session.expiresAtMillis - System.currentTimeMillis()
+        // Refresh ~90s before expiry; tokens already expiring retry after
+        // 30s (gives a cold-start network time to come up first).
+        val delayMs = if (msLeft <= 90_000L) 30_000L else msLeft - 90_000L
+        sessionRefreshJob = viewModelScope.launch {
+            delay(delayMs)
+            val fresh = appContext?.let { ctx ->
+                runCatching { SupabaseAuth.restoreSession(ctx) }.getOrNull()
+            }
+            if (fresh != null && _uiState.value.authGate == AuthGate.SIGNED_IN) {
+                _uiState.update { it.copy(authSession = fresh) }
+                scheduleSessionRefresh(fresh)
+            }
         }
     }
 
