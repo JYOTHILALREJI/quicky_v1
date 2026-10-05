@@ -1394,10 +1394,6 @@ class SparkViewModel : ViewModel() {
         }
     }
 
-    fun dismissVerificationDialog() {
-        _uiState.update { it.copy(showVerificationDialog = false) }
-    }
-
     fun setPrimaryPhoto(photoIndex: Int) {
         val profile = _uiState.value.userProfile
 
