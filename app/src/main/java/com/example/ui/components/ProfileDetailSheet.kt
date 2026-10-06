@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.UserProfile
 import com.example.model.VisibilityLevel
+import com.example.model.toDisplayLocation
 import com.example.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -192,7 +193,7 @@ fun ProfileDetailSheet(
                         modifier = Modifier.padding(top = 4.dp)
                     ) {
                         Icon(imageVector = Icons.Outlined.LocationOn, contentDescription = null, tint = Color.LightGray, modifier = Modifier.size(16.dp))
-                        Text(text = "${profile.city} • ${profile.distanceKm} km away", style = MaterialTheme.typography.bodyMedium, color = Color.LightGray)
+                        Text(text = "${profile.city.toDisplayLocation()} • ${profile.distanceKm} km away", style = MaterialTheme.typography.bodyMedium, color = Color.LightGray)
                     }
 
                     Text(

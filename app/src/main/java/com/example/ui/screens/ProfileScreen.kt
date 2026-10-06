@@ -28,17 +28,31 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.Entitlements
 import com.example.model.InteractionInsight
 import com.example.model.UserProfile
+import com.example.model.toDisplayLocation
 import com.example.ui.components.PremiumBadge
 import com.example.ui.components.glassNavBarOverlayHeight
-import com.example.ui.theme.*
 import com.example.ui.components.dismissKeyboardOnTap
+import com.example.ui.theme.*
 
+/**
+ * ============================================================================
+ * MY PROFILE SCREEN — Quicky v2.2 (Settings & Profile PRD redesign §4)
+ *
+ * Clear vertical hierarchy inside the summary card (PRD §4.3/§4.4):
+ * photo → badges → name + age → location → occupation → completion →
+ * edit button, with deliberate breathing room between each band. The
+ * photos section is its own card; Gold, verification and insights follow
+ * as separate labeled sections. The floating glass bottom nav stays clear
+ * of the content via glassNavBarOverlayHeight bottom padding.
+ * ============================================================================
+ */
 @Composable
 fun ProfileScreen(
     userProfile: UserProfile,
@@ -66,346 +80,35 @@ fun ProfileScreen(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            // Extra bottom padding so the last settings row can scroll
-            // clear above the floating liquid-glass navigation bar.
-            .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + glassNavBarOverlayHeight())
+            // PRD §4.7: bottom padding keeps the last card fully scrollable
+            // above the floating liquid-glass navigation bar.
+            .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 16.dp + glassNavBarOverlayHeight())
             .testTag("my_profile_screen")
             // v2.1 §3.5 — tap anywhere dismisses the keyboard.
             .dismissKeyboardOnTap(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // PRD Section 11 & 12: CENTER ALIGNED Hero Profile Card
-        Card(
-            shape = RoundedCornerShape(26.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally // Mandatory center alignment
-            ) {
-                // Centered Profile Avatar (prefers the uploaded onboarding
-                // photos, falls back to bundled assets)
-                val avatarUri = userProfile.photoUris.firstOrNull()
-                val avatarRes = userProfile.photoResIds.firstOrNull() ?: R.drawable.img_onboarding_hero
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.size(116.dp)
-                ) {
-                    if (avatarUri != null) {
-                        coil.compose.AsyncImage(
-                            model = avatarUri,
-                            contentDescription = "My profile photo",
-                            modifier = Modifier
-                                .size(108.dp)
-                                .clip(CircleShape)
-                                .border(
-                                    3.dp,
-                                    Brush.linearGradient(listOf(QuickyPink, QuickyPurple)),
-                                    CircleShape
-                                ),
-                            contentScale = ContentScale.Crop
-                        )
-                    } else {
-                    Image(
-                        painter = painterResource(id = avatarRes),
-                        contentDescription = "My profile photo",
-                        modifier = Modifier
-                            .size(108.dp)
-                            .clip(CircleShape)
-                            .border(
-                                3.dp,
-                                Brush.linearGradient(listOf(QuickyPink, QuickyPurple)),
-                                CircleShape
-                            ),
-                        contentScale = ContentScale.Crop
-                    )
-                    }
-                }
+        ProfileSummaryCard(
+            userProfile = userProfile,
+            onEditProfileClick = onEditProfileClick,
+            onStartVerificationClick = onStartVerificationClick
+        )
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Badges Row (Character Badge + Verification Badge)
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (userProfile.showCharacterBadge) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = QuickyPurple.copy(alpha = 0.12f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, QuickyPurple.copy(alpha = 0.5f))
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Text(text = "✦", color = QuickyGold, fontSize = 12.sp)
-                                Text(
-                                    text = userProfile.characterBadge,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = QuickyPurple
-                                )
-                            }
-                        }
-                    }
-
-                    if (userProfile.isVerified) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = ActionVerified.copy(alpha = 0.15f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, ActionVerified)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = "Verified",
-                                    tint = ActionVerified,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                                Text(
-                                    text = "Verified",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = ActionVerified
-                                )
-                            }
-                        }
-                    } else {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.clickable { onStartVerificationClick() }
-                        ) {
-                            Text(
-                                text = "Get Verified ✓",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = QuickyPink,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Centered Name, Age
-                Text(
-                    text = "${userProfile.name}, ${userProfile.age}",
-                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                    textAlign = TextAlign.Center
+        ProfilePhotosSection(
+            userProfile = userProfile,
+            isProcessingPhoto = isProcessingPhoto,
+            onSetPrimaryPhoto = onSetPrimaryPhoto,
+            onDeletePhoto = onDeletePhoto,
+            onPickPhoto = {
+                photoPicker.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                 )
-
-                // Centered Location & Occupation
-                Text(
-                    text = "${userProfile.city} • ${userProfile.occupation.ifBlank { "Architectural Designer" }}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Profile Completion Progress Bar (PRD Section 32)
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "Profile Completion",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "${userProfile.profileCompletionScore}% Complete",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = QuickyPink
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    LinearProgressIndicator(
-                        progress = { userProfile.profileCompletionScore / 100f },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp)),
-                        color = QuickyPink,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Edit Profile Button
-                Button(
-                    onClick = onEditProfileClick,
-                    shape = RoundedCornerShape(20.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = QuickyPink),
-                    modifier = Modifier.testTag("edit_profile_button")
-                ) {
-                    Icon(imageVector = Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Edit Profile & Prompts", fontWeight = FontWeight.Bold)
-                }
             }
-        }
+        )
 
-        // PRD Section 13: Profile Photo Management (MAXIMUM 3 PHOTOS)
+        // --- Quicky Gold membership (§4.6 additional section) ---
         Card(
-            shape = RoundedCornerShape(22.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(18.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "My Profile Photos (Max 3)",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Text(
-                        text = "${
-                            if (userProfile.photoUris.isNotEmpty()) userProfile.photoUris.size
-                            else userProfile.photoResIds.size
-                        }/3",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        color = QuickyPink
-                    )
-                }
-
-                Text(
-                    text = "Tap a photo to make it your main photo.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
-                )
-
-                // 3 Photo Slots Grid — uploaded (Supabase Storage) photos
-                // take priority; bundled assets only show as a fallback.
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    val useUploadedPhotos = userProfile.photoUris.isNotEmpty()
-                    val photoCount = if (useUploadedPhotos) userProfile.photoUris.size
-                    else userProfile.photoResIds.size
-                    for (i in 0 until 3) {
-                        val hasPhoto = i < photoCount
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(120.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .border(
-                                    1.dp,
-                                    if (i == 0 && hasPhoto) QuickyPink else MaterialTheme.colorScheme.outlineVariant,
-                                    RoundedCornerShape(14.dp)
-                                )
-                                .clickable {
-                                    if (hasPhoto && i != 0) {
-                                        onSetPrimaryPhoto(i)
-                                    } else if (!hasPhoto) {
-                                        photoPicker.launch(
-                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                        )
-                                    }
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (hasPhoto) {
-                                if (useUploadedPhotos) {
-                                    coil.compose.AsyncImage(
-                                        model = userProfile.photoUris[i],
-                                        contentDescription = "Photo ${i + 1}",
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Crop
-                                    )
-                                } else {
-                                    Image(
-                                        painter = painterResource(id = userProfile.photoResIds[i]),
-                                        contentDescription = "Photo ${i + 1}",
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Crop
-                                    )
-                                }
-
-                                if (i == 0) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = QuickyPink,
-                                        modifier = Modifier
-                                            .align(Alignment.TopStart)
-                                            .padding(6.dp)
-                                    ) {
-                                        Text(
-                                            text = "★ Main",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = Color.White,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-
-                                if (photoCount > 1) {
-                                    IconButton(
-                                        onClick = { onDeletePhoto(i) },
-                                        modifier = Modifier
-                                            .align(Alignment.TopEnd)
-                                            .size(28.dp)
-                                            .clip(CircleShape)
-                                            .background(Color.Black.copy(alpha = 0.6f))
-                                    ) {
-                                        Icon(Icons.Filled.Close, contentDescription = "Delete", tint = Color.White, modifier = Modifier.size(16.dp))
-                                    }
-                                }
-                            } else {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    if (isProcessingPhoto) {
-                                        CircularProgressIndicator(
-                                            strokeWidth = 2.dp,
-                                            color = QuickyPink,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Text(
-                                            "Uploading…",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.padding(top = 4.dp)
-                                        )
-                                    } else {
-                                        Icon(imageVector = Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", tint = QuickyPink)
-                                        Text("Add", style = MaterialTheme.typography.labelSmall, color = QuickyPink, modifier = Modifier.padding(top = 4.dp))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Quicky Gold Premium Card
-        Card(
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = Color.Transparent),
             modifier = Modifier
                 .fillMaxWidth()
@@ -464,7 +167,7 @@ fun ProfileScreen(
             }
         }
 
-        // Section: Verification Prompt / Status (PRD Section 34-39)
+        // --- Verification status / prompt (PRD §34–§39) ---
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -510,7 +213,7 @@ fun ProfileScreen(
             }
         }
 
-        // Section: Interaction Insights (PRD Section 25 & 26)
+        // --- Interaction insights (PRD §25 & §26) ---
         if (isInsightsEnabled) {
             Card(
                 shape = RoundedCornerShape(20.dp),
@@ -579,8 +282,423 @@ fun ProfileScreen(
             }
         }
 
-        // (v2.1 §3.9) All settings rows moved to the dedicated Settings
+        // (v2.1 §3.9) All settings rows live in the dedicated Settings
         // screen — reachable via the gear icon in the top bar. The
         // Profile page is now a pure display surface.
+    }
+}
+
+// -----------------------------------------------------------------
+// Summary card hierarchy (PRD §4.3/§4.4)
+// -----------------------------------------------------------------
+
+/**
+ * Centered profile summary: photo → badges → name + age → location →
+ * occupation → completion indicator → Edit Profile & Prompts action.
+ */
+@Composable
+private fun ProfileSummaryCard(
+    userProfile: UserProfile,
+    onEditProfileClick: () -> Unit,
+    onStartVerificationClick: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // --- 1. Main profile photo (112–128dp, subtle brand border) ---
+            val avatarUri = userProfile.photoUris.firstOrNull()
+            val avatarRes = userProfile.photoResIds.firstOrNull() ?: R.drawable.img_onboarding_hero
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(122.dp)
+            ) {
+                val photoModifier = Modifier
+                    .size(116.dp)
+                    .clip(CircleShape)
+                    .border(
+                        3.dp,
+                        Brush.linearGradient(listOf(QuickyPink, QuickyPurple)),
+                        CircleShape
+                    )
+                if (avatarUri != null) {
+                    coil.compose.AsyncImage(
+                        model = avatarUri,
+                        contentDescription = "My profile photo",
+                        modifier = photoModifier,
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Image(
+                        painter = painterResource(id = avatarRes),
+                        contentDescription = "My profile photo",
+                        modifier = photoModifier,
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // --- 2. Status badges (compact, wrapping row) ---
+            ProfileBadgeRow(
+                userProfile = userProfile,
+                onStartVerificationClick = onStartVerificationClick
+            )
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // --- 3. Name + age on one baseline ---
+            Text(
+                text = "${userProfile.name}, ${userProfile.age}",
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            // --- 4. Location (no postal code) + occupation beneath ---
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = userProfile.city.toDisplayLocation()
+                    .ifBlank { "Location not set" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (userProfile.occupation.isNotBlank()) {
+                Text(
+                    text = userProfile.occupation,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp)
+                )
+            }
+
+            // --- 5. Completion: label row + progress bar beneath ---
+            Spacer(modifier = Modifier.height(22.dp))
+            ProfileCompletionIndicator(
+                completionPercent = userProfile.profileCompletionScore
+            )
+
+            // --- 6. One clearly visible primary action ---
+            Spacer(modifier = Modifier.height(20.dp))
+            Button(
+                onClick = onEditProfileClick,
+                shape = RoundedCornerShape(20.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = QuickyPink),
+                modifier = Modifier.testTag("edit_profile_button")
+            ) {
+                Icon(imageVector = Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Edit Profile & Prompts", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+/** Character badge + verification status in one compact row (PRD §4.3). */
+@Composable
+private fun ProfileBadgeRow(
+    userProfile: UserProfile,
+    onStartVerificationClick: () -> Unit
+) {
+    // FlowRow-lite: a single centered Row is enough for the two badges; the
+    // parent centers horizontally and wraps are not needed at this width.
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (userProfile.showCharacterBadge) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = QuickyPurple.copy(alpha = 0.12f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, QuickyPurple.copy(alpha = 0.5f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(text = "✦", color = QuickyGold, fontSize = 12.sp)
+                    Text(
+                        text = userProfile.characterBadge,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = QuickyPurple
+                    )
+                }
+            }
+        }
+
+        if (userProfile.isVerified) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = ActionVerified.copy(alpha = 0.15f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, ActionVerified)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = "Verified",
+                        tint = ActionVerified,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Text(
+                        text = "Verified",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = ActionVerified
+                    )
+                }
+            }
+        } else {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.clickable { onStartVerificationClick() }
+            ) {
+                Text(
+                    text = "Get Verified ✓",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = QuickyPink,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+/** Label left, percentage right, progress bar directly underneath (PRD §4.3). */
+@Composable
+private fun ProfileCompletionIndicator(
+    completionPercent: Int
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "Profile Completion",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "$completionPercent% Complete",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                color = QuickyPink
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        LinearProgressIndicator(
+            progress = { (completionPercent.coerceIn(0, 100)) / 100f },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(RoundedCornerShape(3.dp)),
+            color = QuickyPink,
+            trackColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    }
+}
+
+// -----------------------------------------------------------------
+// Photos section (PRD §4.5)
+// -----------------------------------------------------------------
+
+/** "My Profile Photos" as its own card: heading, count, hint, 3 slots. */
+@Composable
+private fun ProfilePhotosSection(
+    userProfile: UserProfile,
+    isProcessingPhoto: Boolean,
+    onSetPrimaryPhoto: (Int) -> Unit,
+    onDeletePhoto: (Int) -> Unit,
+    onPickPhoto: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "My Profile Photos",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                Text(
+                    text = "${
+                        if (userProfile.photoUris.isNotEmpty()) userProfile.photoUris.size
+                        else userProfile.photoResIds.size
+                    }/3",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = QuickyPink
+                )
+            }
+
+            Text(
+                text = "Tap a photo to make it your main photo.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                val useUploadedPhotos = userProfile.photoUris.isNotEmpty()
+                val photoCount = if (useUploadedPhotos) userProfile.photoUris.size
+                else userProfile.photoResIds.size
+                for (i in 0 until 3) {
+                    ProfilePhotoItem(
+                        index = i,
+                        hasPhoto = i < photoCount,
+                        isMain = i == 0 && i < photoCount,
+                        canRemove = photoCount > 1,
+                        isProcessingPhoto = isProcessingPhoto,
+                        photoUri = if (useUploadedPhotos) userProfile.photoUris.getOrNull(i) else null,
+                        photoResId = if (!useUploadedPhotos) userProfile.photoResIds.getOrNull(i) else null,
+                        onSetPrimary = { onSetPrimaryPhoto(i) },
+                        onDelete = { onDeletePhoto(i) },
+                        onPickPhoto = onPickPhoto,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** One photo slot: main marker, remove control, or the add/empty state. */
+@Composable
+private fun ProfilePhotoItem(
+    index: Int,
+    hasPhoto: Boolean,
+    isMain: Boolean,
+    canRemove: Boolean,
+    isProcessingPhoto: Boolean,
+    photoUri: String?,
+    photoResId: Int?,
+    onSetPrimary: () -> Unit,
+    onDelete: () -> Unit,
+    onPickPhoto: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .height(120.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .border(
+                1.dp,
+                if (isMain) QuickyPink else MaterialTheme.colorScheme.outlineVariant,
+                RoundedCornerShape(14.dp)
+            )
+            .clickable {
+                if (hasPhoto && index != 0) {
+                    onSetPrimary()
+                } else if (!hasPhoto) {
+                    onPickPhoto()
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        if (hasPhoto) {
+            if (photoUri != null) {
+                coil.compose.AsyncImage(
+                    model = photoUri,
+                    contentDescription = "Photo ${index + 1}",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else if (photoResId != null) {
+                Image(
+                    painter = painterResource(id = photoResId),
+                    contentDescription = "Photo ${index + 1}",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
+
+            if (isMain) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = QuickyPink,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                ) {
+                    Text(
+                        text = "★ Main",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            if (canRemove) {
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.6f))
+                ) {
+                    Icon(Icons.Filled.Close, contentDescription = "Delete", tint = Color.White, modifier = Modifier.size(16.dp))
+                }
+            }
+        } else {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (isProcessingPhoto) {
+                    CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        color = QuickyPink,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        "Uploading…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                } else {
+                    Icon(imageVector = Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", tint = QuickyPink)
+                    Text("Add", style = MaterialTheme.typography.labelSmall, color = QuickyPink, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
+        }
     }
 }

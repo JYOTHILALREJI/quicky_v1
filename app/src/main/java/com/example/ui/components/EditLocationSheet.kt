@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.example.model.GeoSuggestion
+import com.example.model.toDisplayLocation
 import com.example.ui.theme.QuickyPink
 import com.example.ui.theme.QuickyPurple
 import com.example.ui.components.dismissKeyboardOnTap
@@ -115,7 +116,7 @@ fun EditLocationSheet(
                     )
                     Column {
                         Text(
-                            text = currentCity.ifBlank { "No location saved yet" },
+                            text = currentCity.toDisplayLocation().ifBlank { "No location saved yet" },
                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                         )
                         Text(

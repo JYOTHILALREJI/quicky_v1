@@ -658,6 +658,11 @@ object SupabaseRepository {
      * User-Agent, so a dedicated plain OkHttp client is used (no Supabase
      * headers). Results are capped at 5 and each suggestion carries a
      * shortened "City, Region" label for the UI.
+     *
+     * Location PRD §5: the label is built from the STRUCTURED address
+     * object (addressdetails=1) — locality/town/village + state — so a
+     * postal code can never leak into the stored/displayed location. The
+     * display_name fallback explicitly skips postcode-shaped parts.
      */
     suspend fun searchCity(query: String): List<GeoSuggestion> {
         val trimmed = query.trim()
@@ -666,7 +671,7 @@ object SupabaseRepository {
             runCatching {
                 val url = "https://nominatim.openstreetmap.org/search" +
                         "?q=${URLEncoder.encode(trimmed, "UTF-8")}" +
-                        "&format=json&limit=5&addressdetails=0"
+                        "&format=json&limit=5&addressdetails=1"
                 val request = Request.Builder()
                     .url(url)
                     .header("User-Agent", "Quicky-Android/1.0 (dating app location search)")
@@ -684,13 +689,7 @@ object SupabaseRepository {
                         if (lat.isNaN() || lon.isNaN()) continue
                         val display = row.optString("display_name")
                         if (display.isBlank()) continue
-                        // "Kochi, Ernakulam District, Kerala, India" ->
-                        // short label "Kochi, Kerala" (first + a nearby part).
-                        val parts = display.split(", ").map { it.trim() }
-                        val shortLabel = when {
-                            parts.size >= 3 -> "${parts[0]}, ${parts[parts.size - 2]}"
-                            else -> parts.first()
-                        }
+                        val shortLabel = shortLocationLabel(row.optJSONObject("address"), display)
                         add(
                             GeoSuggestion(
                                 latitude = lat,
@@ -702,6 +701,43 @@ object SupabaseRepository {
                     }
                 }
             }.getOrDefault(emptyList())
+        }
+    }
+
+    /**
+     * Builds the short "Locality, State" label from the structured Nominatim
+     * address when available (village/town/city + state — never postcode).
+     * Falls back to parsing display_name and skipping postcode-shaped parts.
+     */
+    private fun shortLocationLabel(address: JSONObject?, display: String): String {
+        // Structured path — preferred (PRD §5.2 "use the existing structured
+        // location fields wherever possible").
+        val locality = address?.let {
+            listOfNotNull(
+                it.optString("city").takeIf { s -> s.isNotBlank() },
+                it.optString("town").takeIf { s -> s.isNotBlank() },
+                it.optString("village").takeIf { s -> s.isNotBlank() },
+                it.optString("municipality").takeIf { s -> s.isNotBlank() },
+                it.optString("county").takeIf { s -> s.isNotBlank() }
+            ).firstOrNull()
+        }
+        val state = address?.optString("state")?.takeIf { it.isNotBlank() }
+        if (locality != null) {
+            return if (state != null && state != locality) "$locality, $state" else locality
+        }
+        // Fallback: "Kochi, Ernakulam District, Kerala, India" ->
+        // "Kochi, Kerala" (first + a nearby NON-postal part).
+        val parts = display.split(", ").map { it.trim() }.filter { it.isNotBlank() }
+        val nonPostal = parts.filterNot { part ->
+            val compact = part.replace(" ", "").replace("-", "")
+            part.length in 3..8 && compact.isNotEmpty() &&
+                    part.all { it.isDigit() || it == ' ' || it == '-' } &&
+                    compact.all { it.isDigit() }
+        }
+        return when {
+            nonPostal.size >= 3 -> "${nonPostal.first()}, ${nonPostal[nonPostal.size - 2]}"
+            nonPostal.isNotEmpty() -> nonPostal.first()
+            else -> display
         }
     }
 

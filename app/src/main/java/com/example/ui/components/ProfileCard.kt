@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.UserProfile
 import com.example.model.VisibilityLevel
+import com.example.model.toDisplayLocation
 import com.example.ui.theme.*
 import kotlin.math.abs
 import kotlinx.coroutines.launch
@@ -412,7 +413,7 @@ fun ProfileCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = "${profile.city} • $distanceLabel away",
+                        text = "${profile.city.toDisplayLocation()} • $distanceLabel away",
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color.LightGray
                     )

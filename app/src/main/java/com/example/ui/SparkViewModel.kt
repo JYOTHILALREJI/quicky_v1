@@ -619,6 +619,10 @@ class SparkViewModel : ViewModel() {
                 when {
                     address == null -> null
                     else -> {
+                        // Location PRD §5: prefer the locality itself; the
+                        // thoroughfare keeps the label recognizable. The
+                        // getAddressLine(0) fallback can carry a trailing
+                        // postal code — toDisplayLocation() strips it.
                         val parts = listOfNotNull(
                             address.thoroughfare?.takeIf { it.isNotBlank() },
                             (address.locality ?: address.subAdminArea ?: address.adminArea)
@@ -627,7 +631,9 @@ class SparkViewModel : ViewModel() {
                         val combined = parts.joinToString(", ")
                         when {
                             combined.isNotBlank() -> combined
-                            else -> address.getAddressLine(0)?.takeIf { it.isNotBlank() }
+                            else -> address.getAddressLine(0)
+                                ?.takeIf { it.isNotBlank() }
+                                ?.toDisplayLocation()
                         }
                     }
                 }

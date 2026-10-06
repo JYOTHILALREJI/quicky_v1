@@ -451,6 +451,9 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             notificationPrefs = state.notificationPrefs,
             showMeOnDiscovery = state.showMeOnDiscovery,
             privacySettings = state.privacySettings,
+            // PRD §6: the email registered on the AUTHENTICATED Supabase
+            // account — from the live session, never the profile UUID.
+            accountEmail = state.authSession?.email.orEmpty(),
             onBack = { viewModel.toggleSettingsScreen(false) },
             onThemeChange = { mode -> viewModel.setThemeMode(mode) },
             onDistanceUnitChange = { unit -> viewModel.setDistanceUnit(unit) },

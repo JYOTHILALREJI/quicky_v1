@@ -1128,9 +1128,13 @@ private fun LudoDiceButton(
         ) {
             Box(contentAlignment = Alignment.Center) {
                 if (isRolling) {
+                    // While rolling the button is disabled (gray surface), so
+                    // the spinner must follow the theme: BLACK in light, WHITE
+                    // in dark — same rule as the settled pips (user report).
                     CircularProgressIndicator(
                         modifier = Modifier.size(22.dp),
-                        color = Color.White,
+                        color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White
+                        else Color.Black,
                         strokeWidth = 2.dp
                     )
                 } else {

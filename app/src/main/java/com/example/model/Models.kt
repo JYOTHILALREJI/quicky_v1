@@ -123,6 +123,34 @@ fun OnboardingDraft.toUserProfile(userId: String, photoUrls: List<String>): User
     compatibilityHighlights = emptyList()
 )
 
+/**
+ * Location display normalization (Settings & Profile PRD §5).
+ *
+ * Strips trailing postal/ZIP-code segments from a stored location string so
+ * "Kanjirapally, 686507" displays as "Kanjirapally". SAFE by construction:
+ * a segment is only removed when it is ENTIRELY postal-shaped (3–8 chars,
+ * digits with at most one space or hyphen, e.g. "686507", "WC1B 4AB" is NOT
+ * matched because it has letters, "123 45" is). Place names that merely
+ * CONTAIN digits ("District 9", "Area 51") always keep their letters and
+ * are never touched. The raw value stays untouched in the database — this
+ * is display-only.
+ */
+fun String.toDisplayLocation(): String {
+    if (isBlank()) return this
+    val parts = split(",").map { it.trim() }
+    // Drop ANY comma-separated segment that is entirely postal-shaped —
+    // trailing ("…, 686507") or mid-string ("…, 686507, India").
+    val kept = parts.filter { part ->
+        !(part.length in 3..8 &&
+                part.all { it.isDigit() || it == ' ' || it == '-' } &&
+                part.count { it == ' ' } <= 1 && part.count { it == '-' } <= 1 &&
+                part.replace(" ", "").replace("-", "").let { it.isNotEmpty() && it.all { d -> d.isDigit() } })
+    }
+    // Never strip everything — fall back to the original value.
+    val result = kept.filter { it.isNotBlank() }.joinToString(", ").trim()
+    return result.ifBlank { this }
+}
+
 data class UserProfile(
     val id: String,
     val name: String,

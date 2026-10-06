@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.MatchItem
 import com.example.model.UserProfile
+import com.example.model.toDisplayLocation
 import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
 import com.example.ui.components.dismissKeyboardOnTap
@@ -305,7 +306,7 @@ fun MatchesScreen(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(
-                                        text = "${match.user.city} • Matched ${match.matchedAt}",
+                                        text = "${match.user.city.toDisplayLocation()} • Matched ${match.matchedAt}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
