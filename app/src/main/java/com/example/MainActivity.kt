@@ -461,12 +461,15 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             // PRD §6: the email registered on the AUTHENTICATED Supabase
             // account — from the live session, never the profile UUID.
             accountEmail = state.authSession?.email.orEmpty(),
+            // Blocked Users list (Settings > Privacy) + unblock action.
+            blockedUsers = state.blockedUsers,
             onBack = { viewModel.toggleSettingsScreen(false) },
             onThemeChange = { mode -> viewModel.setThemeMode(mode) },
             onDistanceUnitChange = { unit -> viewModel.setDistanceUnit(unit) },
             onNotificationPrefChange = { key, value -> viewModel.updateNotificationPref(key, value) },
             onShowMeOnDiscoveryChange = { show -> viewModel.setShowMeOnDiscovery(show) },
             onPrivacySettingsChange = { settings -> viewModel.updatePrivacySettings(settings) },
+            onUnblockUser = { userId -> viewModel.unblockUser(userId) },
             onEditProfileClick = { showEditProfileSheet = true },
             onPersonalInformationClick = { viewModel.togglePersonalInformation(true) },
             onDiscoveryPreferencesClick = { viewModel.toggleFilterSheet(true) },

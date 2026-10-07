@@ -43,6 +43,10 @@ object Analytics {
     const val LUDO_COIN_MOVE_COMPLETED = "ludo_coin_move_completed"
     const val LUDO_TURN_HANDOFF = "ludo_turn_handoff"
 
+    // ---- Safety (Settings > Privacy > Blocked Users) ----
+    const val SAFETY_USER_BLOCKED = "safety_user_blocked"
+    const val SAFETY_USER_UNBLOCKED = "safety_user_unblocked"
+
     /** Logs one structured event; `props` are key/value pairs (any order). */
     fun log(event: String, vararg props: Pair<String, Any?>) {
         if (props.isEmpty()) {

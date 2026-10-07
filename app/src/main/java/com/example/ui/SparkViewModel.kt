@@ -138,6 +138,11 @@ data class SparkUiState(
     val notificationPrefs: NotificationPreferences = NotificationPreferences(),
     val showMeOnDiscovery: Boolean = true,
 
+    // Blocked profiles (Settings > Privacy > Blocked Users). Snapshots
+    // recorded at block time; persisted locally so the list survives
+    // restarts, and every deck/conversation fetch excludes these ids.
+    val blockedUsers: List<BlockedUser> = emptyList(),
+
     // Discovery native-ad cadence (v2.1 §3.6.1; v2.3 §17–§19 random 1–6)
     val showDiscoveryAdCard: Boolean = false,
     val discoverySwipesSinceAd: Int = 0,
@@ -208,6 +213,10 @@ class SparkViewModel : ViewModel() {
     fun onAppStart(context: Context) {
         if (appContext != null) return
         appContext = context.applicationContext
+        // Blocked users restore FIRST (device-local, synchronous) so the
+        // block list is already in state before any deck or conversation
+        // fetch runs — blocked profiles can never flash back into the app.
+        loadPersistedBlockedUsers(context)
         // Remote catalogs are non-critical content: load them in the
         // background so a slow fetch can never delay (or block) the auth
         // gate on the cold-start critical path.
@@ -484,9 +493,14 @@ class SparkViewModel : ViewModel() {
     private fun loadServerConversations(session: SupabaseAuth.AuthSession) {
         if (!SupabaseRepository.isConfigured()) return
         viewModelScope.launch {
-            val remote = SupabaseRepository.fetchConversations(
+            val fetched = SupabaseRepository.fetchConversations(
                 session.userId, session.accessToken
             ) ?: return@launch
+            // A blocked profile never comes back through the server's
+            // conversation restore — the block list wins over the remote
+            // match rows (also covers blocks made in a previous session).
+            val blockedIds = _uiState.value.blockedUsers.map { it.id }.toSet()
+            val remote = fetched.filter { it.profile.id !in blockedIds }
             if (remote.isEmpty()) return@launch
 
             _uiState.update { state ->
@@ -1128,6 +1142,9 @@ class SparkViewModel : ViewModel() {
         session: SupabaseAuth.AuthSession
     ): List<UserProfile>? {
         val prefs = _uiState.value.discoveryPreferences
+        // Blocked ids never re-enter the deck, even after the server-side
+        // RPC ranking already ran (blocks are enforced client-side).
+        val blockedIds = _uiState.value.blockedUsers.map { it.id }.toSet()
         return SupabaseRepository.fetchDiscoveryCandidates(
             session = session,
             minAge = prefs.minAge,
@@ -1145,7 +1162,7 @@ class SparkViewModel : ViewModel() {
             occupation = prefs.occupation.takeIf { it.isNotBlank() },
             sharedInterests = prefs.interests,
             languages = prefs.languages
-        )
+        )?.filter { it.id !in blockedIds }
     }
 
     /**
@@ -1962,9 +1979,38 @@ class SparkViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Blocks a profile (PRD §12 Safety): records a display snapshot for
+     * Settings > Privacy > Blocked Users, removes the profile from every
+     * live surface (deck, matches, open chat) and persists the block so it
+     * survives restarts and excludes the id from future fetches.
+     */
     fun blockUser(userId: String) {
-        val updatedDeck = _uiState.value.discoveryDeck.filter { it.id != userId }
-        val updatedMatches = _uiState.value.matches.filter { it.user.id != userId }
+        val state = _uiState.value
+        // Snapshot for the Blocked Users list: search every surface the
+        // profile could currently be on (deck card, match row, open chat,
+        // open profile sheet). Without this the list would have nothing
+        // left to show — the removals below delete all live references.
+        val profile = state.discoveryDeck.firstOrNull { it.id == userId }
+            ?: state.matches.firstOrNull { it.user.id == userId }?.user
+            ?: state.selectedMatchForChat?.user?.takeIf { it.id == userId }
+            ?: state.selectedProfileDetail?.takeIf { it.id == userId }
+
+        val existing = state.blockedUsers.firstOrNull { it.id == userId }
+        val recorded = existing ?: profile?.let {
+            BlockedUser(
+                id = it.id,
+                name = it.name,
+                age = it.age,
+                city = it.city,
+                photoUri = it.photoUris.firstOrNull(),
+                photoResId = it.photoResIds.firstOrNull(),
+                blockedAtEpochMs = System.currentTimeMillis()
+            )
+        }
+
+        val updatedDeck = state.discoveryDeck.filter { it.id != userId }
+        val updatedMatches = state.matches.filter { it.user.id != userId }
 
         _uiState.update {
             it.copy(
@@ -1972,8 +2018,97 @@ class SparkViewModel : ViewModel() {
                 matches = updatedMatches,
                 selectedMatchForChat = if (it.selectedMatchForChat?.user?.id == userId) null else it.selectedMatchForChat,
                 selectedProfileDetail = null,
+                blockedUsers = if (recorded != null) {
+                    listOf(recorded) + it.blockedUsers.filter { b -> b.id != recorded.id }
+                } else it.blockedUsers,
                 toastMessage = "User has been blocked. They cannot discover you, view your profile, or message you."
             )
+        }
+        Analytics.log(
+            Analytics.SAFETY_USER_BLOCKED,
+            "blocked_id" to userId,
+            "blocked_list_size" to _uiState.value.blockedUsers.size
+        )
+        persistBlockedUsers()
+    }
+
+    /**
+     * Removes a profile from the Blocked Users list (Settings > Privacy).
+     * The profile becomes discoverable / matchable again on the next
+     * deck or conversation fetch.
+     */
+    fun unblockUser(userId: String) {
+        val target = _uiState.value.blockedUsers.firstOrNull { it.id == userId } ?: return
+        _uiState.update {
+            it.copy(
+                blockedUsers = it.blockedUsers.filter { b -> b.id != userId },
+                toastMessage = "${target.name} has been unblocked. You may see each other in Discovery again."
+            )
+        }
+        Analytics.log(
+            Analytics.SAFETY_USER_UNBLOCKED,
+            "unblocked_id" to userId,
+            "blocked_list_size" to _uiState.value.blockedUsers.size
+        )
+        persistBlockedUsers()
+    }
+
+    // -----------------------------------------------------------------
+    // Blocked-user persistence (device-local SharedPreferences; no
+    // server round-trip — blocking works fully offline).
+    // -----------------------------------------------------------------
+
+    private val blockedUsersPrefs = "quicky_blocked_users"
+
+    /** Writes the current Blocked Users list to device storage. */
+    private fun persistBlockedUsers() {
+        val context = appContext ?: return
+        val entries = JSONArray()
+        _uiState.value.blockedUsers.forEach { b ->
+            entries.put(
+                JSONObject()
+                    .put("id", b.id)
+                    .put("name", b.name)
+                    .put("age", b.age)
+                    .put("city", b.city)
+                    .put("photoUri", b.photoUri ?: "")
+                    .put("photoResId", b.photoResId ?: -1)
+                    .put("blockedAt", b.blockedAtEpochMs)
+            )
+        }
+        runCatching {
+            context.getSharedPreferences(blockedUsersPrefs, Context.MODE_PRIVATE)
+                .edit()
+                .putString("blocked_users", entries.toString())
+                .apply()
+        }
+    }
+
+    /** Restores the persisted Blocked Users list on cold start. */
+    private fun loadPersistedBlockedUsers(context: Context) {
+        val restored = runCatching {
+            val raw = context.getSharedPreferences(blockedUsersPrefs, Context.MODE_PRIVATE)
+                .getString("blocked_users", null) ?: return
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    add(
+                        BlockedUser(
+                            id = o.optString("id"),
+                            name = o.optString("name").ifBlank { "Blocked user" },
+                            age = o.optInt("age", 0),
+                            city = o.optString("city"),
+                            photoUri = o.optString("photoUri").takeUnless { it.isBlank() },
+                            photoResId = o.optInt("photoResId", -1).takeIf { it > 0 },
+                            blockedAtEpochMs = o.optLong("blockedAt", 0L)
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+        if (restored.isNotEmpty()) {
+            _uiState.update { it.copy(blockedUsers = restored) }
         }
     }
 

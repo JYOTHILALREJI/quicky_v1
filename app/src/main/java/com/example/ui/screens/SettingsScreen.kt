@@ -1,11 +1,14 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -20,15 +23,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.BuildConfig
 import com.example.model.AppThemeMode
+import com.example.model.BlockedUser
 import com.example.model.Entitlements
 import com.example.model.NotificationPreferences
 import com.example.model.PremiumGate
@@ -64,12 +71,14 @@ fun SettingsScreen(
     showMeOnDiscovery: Boolean,
     privacySettings: PrivacySettings,
     accountEmail: String,
+    blockedUsers: List<BlockedUser>,
     onBack: () -> Unit,
     onThemeChange: (AppThemeMode) -> Unit,
     onDistanceUnitChange: (String) -> Unit,
     onNotificationPrefChange: (String, Boolean) -> Unit,
     onShowMeOnDiscoveryChange: (Boolean) -> Unit,
     onPrivacySettingsChange: (PrivacySettings) -> Unit,
+    onUnblockUser: (String) -> Unit,
     onEditProfileClick: () -> Unit,
     onPersonalInformationClick: () -> Unit,
     onDiscoveryPreferencesClick: () -> Unit,
@@ -86,6 +95,14 @@ fun SettingsScreen(
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var infoDialog by remember { mutableStateOf<String?>(null) }
+    // Settings > Privacy > Blocked Users opens an in-place management
+    // sub-page (list + Unblock) instead of a static info dialog.
+    var showBlockedUsersPage by remember { mutableStateOf(false) }
+
+    // System back inside the Blocked Users sub-page returns to Settings
+    // instead of closing the whole screen (this BackHandler is deeper in
+    // the tree than MainActivity's, so it takes precedence when enabled).
+    BackHandler(enabled = showBlockedUsersPage) { showBlockedUsersPage = false }
 
     Column(
         modifier = modifier
@@ -96,6 +113,13 @@ fun SettingsScreen(
             .imePadding()
             .dismissKeyboardOnTap()
     ) {
+        if (showBlockedUsersPage) {
+            BlockedUsersPage(
+                blockedUsers = blockedUsers,
+                onUnblockUser = onUnblockUser,
+                onBack = { showBlockedUsersPage = false }
+            )
+        } else {
         // --- Header (PRD §3.1): compact, stable, same pattern as the
         // clubs/games secondary pages (back chevron + title baseline). ---
         Row(
@@ -260,8 +284,13 @@ fun SettingsScreen(
                     icon = Icons.Outlined.Block,
                     iconTint = MaterialTheme.colorScheme.error,
                     title = "Blocked Users",
-                    subtitle = "Blocked profiles can't see or message you",
-                    onClick = { infoDialog = "You haven't blocked anyone yet. Blocked users appear here with an unblock option." }
+                    subtitle = if (blockedUsers.isEmpty()) {
+                        "Blocked profiles can't see or message you"
+                    } else {
+                        "${blockedUsers.size} blocked ${if (blockedUsers.size == 1) "profile" else "profiles"}"
+                    },
+                    onClick = { showBlockedUsersPage = true },
+                    testTag = "settings_blocked_users_row"
                 )
                 SettingsToggleRow(
                     icon = Icons.Outlined.VisibilityOff,
@@ -387,6 +416,7 @@ fun SettingsScreen(
             // PRD §3.9: enough trailing padding for the final card to scroll
             // fully clear of the system navigation bar.
             Spacer(modifier = Modifier.height(24.dp))
+        }
         }
     }
 
@@ -750,5 +780,245 @@ private fun SubscriptionSettingsCard(
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(24.dp)
         )
+    }
+}
+
+// -----------------------------------------------------------------
+// Blocked Users sub-page (Settings > Privacy) — real list + Unblock
+// -----------------------------------------------------------------
+
+/**
+ * In-place management page for blocked profiles. Mirrors the parent
+ * screen's header pattern (back chevron + 26sp title) and the grouped
+ * card list style of the settings sections.
+ */
+@Composable
+private fun BlockedUsersPage(
+    blockedUsers: List<BlockedUser>,
+    onUnblockUser: (String) -> Unit,
+    onBack: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+    ) {
+        // --- Header: same baseline as the Settings header. ---
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 20.dp)
+        ) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.testTag("blocked_users_back_button")
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back to Settings",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
+            Text(
+                text = "Blocked Users",
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 26.sp
+                ),
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        if (blockedUsers.isEmpty()) {
+            // --- Empty state (same pattern as the Chats empty state). ---
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 32.dp, vertical = 48.dp)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.10f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Block,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
+                Text(
+                    text = "No blocked users",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Profiles you block from their card, a chat, or a match row appear here with an unblock option.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
+        } else {
+            // --- Grouped card, one row per blocked profile (settings style). ---
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_blocked_list_container")
+            ) {
+                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                    blockedUsers.forEachIndexed { index, blocked ->
+                        BlockedUserRow(
+                            blocked = blocked,
+                            onUnblockUser = onUnblockUser,
+                            showDivider = index < blockedUsers.lastIndex
+                        )
+                    }
+                }
+            }
+            Text(
+                text = "Blocked profiles can't discover you, view your profile, or message you. Unblocking makes you visible to each other again on the next refresh.",
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 10.dp)
+            )
+        }
+
+        // PRD §3.9: trailing padding clears the system navigation bar.
+        Spacer(modifier = Modifier.height(24.dp))
+    }
+}
+
+/**
+ * One blocked profile: avatar snapshot, name + age + city, block date,
+ * and the red Unblock action (PRD §12 Safety).
+ */
+@Composable
+private fun BlockedUserRow(
+    blocked: BlockedUser,
+    onUnblockUser: (String) -> Unit,
+    showDivider: Boolean
+) {
+    Column {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 68.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+        ) {
+            BlockedUserAvatar(blocked = blocked)
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 10.dp)
+            ) {
+                Text(
+                    text = blocked.name,
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 16.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val metaLine = listOfNotNull(
+                    blocked.age.takeIf { it > 0 }?.toString(),
+                    blocked.city.takeIf { it.isNotBlank() }
+                ).joinToString(" · ")
+                if (metaLine.isNotBlank()) {
+                    Text(
+                        text = metaLine,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (blocked.blockedAtEpochMs > 0L) {
+                    Text(
+                        text = "Blocked " + java.text.SimpleDateFormat(
+                            "MMM d, yyyy",
+                            java.util.Locale.US
+                        ).format(java.util.Date(blocked.blockedAtEpochMs)),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 1.dp)
+                    )
+                }
+            }
+            OutlinedButton(
+                onClick = { onUnblockUser(blocked.id) },
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                ),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+                ),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                modifier = Modifier.testTag("unblock_button_${blocked.id}")
+            ) {
+                Text(text = "Unblock")
+            }
+        }
+        if (showDivider) SettingsRowDivider()
+    }
+}
+
+/**
+ * 52dp circular avatar snapshot taken at block time: remote photo via
+ * Coil, else the bundled drawable, else the profile initial.
+ */
+@Composable
+private fun BlockedUserAvatar(blocked: BlockedUser) {
+    Box(modifier = Modifier.size(52.dp)) {
+        when {
+            !blocked.photoUri.isNullOrBlank() -> AsyncImage(
+                model = blocked.photoUri,
+                contentDescription = blocked.name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape)
+            )
+            blocked.photoResId != null && blocked.photoResId > 0 -> Image(
+                painter = painterResource(id = blocked.photoResId),
+                contentDescription = blocked.name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape)
+            )
+            else -> Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
+            ) {
+                Text(
+                    text = blocked.name.trim()
+                        .take(1)
+                        .uppercase(java.util.Locale.US)
+                        .ifBlank { "?" },
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
     }
 }

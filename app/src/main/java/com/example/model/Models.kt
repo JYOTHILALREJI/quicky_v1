@@ -199,6 +199,27 @@ data class UserProfile(
     val missingCompletionItems: List<String> = listOf("Add 3rd photo", "Answer audio prompt")
 )
 
+/**
+ * Display snapshot of a blocked profile (Settings > Privacy > Blocked Users).
+ *
+ * A snapshot is taken AT BLOCK TIME because blocking immediately removes
+ * the profile from every live surface (deck, matches, chats) — so there is
+ * no live profile left to look up later. Keeping name + photo + age here
+ * lets the Blocked Users list render the entry (and offer Unblock) for as
+ * long as the block lasts, including after an app restart.
+ */
+data class BlockedUser(
+    val id: String,
+    val name: String,
+    val age: Int,
+    val city: String = "",
+    /** First remote photo URL at block time (seeded / uploaded photos). */
+    val photoUri: String? = null,
+    /** First bundled drawable at block time (demo profiles). */
+    val photoResId: Int? = null,
+    val blockedAtEpochMs: Long = 0L
+)
+
 data class ProfilePrompt(
     val question: String,
     val answer: String
