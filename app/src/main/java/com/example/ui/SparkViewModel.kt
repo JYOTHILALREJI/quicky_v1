@@ -2484,9 +2484,15 @@ class SparkViewModel : ViewModel() {
         )
     }
 
-    /** Suspending settle for drivers: waits the remaining animation + 500ms. */
-    private suspend fun awaitLudoMoveSettled() {
-        if (!ludoMoveAwaitingSettle) return
+    /**
+     * Suspending settle for drivers: waits the remaining animation + 500ms.
+     * @return true when a settle wait actually RAN (move animation + handoff);
+     *         false when no move was pending — callers acting on a fresh turn
+     *         that advanced WITHOUT a move (no-legal-move roll, timeout
+     *         advance) must apply the 500ms handoff themselves (PRD §20/§23).
+     */
+    private suspend fun awaitLudoMoveSettled(): Boolean {
+        if (!ludoMoveAwaitingSettle) return false
         ludoMoveAwaitingSettle = false
         val remaining = ludoMoveAnimationEndsAt - System.currentTimeMillis()
         if (remaining > 0) delay(remaining)
@@ -2501,6 +2507,7 @@ class SparkViewModel : ViewModel() {
                 "player_id" to (match.players.getOrNull(match.turnIndex)?.id ?: "?")
             )
         }
+        return true
     }
 
     fun openLudoGame() {
@@ -2538,6 +2545,13 @@ class SparkViewModel : ViewModel() {
         ludoRealtimeSub?.close(); ludoRealtimeSub = null
         ludoRecoveryJob?.cancel(); ludoRecoveryJob = null
         ludoBotDriverJob?.cancel(); ludoBotDriverJob = null
+        // v3.2.1 (user request — solo must match online timing EXACTLY):
+        // clear any stale move-settle window carried over from a previous
+        // match; otherwise the first bot action of the new game would wait
+        // out a coin animation that never plays on this board.
+        ludoLastAppliedSeq = 0L
+        ludoMoveAnimationEndsAt = 0L
+        ludoMoveAwaitingSettle = false
         _uiState.update {
             it.copy(
                 isLudoActive = true,
@@ -3097,13 +3111,20 @@ class SparkViewModel : ViewModel() {
                 // previous player, a remote client or this bot itself), let
                 // the coin animation finish and hold the 500ms handoff before
                 // the dice moves again.
-                awaitLudoMoveSettled()
+                val settledByMove = awaitLudoMoveSettled()
                 current = _uiState.value.ludoMatch ?: return@launch
                 if (!current.currentPlayer.isBot || current.phase == LudoPhase.FINISHED) return@launch
                 if (current.turnIndex != drivenSeat) {
                     // Fresh turn handoff — a different player just received the
-                    // dice; the settle above already played the handoff pause.
+                    // dice. When a MOVE preceded it, the settle above already
+                    // played the full animation + 500ms handoff; when the turn
+                    // advanced WITHOUT a move (a roll with no legal move, or a
+                    // timeout advance), nothing waited — apply the 500ms
+                    // handoff here so SOLO and ONLINE share one identical
+                    // timeline (PRD §20/§23 — the result is shown, then a
+                    // short beat, then the next player's die activates).
                     drivenSeat = current.turnIndex
+                    if (!settledByMove) delay(LudoRules.TURN_HANDOFF_MS)
                     continue
                 }
                 if (current.phase == LudoPhase.AWAITING_ROLL) {

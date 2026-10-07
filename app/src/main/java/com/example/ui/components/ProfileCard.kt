@@ -164,20 +164,30 @@ fun ProfileCard(
                                 }
                             },
                             onDragEnd = {
+                                // v3.2.1 SWIPE FIX: commit by FINAL POSITION ONLY.
+                                // The old `!swipeConsumed &&` guards were
+                                // inverted — the haptic latch sets
+                                // swipeConsumed=true the moment the finger
+                                // CROSSES the threshold during the drag, so a
+                                // normal deliberate swipe past the threshold
+                                // skipped every commit branch and just
+                                // sprang back (only a fast fling could slip
+                                // past the async snapTo race). swipeConsumed
+                                // now gates ONLY the haptic, never the action.
                                 val x = offsetX.value
                                 val y = offsetY.value
                                 when {
-                                    !swipeConsumed && y < -superLikeThresholdPx -> scope.launch {
+                                    y < -superLikeThresholdPx -> scope.launch {
                                         offsetY.animateTo(-exitDistancePx, tween(220))
                                         onSuperLike()
                                         resetSwipe(offsetX, offsetY)
                                     }
-                                    !swipeConsumed && x > swipeThresholdPx -> scope.launch {
+                                    x > swipeThresholdPx -> scope.launch {
                                         offsetX.animateTo(exitDistancePx, tween(220))
                                         onLike()
                                         resetSwipe(offsetX, offsetY)
                                     }
-                                    !swipeConsumed && x < -swipeThresholdPx -> scope.launch {
+                                    x < -swipeThresholdPx -> scope.launch {
                                         offsetX.animateTo(-exitDistancePx, tween(220))
                                         onPass()
                                         resetSwipe(offsetX, offsetY)

@@ -351,6 +351,10 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                             MatchesScreen(
                                 matches = state.matches,
                                 isPremium = PremiumGate.isPremium(state.entitlements),
+                                // v3.2.1 — inline banner under the New Matches
+                                // tray, FREE accounts only (same entitlement
+                                // contract as the chat-header banner).
+                                showBannerAd = PremiumGate.isAdsEnabled(state.entitlements),
                                 onStartChat = { match -> viewModel.openChat(match) },
                                 onPlayTruthOrDare = { match ->
                                     val prompt = state.truthOrDarePrompts.first()

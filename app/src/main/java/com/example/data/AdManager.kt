@@ -41,15 +41,30 @@ object AdConfig {
     /** Banner ads enabled in the personal chat header (PRD v2.3 §26). */
     var chatBannerEnabled: Boolean = true
 
+    /** Inline banner under the Matches "New Matches" tray (v3.2.1). */
+    var matchesBannerEnabled: Boolean = true
+
     /** Minimum gap between ad loads — AdMob policy forbids refreshing faster than 60s. */
     const val MIN_REFRESH_INTERVAL_MS: Long = 60_000L
+
+    /**
+     * Backoff between native-ad LOAD ATTEMPTS when nothing is held (v3.2.1).
+     * The old 60s guard also throttled FAILED loads, so a failed first fetch
+     * left the Discovery Sponsored card stuck on the house promo for a full
+     * minute with no retry. A short attempt backoff is policy-safe: it never
+     * refreshes a LIVE ad, it only paces retries while the slot is empty.
+     */
+    const val NATIVE_ATTEMPT_BACKOFF_MS: Long = 10_000L
 
     /** Countdown (seconds) the native card blocks swipes before it can be dismissed. */
     const val NATIVE_CARD_COUNTDOWN_SECONDS: Int = 5
 
-    // --- Test ad unit ids (Google-published, safe for development/QA) ---
-    // PRD v2.3 §30 — replace ONLY these values with production ids before
-    // publishing; every screen references AdConfig, never a raw id.
+    // --- Ad unit ids (v3.2.1) ---------------------------------------------
+    // Backed by BuildConfig fields: a real id in the developer's local .env
+    // (gitignored) wins; Google's OFFICIAL TEST ids are the default. Test
+    // units always render the static "Test Ad" creative and — on debug
+    // builds — AdMob's native-ad-validator overlay. Both disappear once real
+    // ids are configured. See app/build.gradle.kts + .env.example.
     const val APP_OPEN_AD_UNIT_ID = "ca-app-pub-3940256099942544/9257395921"
     const val ANCHORED_ADAPTIVE_BANNER_AD_UNIT_ID = "ca-app-pub-3940256099942544/9214589741"
     const val INLINE_ADAPTIVE_BANNER_AD_UNIT_ID = "ca-app-pub-3940256099942544/9214589741"
@@ -61,8 +76,25 @@ object AdConfig {
     const val NATIVE_VIDEO_AD_UNIT_ID = "ca-app-pub-3940256099942544/1044960115"
     const val PICTURE_IN_PICTURE_AD_UNIT_ID = "ca-app-pub-3940256099942544/9657123429"
 
-    /** Personal-chat header banner (PRD v2.3 §28 — anchored adaptive test unit). */
-    const val CHAT_BANNER_AD_UNIT_ID = ANCHORED_ADAPTIVE_BANNER_AD_UNIT_ID
+    /** Discovery Sponsored card — real id via .env QUICKY_NATIVE_AD_UNIT. */
+    val DISCOVERY_NATIVE_AD_UNIT_ID: String
+        get() = runCatching { com.example.BuildConfig.DISCOVERY_NATIVE_AD_UNIT }
+            .getOrDefault(NATIVE_AD_UNIT_ID)
+
+    /** Personal-chat header banner (PRD v2.3 §28) — .env QUICKY_CHAT_BANNER_AD_UNIT. */
+    val CHAT_BANNER_AD_UNIT_ID: String
+        get() = runCatching { com.example.BuildConfig.CHAT_BANNER_AD_UNIT }
+            .getOrDefault(ANCHORED_ADAPTIVE_BANNER_AD_UNIT_ID)
+
+    /** Matches list inline banner (v3.2.1) — .env QUICKY_MATCHES_BANNER_AD_UNIT. */
+    val MATCHES_BANNER_AD_UNIT_ID: String
+        get() = runCatching { com.example.BuildConfig.MATCHES_BANNER_AD_UNIT }
+            .getOrDefault(INLINE_ADAPTIVE_BANNER_AD_UNIT_ID)
+
+    /** Club-chat banner — .env QUICKY_CLUB_BANNER_AD_UNIT. */
+    val CLUB_BANNER_AD_UNIT_ID: String
+        get() = runCatching { com.example.BuildConfig.CLUB_BANNER_AD_UNIT }
+            .getOrDefault(BANNER_AD_UNIT_ID)
 }
 
 object AdsManager {
@@ -84,21 +116,38 @@ object AdsManager {
     }
 
     /**
-     * Loads a fresh native ad for the Discovery card. Respects the 60s
-     * minimum refresh policy. The exposed [nativeAd] flow updates when the
-     * load completes; a failed load leaves the previous value (or null),
-     * letting the UI fall back to a house promo card.
+     * Loads a fresh native ad for the Discovery card (v3.2.1 rework):
+     *  - Skips only when an ad is ALREADY held (a live ad is never refreshed
+     *    faster than the caller swaps cards — AdMob policy safe).
+     *  - Paces repeat ATTEMPTS by [AdConfig.NATIVE_ATTEMPT_BACKOFF_MS] (10s)
+     *    instead of the old 60s success-guard, which also throttled FAILED
+     *    loads and left the Sponsored card stuck on the house promo with no
+     *    retry for a full minute.
+     * The exposed [nativeAd] flow updates when the load completes; a failed
+     * load keeps the previous value (or null), letting the UI show its house
+     * fallback until a retry lands.
      */
     fun loadNativeAd(context: Context) {
-        if (System.currentTimeMillis() - lastNativeLoadAt < AdConfig.MIN_REFRESH_INTERVAL_MS) return
+        if (_nativeAd.value != null) return // already holding a live ad
+        if (System.currentTimeMillis() - lastNativeLoadAt < AdConfig.NATIVE_ATTEMPT_BACKOFF_MS) return
         lastNativeLoadAt = System.currentTimeMillis()
 
         runCatching {
-            val loader = AdLoader.Builder(context, AdConfig.NATIVE_AD_UNIT_ID)
-                .forNativeAd { ad -> _nativeAd.value = ad }
+            val loader = AdLoader.Builder(context, AdConfig.DISCOVERY_NATIVE_AD_UNIT_ID)
+                .forNativeAd { ad ->
+                    // A newer ad may arrive after a dismiss destroyed the
+                    // previous one — only hold it if the slot is still empty.
+                    if (_nativeAd.value == null) {
+                        _nativeAd.value = ad
+                    } else {
+                        ad.destroy()
+                    }
+                }
                 .withAdListener(object : AdListener() {
                     override fun onAdFailedToLoad(error: LoadAdError) {
-                        // Keep null — the Discovery card renders its house fallback.
+                        // Keep null — the Discovery card renders its house
+                        // fallback and the caller's retry loop tries again
+                        // after the attempt backoff.
                     }
                 })
                 .withNativeAdOptions(

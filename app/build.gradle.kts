@@ -8,6 +8,47 @@ plugins {
   alias(libs.plugins.google.services)
 }
 
+// ----------------------------------------------------------------------------
+// AD UNIT CONFIGURATION (v3.2.1)
+//
+// AdMob ids resolve in this priority order:
+//   1. A real key in the developer's local .env  (gitignored — never committed)
+//   2. Google's OFFICIAL TEST unit ids           (safe default for dev/QA)
+//
+// To serve REAL ads: create the ad units in your AdMob console and add e.g.
+//   QUICKY_NATIVE_AD_UNIT=ca-app-pub-XXXXXXXX/NNNNNNNNN
+//   QUICKY_CHAT_BANNER_AD_UNIT=ca-app-pub-XXXXXXXX/NNNNNNNNN
+//   QUICKY_MATCHES_BANNER_AD_UNIT=ca-app-pub-XXXXXXXX/NNNNNNNNN
+//   QUICKY_CLUB_BANNER_AD_UNIT=ca-app-pub-XXXXXXXX/NNNNNNNNN
+// to your local .env (see .env.example), then rebuild. While the TEST ids
+// are in use, AdMob shows the static "Test Ad" creative and — on debug
+// builds — the "native ad validator" overlay; both disappear once real
+// unit ids are configured.
+// ----------------------------------------------------------------------------
+val quickyAdEnv: Map<String, String> by lazy {
+  val map = mutableMapOf<String, String>()
+  // Module .env first (the secrets plugin's convention), then the root one.
+  listOf(file(".env"), rootProject.file(".env")).forEach { f ->
+    if (f.exists()) {
+      f.readLines().forEach { raw ->
+        val line = raw.trim()
+        if (line.isNotEmpty() && !line.startsWith("#")) {
+          val idx = line.indexOf('=')
+          if (idx > 0) {
+            val k = line.substring(0, idx).trim()
+            val v = line.substring(idx + 1).trim()
+            if (k.isNotEmpty() && v.isNotEmpty()) map.putIfAbsent(k, v)
+          }
+        }
+      }
+    }
+  }
+  map
+}
+
+fun quickyAdUnit(key: String, testId: String): String =
+  quickyAdEnv[key]?.takeIf { it.isNotBlank() } ?: testId
+
 android {
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -20,6 +61,24 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // AdMob units — real ids from .env when present, Google test ids otherwise.
+    buildConfigField(
+      "String", "DISCOVERY_NATIVE_AD_UNIT",
+      "\"${quickyAdUnit("QUICKY_NATIVE_AD_UNIT", "ca-app-pub-3940256099942544/2247696110")}\""
+    )
+    buildConfigField(
+      "String", "CHAT_BANNER_AD_UNIT",
+      "\"${quickyAdUnit("QUICKY_CHAT_BANNER_AD_UNIT", "ca-app-pub-3940256099942544/9214589741")}\""
+    )
+    buildConfigField(
+      "String", "MATCHES_BANNER_AD_UNIT",
+      "\"${quickyAdUnit("QUICKY_MATCHES_BANNER_AD_UNIT", "ca-app-pub-3940256099942544/9214589741")}\""
+    )
+    buildConfigField(
+      "String", "CLUB_BANNER_AD_UNIT",
+      "\"${quickyAdUnit("QUICKY_CLUB_BANNER_AD_UNIT", "ca-app-pub-3940256099942544/6300978111")}\""
+    )
   }
 
   signingConfigs {

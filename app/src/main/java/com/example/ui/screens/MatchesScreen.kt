@@ -33,6 +33,7 @@ import com.example.data.Analytics
 import com.example.model.MatchItem
 import com.example.model.UserProfile
 import com.example.model.toDisplayLocation
+import com.example.ui.components.MatchesListBannerAd
 import com.example.ui.components.glassNavBarOverlayHeight
 import com.example.ui.theme.*
 import com.example.ui.components.dismissKeyboardOnTap
@@ -47,7 +48,11 @@ fun MatchesScreen(
     onUnmatch: (String) -> Unit,
     onBlockUser: (String) -> Unit,
     onUnlockLikesClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // v3.2.1 (user request): inline banner under the New Matches tray —
+    // free accounts only; the caller resolves eligibility through
+    // PremiumGate.isAdsEnabled, same contract as the chat-header banner.
+    showBannerAd: Boolean = false
 ) {
     LazyColumn(
         modifier = modifier
@@ -169,6 +174,14 @@ fun MatchesScreen(
                     }
                 }
             }
+        }
+
+        // Section 1b (v3.2.1, user request): inline adaptive banner row
+        // directly AFTER the New Matches tray, BEFORE "Your Connections".
+        // Renders nothing until a real ad is loaded — no blank row on
+        // failure, and Quicky Gold accounts never get it at all.
+        if (showBannerAd) {
+            item { MatchesListBannerAd() }
         }
 
         // Section 2: Matches Relationship Cards (PRD Section 51 & 52)

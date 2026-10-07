@@ -74,8 +74,21 @@ fun DiscoveryNativeAdCard(
     val context = LocalContext.current
     val nativeAd by AdsManager.nativeAd.collectAsState()
 
-    // Keep a fresh ad loaded while a card is visible.
-    LaunchedEffect(Unit) { AdsManager.loadNativeAd(context) }
+    // Keep a fresh ad loaded while a card is visible (v3.2.1): the first
+    // attempt fires immediately; if nothing is held (failed load / a just-
+    // destroyed previous ad), a BOUNDED retry loop keeps trying on the
+    // manager's 10s attempt backoff so the card no longer sits on the house
+    // promo for a full minute after one unlucky fetch.
+    LaunchedEffect(Unit) {
+        AdsManager.loadNativeAd(context)
+        var tries = 0
+        while (tries < 5) {
+            delay(AdConfig.NATIVE_ATTEMPT_BACKOFF_MS)
+            if (AdsManager.nativeAd.value != null) break
+            AdsManager.loadNativeAd(context)
+            tries++
+        }
+    }
     DisposableEffect(Unit) {
         onDispose { AdsManager.destroyNativeAd() }
     }
@@ -249,7 +262,7 @@ fun ClubChatBannerAd(modifier: Modifier = Modifier) {
             factory = { ctx ->
                 com.google.android.gms.ads.AdView(ctx).apply {
                     setAdSize(com.google.android.gms.ads.AdSize.BANNER)
-                    adUnitId = AdConfig.BANNER_AD_UNIT_ID
+                    adUnitId = AdConfig.CLUB_BANNER_AD_UNIT_ID
                 }
             },
             update = { adView ->
@@ -328,3 +341,70 @@ fun ChatHeaderBannerAd(modifier: Modifier = Modifier) {
 }
 
 /** Small lifecycle-aware collect helper (avoids pulling lifecycle-runtime dep into data layer). */
+
+/**
+ * INLINE adaptive banner for the Matches list (v3.2.1 — user request: "add
+ * banner ads after New Matches"). Sits in its own list row directly under
+ * the New Matches stories tray, above "Your Connections".
+ *
+ * Same contract as [ChatHeaderBannerAd]:
+ *  - Anchored-adaptive sizing (full-width, height follows the served ad).
+ *  - Renders NOTHING until a real ad arrives — a failed load leaves no blank
+ *    row behind (PRD §49 "fail gracefully"); a previously loaded ad stays
+ *    visible across refresh failures.
+ *  - 60s minimum refresh policy (AdMob).
+ *  - Eligibility is decided by the CALLER through PremiumGate.isAdsEnabled —
+ *    Quicky Gold accounts never see the row at all.
+ */
+@Composable
+fun MatchesListBannerAd(modifier: Modifier = Modifier) {
+    if (!AdConfig.matchesBannerEnabled) return
+
+    val context = LocalContext.current
+    var adLoaded by remember { mutableStateOf(false) }
+    var everLoaded by remember { mutableStateOf(false) }
+
+    val adView = remember {
+        com.google.android.gms.ads.AdView(context).apply {
+            val widthDp = context.resources.configuration.screenWidthDp.coerceAtLeast(320)
+            setAdSize(
+                com.google.android.gms.ads.AdSize
+                    .getCurrentOrientationAnchoredAdaptiveBannerAdSize(context, widthDp)
+            )
+            adUnitId = AdConfig.MATCHES_BANNER_AD_UNIT_ID
+            adListener = object : AdListener() {
+                override fun onAdLoaded() {
+                    adLoaded = true
+                    everLoaded = true
+                }
+
+                override fun onAdFailedToLoad(error: LoadAdError) {
+                    // Keep showing a previously loaded ad; collapse only if
+                    // nothing ever arrived (no blank list row, §49).
+                    adLoaded = everLoaded
+                }
+            }
+            loadAd(AdsManager.newBannerRequest())
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { adView.destroy() }
+    }
+
+    // 60s manual refresh policy (never faster — AdMob policy).
+    var reloadTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(reloadTick) {
+        delay(AdConfig.MIN_REFRESH_INTERVAL_MS)
+        reloadTick++
+        adView.loadAd(AdsManager.newBannerRequest())
+    }
+
+    if (adLoaded) {
+        AndroidView(
+            modifier = modifier
+                .fillMaxWidth()
+                .heightIn(min = 50.dp),
+            factory = { adView }
+        )
+    }
+}
