@@ -80,6 +80,18 @@ interface Board {
   finish_order: string[];
   roll_deadline_at: string | null;
   move_deadline_at: string | null;
+  /**
+   * v3.2 (PRD §21) — authoritative turn timeline (mirrors apply_ludo_move):
+   * stamped on the roll so clients can reconstruct the turn sequence from
+   * the server clock. Purely additive — older clients ignore the field.
+   */
+  turn_timeline?: {
+    event: "move" | "roll" | "advance";
+    at: number; // epoch ms (server clock)
+    roller_id: string | null;
+    roll_result: number | null;
+    handoff_ms: number;
+  };
 }
 
 // ----- Board constants (mirrors com.example.game.LudoEngine) -----
@@ -231,6 +243,14 @@ Deno.serve(async (req) => {
       seq: (board?.seq ?? 0) + 1,
       roll_deadline_at: rollDeadlineIso,
       move_deadline_at: moveDeadlineIso,
+      // v3.2 (PRD §21): authoritative turn timeline for this roll.
+      turn_timeline: {
+        event: "roll",
+        at: now,
+        roller_id: current.id,
+        roll_result: dice,
+        handoff_ms: 500,
+      },
     };
 
     // Conditional atomic transition (PRD §31): only this caller's turn +

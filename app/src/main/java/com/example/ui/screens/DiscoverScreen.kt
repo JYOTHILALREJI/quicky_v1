@@ -60,18 +60,22 @@ fun DiscoverScreen(
             // (dismiss) is the only exit — swipe-right stays disabled so
             // nobody "likes" an ad by accident.
             showAdCard -> {
+                // v3.2 (PRD §5): the Sponsored card is a DEFINED visual
+                // container and the Skip control sits BELOW the card —
+                // visually separated, anchored above the nav bar, with a
+                // consistent touch target that never overlaps ad content.
                 DiscoveryNativeAdCard(
                     onCountdownDone = { adCountdownDone = true },
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(bottom = glassNavBarOverlayHeight(extra = 4.dp))
+                        .padding(bottom = glassNavBarOverlayHeight(extra = 52.dp))
                 )
                 SkipAdPill(
                     enabled = adCountdownDone,
                     onDismiss = onDismissAdCard,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = glassNavBarOverlayHeight(extra = 20.dp))
+                        .padding(bottom = glassNavBarOverlayHeight(extra = 6.dp))
                 )
             }
 
@@ -140,7 +144,7 @@ fun DiscoverScreen(
     }
 }
 
-/** "Skip ad" pill shown under the Sponsored card. */
+/** "Skip ad" pill — anchored below the Sponsored card, above the nav bar. */
 @Composable
 private fun SkipAdPill(
     enabled: Boolean,
@@ -158,7 +162,7 @@ private fun SkipAdPill(
             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
             modifier = Modifier
                 .clickable(enabled = enabled, onClick = onDismiss)
-                .padding(horizontal = 14.dp, vertical = 8.dp)
+                .padding(horizontal = 18.dp, vertical = 9.dp)
         )
     }
 }

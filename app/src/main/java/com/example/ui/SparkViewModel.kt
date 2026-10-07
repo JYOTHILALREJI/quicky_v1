@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.R
 import com.example.BuildConfig
 import com.example.data.AppContent
+import com.example.data.Analytics
 import com.example.data.FaceVerifier
 import com.example.data.LudoMatchRepository
 import com.example.data.LudoRealtime
@@ -2442,6 +2443,66 @@ class SparkViewModel : ViewModel() {
     /** Host-side id of the local user inside online matches. */
     private val ludoLocalUserId: String get() = _uiState.value.userProfile.id
 
+    // -------------------------------------------------------------
+    // v3.2 TURN STATE MACHINE (PRD §16–§26): the deterministic board
+    // coin-travel duration for the most recent move, so the BOT DRIVER
+    // mirrors exactly what the UI gate enforces for humans — never act
+    // while the coin is still moving, then wait the 500ms handoff
+    // (§19/§20/§23). Set by [noteLudoMoveApplied] on every locally applied
+    // move AND on realtime-adopted moves (the host drives bots even for
+    // remote players' moves).
+    // -------------------------------------------------------------
+    /** Epoch-ms when the last applied move's board animation finishes. */
+    private var ludoMoveAnimationEndsAt: Long = 0L
+    /** True once per applied move — consumed by the bot driver's settle. */
+    private var ludoMoveAwaitingSettle: Boolean = false
+
+    /** Records the deterministic coin-animation window for a just-applied move. */
+    private fun noteLudoMoveApplied(previous: LudoMatch, next: LudoMatch) {
+        // Mover: the token whose stepCount increased.
+        var moverFrom = -1; var moverTo = -1; var finished = false
+        var captured = 0
+        next.players.forEachIndexed { seat, player ->
+            val prevTokens = previous.players.getOrNull(seat)?.tokens
+            player.tokens.forEach { token ->
+                val before = prevTokens?.getOrNull(token.id)?.stepCount ?: 0
+                if (token.stepCount > before) {
+                    moverFrom = before; moverTo = token.stepCount
+                    finished = token.isFinished
+                } else if (token.stepCount == 0 && before > 0) captured++
+            }
+        }
+        if (moverTo <= moverFrom) return // no movement (pure roll / timeout skip)
+        val duration = LudoRules.moveAnimationMs(moverFrom, moverTo, captured, finished)
+        ludoMoveAnimationEndsAt = System.currentTimeMillis() + duration
+        ludoMoveAwaitingSettle = true
+        Analytics.log(
+            Analytics.LUDO_COIN_MOVE_STARTED,
+            "game_id" to next.id,
+            "player_id" to next.players.getOrNull(previous.turnIndex)?.id ?: "?",
+            "movement_duration" to duration
+        )
+    }
+
+    /** Suspending settle for drivers: waits the remaining animation + 500ms. */
+    private suspend fun awaitLudoMoveSettled() {
+        if (!ludoMoveAwaitingSettle) return
+        ludoMoveAwaitingSettle = false
+        val remaining = ludoMoveAnimationEndsAt - System.currentTimeMillis()
+        if (remaining > 0) delay(remaining)
+        // PRD §20 — the 500ms turn handoff AFTER the coin settles.
+        delay(LudoRules.TURN_HANDOFF_MS)
+        val match = _uiState.value.ludoMatch
+        if (match != null) {
+            Analytics.log(
+                Analytics.LUDO_TURN_HANDOFF,
+                "game_id" to match.id,
+                "turn_handoff_delay" to LudoRules.TURN_HANDOFF_MS,
+                "player_id" to match.players.getOrNull(match.turnIndex)?.id ?: "?"
+            )
+        }
+    }
+
     fun openLudoGame() {
         // v2.1 §3.7: gates route through PremiumGate (unlocked for QA on
         // debug builds; LUDO_FREE stays as the release-side freebie flag).
@@ -2460,6 +2521,8 @@ class SparkViewModel : ViewModel() {
         ludoTimerJob?.cancel(); ludoTimerJob = null
         ludoBotDriverJob?.cancel(); ludoBotDriverJob = null
         ludoLastAppliedSeq = 0L
+        ludoMoveAnimationEndsAt = 0L
+        ludoMoveAwaitingSettle = false
         _uiState.update {
             it.copy(
                 isLudoActive = false,
@@ -2665,6 +2728,9 @@ class SparkViewModel : ViewModel() {
 
     /** Seq-guarded application of an authoritative online snapshot. */
     private fun applyRemoteLudoMatch(remote: LudoMatch) {
+        // Diff base = whatever this device last showed (local apply OR an
+        // earlier remote adoption) — see the v3.2 note below.
+        val previous = _uiState.value.ludoMatch
         _uiState.update { state ->
             val current = state.ludoMatch
             if (current != null && remote.seq < current.seq) {
@@ -2680,6 +2746,17 @@ class SparkViewModel : ViewModel() {
             )
         }
         val applied = _uiState.value.ludoMatch ?: return
+        // v3.2 (PRD §21/§22): a remote MOVE arrives with the turn already
+        // advanced — record its deterministic coin-animation window so the
+        // host's bot driver (and this client's own UI gate) hold the dice
+        // until the coin visibly settles + the 500ms handoff elapses. Only a
+        // seq+1 transition is treated as a move: an echo of this device's
+        // OWN state (same seq) never re-arms the gate, and a recovery fetch
+        // (gap > 1) snaps instead of animating. All clients derive the SAME
+        // timeline from the same authoritative diff they receive.
+        if (previous != null && applied.seq == previous.seq + 1) {
+            noteLudoMoveApplied(previous, applied)
+        }
         ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, applied.seq)
         maybeDriveBotTurn()
     }
@@ -2825,6 +2902,7 @@ class SparkViewModel : ViewModel() {
             return
         }
         val result = LudoEngine.applyMove(base, tokenId)
+        noteLudoMoveApplied(base, result.match)
         _uiState.update { it.copy(ludoMatch = result.match) }
         maybeDriveBotTurn()
     }
@@ -2853,6 +2931,11 @@ class SparkViewModel : ViewModel() {
         if (!mineOrBots) return
 
         viewModelScope.launch {
+            Analytics.log(
+                Analytics.LUDO_DICE_ROLL_STARTED,
+                "game_id" to match.id,
+                "player_id" to match.currentPlayer.id
+            )
             _uiState.update { it.copy(isLudoRolling = true) }
             delay((800..1200).random().toLong()) // 3D-ish tumble animation window
 
@@ -2882,6 +2965,12 @@ class SparkViewModel : ViewModel() {
             val rolled = LudoEngine.applyRoll(base, dice)
             _uiState.update { it.copy(isLudoRolling = false, ludoMatch = rolled) }
             ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, rolled.seq)
+            Analytics.log(
+                Analytics.LUDO_DICE_ROLL_COMPLETED,
+                "game_id" to rolled.id,
+                "player_id" to base.currentPlayer.id,
+                "roll_result" to dice
+            )
             if (rolled.mode == LudoMode.ONLINE) pushOnlineLudoState(rolled)
 
             // If the turn passed to a bot (or the roll had no legal move and
@@ -2906,8 +2995,15 @@ class SparkViewModel : ViewModel() {
         val result = LudoEngine.applyMove(match, tokenId)
         if (result.match == match) return // illegal move — unchanged
 
+        noteLudoMoveApplied(match, result.match)
+        Analytics.log(
+            Analytics.LUDO_COIN_MOVE_COMPLETED,
+            "game_id" to result.match.id,
+            "player_id" to match.currentPlayer.id
+        )
         _uiState.update { it.copy(ludoMatch = result.match) }
         ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, result.match.seq)
+        maybeDriveBotTurn()
 
         if (match.mode == LudoMode.ONLINE) {
             viewModelScope.launch {
@@ -2977,12 +3073,12 @@ class SparkViewModel : ViewModel() {
      * roll + pick a move after a short "thinking" delay, then repeat while
      * the extra-turn rules keep it the bot's turn.
      *
-     * v3.1 PACING (user request — "slow the gameplay down a bit"):
-     *  · Every FRESH turn handoff waits [LudoRules.TURN_HANDOFF_MS] (~1s)
-     *    before the new owner acts — the dice visibly rests on the number
-     *    the previous player rolled instead of rolling non-stop.
-     *  · The tumble window and the post-roll "thinking" beat are longer and
-     *    human-like (see [LudoRules] BOT_* constants).
+     * v3.2 TURN STATE MACHINE (PRD §16–§26): bots go through the SAME gates
+     * as humans — after every applied move the driver waits for the
+     * deterministic coin animation to COMPLETE and then the exact 500ms
+     * handoff ([awaitLudoMoveSettled]) before the next roll, so a bot never
+     * cuts a moving coin short and never "activates" early (§22). The
+     * tumble window and the post-roll "thinking" beat stay human-like.
      */
     private fun maybeDriveBotTurn() {
         val match = _uiState.value.ludoMatch ?: return
@@ -2997,24 +3093,36 @@ class SparkViewModel : ViewModel() {
             var drivenSeat = -1
             while (current.currentPlayer.isBot && current.phase != LudoPhase.FINISHED && guard < 40) {
                 guard++
+                // §19/§20: if a move was just applied (by anyone — the
+                // previous player, a remote client or this bot itself), let
+                // the coin animation finish and hold the 500ms handoff before
+                // the dice moves again.
+                awaitLudoMoveSettled()
+                current = _uiState.value.ludoMatch ?: return@launch
+                if (!current.currentPlayer.isBot || current.phase == LudoPhase.FINISHED) return@launch
                 if (current.turnIndex != drivenSeat) {
                     // Fresh turn handoff — a different player just received the
-                    // dice. Hold the ~1s pause ("…and then after a second go to
-                    // the next user"); the die keeps showing the previous roll.
-                    delay(LudoRules.TURN_HANDOFF_MS)
+                    // dice; the settle above already played the handoff pause.
                     drivenSeat = current.turnIndex
-                    current = _uiState.value.ludoMatch ?: return@launch
-                    if (!current.currentPlayer.isBot ||
-                        current.phase == LudoPhase.FINISHED
-                    ) return@launch
                     continue
                 }
                 if (current.phase == LudoPhase.AWAITING_ROLL) {
+                    Analytics.log(
+                        Analytics.LUDO_DICE_ROLL_STARTED,
+                        "game_id" to current.id,
+                        "player_id" to current.currentPlayer.id
+                    )
                     _uiState.update { it.copy(isLudoRolling = true) }
                     delay((LudoRules.BOT_ROLL_MIN_MS..LudoRules.BOT_ROLL_MAX_MS).random().toLong())
                     val rolled = LudoEngine.applyRoll(_uiState.value.ludoMatch ?: return@launch, (1..6).random())
                     _uiState.update { it.copy(isLudoRolling = false, ludoMatch = rolled) }
                     ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, rolled.seq)
+                    Analytics.log(
+                        Analytics.LUDO_DICE_ROLL_COMPLETED,
+                        "game_id" to rolled.id,
+                        "player_id" to rolled.players.getOrNull(drivenSeat)?.id ?: "?",
+                        "roll_result" to (rolled.diceValue ?: 0)
+                    )
                     if (rolled.mode == LudoMode.ONLINE) pushOnlineLudoState(rolled)
                     current = rolled
                 }
@@ -3026,7 +3134,14 @@ class SparkViewModel : ViewModel() {
                         current = _uiState.value.ludoMatch ?: return@launch
                         continue
                     }
-                    val result = LudoEngine.applyMove(_uiState.value.ludoMatch ?: return@launch, tokenId)
+                    val base = _uiState.value.ludoMatch ?: return@launch
+                    val result = LudoEngine.applyMove(base, tokenId)
+                    noteLudoMoveApplied(base, result.match)
+                    Analytics.log(
+                        Analytics.LUDO_COIN_MOVE_COMPLETED,
+                        "game_id" to result.match.id,
+                        "player_id" to base.currentPlayer.id
+                    )
                     _uiState.update { it.copy(ludoMatch = result.match) }
                     ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, result.match.seq)
                     if (result.match.mode == LudoMode.ONLINE) pushOnlineLudoState(result.match)

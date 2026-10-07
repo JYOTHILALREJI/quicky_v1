@@ -446,14 +446,53 @@ object LudoRules {
     const val CELL_HOP_MS: Int = 160
 
     // ------------------------------------------------------------
-    // v3.1 GAMEPLAY PACING (user request): the dice KEEPS the number the
-    // player rolled until all of his moves are finished; the next player
-    // only takes over after a ~1s handoff pause, and the bot "actors" wait
-    // human-like beats between roll → pick → move.
+    // v3.2 TURN STATE MACHINE (PRD v3.2 §16–§24):
+    //   IDLE → ROLLING → ROLLED → MOVING → SETTLING → HANDOFF_DELAY(500ms)
+    //        → NEXT_TURN
+    // The die keeps the rolled number until the turn is fully completed
+    // (PRD §18 "result ownership"); the next player's die only ACTIVATES
+    // after the coin movement animation finished + [TURN_HANDOFF_MS].
     // ------------------------------------------------------------
-    /** "…and then after a second go to the next user" — turn handoff pause. */
-    const val TURN_HANDOFF_MS: Long = 1_000L
-    /** Bot tumble-animation window after the handoff pause (random within). */
+    /** Exactly 500ms after the coin settles → next player active (PRD §20). */
+    const val TURN_HANDOFF_MS: Long = 500L
+    /** First hop out of the yard is slightly slower (board animation). */
+    const val RELEASE_HOP_MS: Int = 260
+    /** "+50" finish popup dwell (board animation). */
+    const val FINISH_POPUP_MS: Int = 900
+    /** Capture impact flash dwell (board animation). */
+    const val CAPTURE_FLASH_MS: Int = 650
+    /** Per-captured-coin return flight to the yard (board animation). */
+    const val CAPTURE_RETURN_MS: Int = 420
+
+    /**
+     * Deterministic duration (ms) of the BOARD's coin-movement animation for
+     * one move — the exact timings [LudoArenaBoard] replays (PRD §19: the
+     * game must wait for the animation to COMPLETELY finish before handing
+     * the turn over). Used by the ViewModel so bots never roll while a coin
+     * is still travelling, mirroring the UI gate humans go through.
+     */
+    fun moveAnimationMs(
+        fromStep: Int,
+        toStep: Int,
+        capturedCount: Int,
+        finished: Boolean
+    ): Long {
+        val hops = (toStep - fromStep).coerceAtLeast(0)
+        if (hops == 0) return 0L
+        val travel = (if (fromStep == 0) RELEASE_HOP_MS else CELL_HOP_MS).toLong() +
+                (hops - 1).coerceAtLeast(0) * CELL_HOP_MS.toLong()
+        val finish = if (finished) FINISH_POPUP_MS.toLong() else 0L
+        val capture = if (capturedCount > 0)
+            CAPTURE_FLASH_MS.toLong() + CAPTURE_RETURN_MS.toLong() * capturedCount else 0L
+        return travel + finish + capture
+    }
+
+    // ------------------------------------------------------------
+    // v3.1 GAMEPLAY PACING: bot "actors" wait human-like beats between
+    // roll → pick → move (kept from v3.1; the turn handoff itself is now
+    // the animation-gated 500ms settle above).
+    // ------------------------------------------------------------
+    /** Bot tumble-animation window after the handoff settle (random within). */
     const val BOT_ROLL_MIN_MS: Int = 900
     const val BOT_ROLL_MAX_MS: Int = 1_400
     /** Bot "thinking" window between the roll landing and the coin tap. */

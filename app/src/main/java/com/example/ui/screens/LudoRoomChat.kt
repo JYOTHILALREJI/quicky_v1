@@ -138,6 +138,15 @@ fun LudoRoomChat(
         modifier = modifier
             .background(MaterialTheme.colorScheme.surface)
             .dismissKeyboardOnTap()
+            // v3.2 (PRD §6/§7 — chat keyboard architecture): the IME insets
+            // are consumed HERE, inside the room-chat section, so the board,
+            // seat chips and top bar stay completely STABLE when the keyboard
+            // opens — the composer rides up flush against the IME while the
+            // message list simply gets shorter. navigationBarsPadding first,
+            // imePadding second: closed keyboard → above the gesture bar;
+            // open keyboard → flush with the IME (never double-padded).
+            .navigationBarsPadding()
+            .imePadding()
     ) {
 
         // --- Header: title + compact scrollable quick reactions (§44/§50) ---
@@ -278,6 +287,9 @@ fun LudoRoomChat(
         // pushed the text/placeholder toward the top of the pill), the sticker
         // picker lives INSIDE the field as the trailing icon, and the mic +
         // send circles sit outside at 44dp — all vertically centered.
+        // (v3.2: the root Column above handles navbar + IME insets — NO
+        // navigationBarsPadding here, which previously double-padded and left
+        // a blank strip between the composer and the keyboard.)
         Surface(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 4.dp,
@@ -286,7 +298,6 @@ fun LudoRoomChat(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .navigationBarsPadding()
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)

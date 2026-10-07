@@ -95,6 +95,20 @@ interface Board {
   finish_order: string[];
   roll_deadline_at: string | null;
   move_deadline_at: string | null;
+  /**
+   * v3.2 (PRD §21) — authoritative turn timeline: stamped on every event
+   * that changes the turn state, so any client can reconstruct when the
+   * current turn began without trusting its own clock (event at + handoff_ms
+   * is the earliest the NEXT player may act server-side). Purely additive —
+   * older clients ignore the field.
+   */
+  turn_timeline?: {
+    event: "move" | "roll" | "advance";
+    at: number; // epoch ms (server clock)
+    roller_id: string | null;
+    roll_result: number | null;
+    handoff_ms: number;
+  };
 }
 
 function absoluteIndex(seat: number, stepCount: number): number {
@@ -345,7 +359,7 @@ Deno.serve(async (req) => {
           turn_index: nextSeat,
           // v3.1: board_state KEEPS the rolled number across the turn
           // advance (the Kotlin engine mirrors this) — the client die rests
-          // on the value through the ~1s handoff pause. The table COLUMN
+          // on the value through the handoff pause. The table COLUMN
           // below stays null: it is the AWAITING_MOVE CAS proxy.
           dice_value: dice,
           phase: "AWAITING_ROLL",
@@ -354,6 +368,14 @@ Deno.serve(async (req) => {
           seq: (board.seq ?? 0) + 1,
           roll_deadline_at: new Date(now + ROLL_WINDOW_MS).toISOString(),
           move_deadline_at: null,
+          // v3.2 §23: result shown → 500ms → next player (no-move path).
+          turn_timeline: {
+            event: "advance",
+            at: now,
+            roller_id: current.id,
+            roll_result: dice,
+            handoff_ms: 500,
+          },
         };
         await admin
           .from("ludo_game_state")
@@ -469,7 +491,7 @@ Deno.serve(async (req) => {
       turn_index: nextTurnIndex,
       // v3.1 (user request — mirror of LudoEngine.applyMove): the played
       // number STAYS on the die after the move — through extra rolls and
-      // the ~1s turn-handoff pause — until the next roll replaces it. The
+      // the turn-handoff pause — until the next roll replaces it. The
       // table COLUMN write below is still null (AWAITING_MOVE CAS proxy),
       // and every legality check is phase-gated, so a retained value can
       // never be consumed as a live roll.
@@ -483,6 +505,16 @@ Deno.serve(async (req) => {
       finish_order: finishOrder,
       roll_deadline_at: rollDeadlineIso,
       move_deadline_at: moveDeadlineIso,
+      // v3.2 (PRD §21): authoritative turn timeline for this move — the
+      // next player's earliest legal action is at + handoff_ms, matching
+      // the client-side animation-gated handoff (§19/§20).
+      turn_timeline: {
+        event: "move",
+        at: now,
+        roller_id: players[seat].id,
+        roll_result: dice,
+        handoff_ms: 500,
+      },
     };
 
     // Conditional atomic write (PRD §31) — a racing duplicate request that

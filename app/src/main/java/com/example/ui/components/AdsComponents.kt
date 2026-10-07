@@ -168,10 +168,15 @@ private fun NativeAdContent(ad: com.google.android.gms.ads.nativead.NativeAd, mo
 private fun bindNativeAd(root: android.view.View, ad: com.google.android.gms.ads.nativead.NativeAd) {
     runCatching {
         val nativeAdView = root as? com.google.android.gms.ads.nativead.NativeAdView ?: return
+        val media = nativeAdView.findViewById<com.google.android.gms.ads.nativead.MediaView>(R.id.ad_media)
         val headline = nativeAdView.findViewById<TextView>(R.id.ad_headline)
         val body = nativeAdView.findViewById<TextView>(R.id.ad_body)
         val cta = nativeAdView.findViewById<TextView>(R.id.ad_cta)
 
+        // v3.2 (PRD §5): the ad MEDIA fills the card — this is what makes the
+        // Sponsored card read as a real native ad instead of a white box
+        // with floating text. Registered for scaleType + impressions.
+        nativeAdView.mediaView = media
         nativeAdView.headlineView = headline
         nativeAdView.bodyView = body
         nativeAdView.callToActionView = cta

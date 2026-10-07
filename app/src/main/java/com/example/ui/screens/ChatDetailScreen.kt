@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.AppContent
+import com.example.data.Analytics
 import com.example.model.*
 import com.example.ui.components.ChatBubble
 import com.example.ui.components.ChatHeaderBannerAd
@@ -297,8 +298,16 @@ fun ChatDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                // v2.1 §3.3 — the composer always rides above the keyboard
-                // (8dp gap comes from the composer's own bottom padding).
+                // v3.2 (PRD §7 — chat architecture): FIXED header (TopAppBar,
+                // outside this Column) + independently scrollable message list
+                // + composer pinned to the keyboard. navigationBarsPadding FIRST,
+                // imePadding SECOND: keyboard closed → composer clears the
+                // gesture bar; keyboard open → composer rides flush against
+                // the IME (the two inset modifiers share consumption, so this
+                // NEVER double-pads — the old composer-level
+                // navigationBarsPadding below imePadding was what left the
+                // large blank strip between the composer and the keyboard).
+                .navigationBarsPadding()
                 .imePadding()
         ) {
             // PRD v2.3 §26/§43 — advertising banner pinned DIRECTLY under the
@@ -467,8 +476,7 @@ fun ChatDetailScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                            .navigationBarsPadding(),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
@@ -531,11 +539,15 @@ fun ChatDetailScreen(
                         }
                     }
                 } else {
+                    // v3.2: NO navigationBarsPadding here — the root Column's
+                    // navigationBarsPadding().imePadding() already seats the
+                    // composer flush above the gesture bar / keyboard. A local
+                    // navbar pad here double-padded and left a large blank
+                    // strip between the composer and the IME (PRD §6 Problem A).
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                            .navigationBarsPadding(),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -626,6 +638,7 @@ fun ChatDetailScreen(
 
     // Chat Games Section Modal Sheet
     if (showGamePicker) {
+        Analytics.log(Analytics.TRUTH_OR_DARE_OPENED, "match_id" to match.id)
         var gamesSectionTab by remember { mutableIntStateOf(0) } // 0: Truth or Dare, 1: Premium Games
         var todMode by remember { mutableStateOf("SYSTEM") } // "SYSTEM" or "CUSTOM"
         var selectedCategory by remember { mutableStateOf("All") }
@@ -670,33 +683,37 @@ fun ChatDetailScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Section Tabs (Truth or Dare vs Premium Games)
-                TabRow(
-                    selectedTabIndex = gamesSectionTab,
-                    containerColor = Color.Transparent,
-                    divider = {}
+                // ----------------------------------------------------------
+                // v3.2 (PRD §10) — section tabs as two EQUAL selector cards:
+                // the FREE status is a compact pill attached to the Truth or
+                // Dare card (never a floating element squeezed between
+                // tabs), Premium Games carries the gold lock. Same width,
+                // same height, same radius, clearly different selected state.
+                // ----------------------------------------------------------
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Tab(
+                    GameSectionCard(
+                        title = "Truth or Dare",
+                        badge = "FREE",
                         selected = gamesSectionTab == 0,
                         onClick = { gamesSectionTab = 0 },
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("Truth or Dare", fontWeight = FontWeight.Bold)
-                                Surface(shape = CircleShape, color = ActionLike.copy(alpha = 0.2f)) {
-                                    Text("FREE", fontSize = 10.sp, color = ActionLike, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
-                                }
-                            }
-                        }
+                        modifier = Modifier.weight(1f)
                     )
-                    Tab(
+                    GameSectionCard(
+                        title = "Premium Games",
+                        lockIcon = true,
                         selected = gamesSectionTab == 1,
-                        onClick = { gamesSectionTab = 1 },
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("Premium Games", fontWeight = FontWeight.Bold)
-                                Icon(Icons.Filled.Lock, contentDescription = null, tint = SparkGold, modifier = Modifier.size(14.dp))
+                        onClick = {
+                            if (gamesSectionTab != 1) {
+                                Analytics.log(Analytics.PREMIUM_GAMES_OPENED, "match_id" to match.id)
                             }
-                        }
+                            gamesSectionTab = 1
+                        },
+                        modifier = Modifier.weight(1f)
                     )
                 }
 
@@ -705,29 +722,43 @@ fun ChatDetailScreen(
                 when (gamesSectionTab) {
                     0 -> {
                         // TRUTH OR DARE SECTION
-                        // Toggle between System Prompt & Custom Question
+                        // ------------------------------------------------------
+                        // v3.2 (PRD §11/§12) — content-source selectors as two
+                        // EQUAL cards (icon + title + caption), replacing the
+                        // tall, unevenly-wrapping filter chips. Selected state
+                        // is unmistakable: tinted container + colored border.
+                        // ------------------------------------------------------
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            FilterChip(
+                            PromptSourceCard(
+                                icon = { tint ->
+                                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+                                },
+                                title = "System Prompts",
+                                caption = "Automatically",
                                 selected = todMode == "SYSTEM",
+                                accent = QuickyPurple,
                                 onClick = { todMode = "SYSTEM" },
-                                label = { Text("✨ System Prompts") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = SparkPurple,
-                                    selectedLabelColor = Color.White
-                                ),
                                 modifier = Modifier.weight(1f)
                             )
-                            FilterChip(
+                            PromptSourceCard(
+                                icon = { tint ->
+                                    Icon(Icons.Filled.Edit, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+                                },
+                                title = "Custom Question",
+                                caption = "Write your own",
                                 selected = todMode == "CUSTOM",
-                                onClick = { todMode = "CUSTOM" },
-                                label = { Text("✍️ Custom Question") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = SparkRose,
-                                    selectedLabelColor = Color.White
-                                ),
+                                accent = SparkRose,
+                                onClick = {
+                                    if (todMode != "CUSTOM") {
+                                        Analytics.log(Analytics.CUSTOM_QUESTION_SELECTED, "match_id" to match.id)
+                                    }
+                                    todMode = "CUSTOM"
+                                },
                                 modifier = Modifier.weight(1f)
                             )
                         }
@@ -735,21 +766,54 @@ fun ChatDetailScreen(
                         Spacer(modifier = Modifier.height(12.dp))
 
                         if (todMode == "SYSTEM") {
-                            // Category filter chips
+                            // Category filter pills — horizontally scrollable
+                            // (v3.2 PRD §13): consistent height + vertical
+                            // alignment, a clearly distinct selected state
+                            // (solid purple + check) and no clipping; long
+                            // category names stay readable and never wrap.
                             LazyRow(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 val cats = listOf("All", "Flirty", "Funny", "Deep", "First Date")
                                 items(cats) { cat ->
-                                    SuggestionChip(
-                                        onClick = { selectedCategory = cat },
-                                        label = { Text(cat, fontSize = 12.sp) },
-                                        colors = SuggestionChipDefaults.suggestionChipColors(
-                                            containerColor = if (selectedCategory == cat) QuickyPurple.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
-                                            labelColor = if (selectedCategory == cat) QuickyPurple else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    )
+                                    val catSelected = selectedCategory == cat
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = if (catSelected) QuickyPurple
+                                        else MaterialTheme.colorScheme.surfaceVariant,
+                                        border = androidx.compose.foundation.BorderStroke(
+                                            1.dp,
+                                            if (catSelected) QuickyPurple
+                                            else MaterialTheme.colorScheme.outlineVariant
+                                        ),
+                                        modifier = Modifier
+                                            .heightIn(min = 34.dp)
+                                            .clickable { selectedCategory = cat }
+                                            .testTag("tod_category_${cat.replace(" ", "_").lowercase()}")
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                        ) {
+                                            if (catSelected) {
+                                                Icon(
+                                                    Icons.Filled.Check,
+                                                    contentDescription = null,
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                            }
+                                            Text(
+                                                text = cat,
+                                                fontSize = 12.sp,
+                                                fontWeight = if (catSelected) FontWeight.Bold else FontWeight.Medium,
+                                                color = if (catSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
                                 }
                             }
 
@@ -763,6 +827,11 @@ fun ChatDetailScreen(
                                 Button(
                                     onClick = {
                                         val truthPrompt = prompts.filter { it.type == "TRUTH" }.randomOrNull() ?: prompts.first()
+                                        Analytics.log(
+                                            Analytics.TRUTH_OR_DARE_PROMPT_SELECTED,
+                                            "match_id" to match.id,
+                                            "source" to "random_truth"
+                                        )
                                         onSendPrompt(truthPrompt)
                                         showGamePicker = false
                                     },
@@ -776,6 +845,11 @@ fun ChatDetailScreen(
                                 Button(
                                     onClick = {
                                         val darePrompt = prompts.filter { it.type == "DARE" }.randomOrNull() ?: prompts.last()
+                                        Analytics.log(
+                                            Analytics.TRUTH_OR_DARE_PROMPT_SELECTED,
+                                            "match_id" to match.id,
+                                            "source" to "random_dare"
+                                        )
                                         onSendPrompt(darePrompt)
                                         showGamePicker = false
                                     },
@@ -800,6 +874,12 @@ fun ChatDetailScreen(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clickable {
+                                                Analytics.log(
+                                                    Analytics.TRUTH_OR_DARE_PROMPT_SELECTED,
+                                                    "match_id" to match.id,
+                                                    "source" to "list",
+                                                    "category" to prompt.category
+                                                )
                                                 onSendPrompt(prompt)
                                                 showGamePicker = false
                                             }
@@ -1056,6 +1136,160 @@ fun ChatDetailScreen(
                 TextButton(onClick = { showReportDialog = false }) { Text("Cancel") }
             }
         )
+    }
+}
+
+// =====================================================================
+// GAMES DRAWER SELECTORS (v3.2 PRD §10–§12)
+// =====================================================================
+
+/**
+ * Section tab as an EQUAL selector card (PRD §10): "Truth or Dare" with a
+ * compact FREE status pill and "Premium Games" with the gold lock. Both
+ * cards share identical width (weight), height (IntrinsicSize row), corner
+ * radius, padding and text hierarchy — the selected state is unmistakable
+ * (tinted container + colored border + check), and the FREE badge never
+ * floats between tabs or collides with a divider.
+ */
+@Composable
+private fun GameSectionCard(
+    title: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    badge: String? = null,
+    lockIcon: Boolean = false
+) {
+    val accent = if (badge != null) CassySuccess else SparkGold
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) accent.copy(alpha = 0.14f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = androidx.compose.foundation.BorderStroke(
+            if (selected) 1.5.dp else 1.dp,
+            if (selected) accent else MaterialTheme.colorScheme.outlineVariant
+        ),
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .testTag("game_section_${title.lowercase().replace(" ", "_")}")
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (selected) {
+                    Icon(
+                        Icons.Filled.CheckCircle,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            if (badge != null) {
+                // Compact status pill attached to the card (PRD §10 Badge).
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = accent.copy(alpha = 0.18f),
+                    modifier = Modifier.align(Alignment.Start)
+                ) {
+                    Text(
+                        text = badge,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                            letterSpacing = 0.8.sp
+                        ),
+                        color = accent,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                    )
+                }
+            } else if (lockIcon) {
+                Icon(
+                    Icons.Filled.Lock,
+                    contentDescription = "Premium",
+                    tint = SparkGold,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Content-source selector card (PRD §11/§12): "System Prompts" / "Custom
+ * Question" as equal, compact cards — icon + title + one-line caption.
+ * Same width, same height, same radius, same padding, same icon treatment;
+ * the selected card is clearly distinguishable (tinted container + accent
+ * border + tinted icon).
+ */
+@Composable
+private fun PromptSourceCard(
+    icon: @Composable (tint: Color) -> Unit,
+    title: String,
+    caption: String,
+    selected: Boolean,
+    accent: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val tint = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) accent.copy(alpha = 0.12f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = androidx.compose.foundation.BorderStroke(
+            if (selected) 1.5.dp else 1.dp,
+            if (selected) accent else MaterialTheme.colorScheme.outlineVariant
+        ),
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .testTag("prompt_source_${title.lowercase().replace(" ", "_")}")
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (selected) accent.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                icon(tint)
+            }
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = caption,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }
 

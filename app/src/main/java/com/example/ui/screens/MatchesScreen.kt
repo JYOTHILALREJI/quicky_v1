@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.data.Analytics
 import com.example.model.MatchItem
 import com.example.model.UserProfile
 import com.example.model.toDisplayLocation
@@ -341,31 +342,62 @@ fun MatchesScreen(
                         Spacer(modifier = Modifier.height(12.dp))
 
                         // Action Buttons: Chat Now & Play Truth or Dare (Free)
+                        // v3.2 (PRD §3): EQUIVALENT ACTIONS → EQUIVALENT
+                        // VISUAL WEIGHT. Both buttons share weight(1f) (equal
+                        // width), a shared 48dp min height, the same corner
+                        // radius, the same internal padding and single-line
+                        // labels — neither can grow through text wrapping, so
+                        // every Match card renders the identical button pair on
+                        // every screen size.
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Button(
-                                onClick = { onStartChat(match) },
+                                onClick = {
+                                    Analytics.log(Analytics.MATCH_CHAT_CLICKED, "match_id" to match.id)
+                                    onStartChat(match)
+                                },
                                 shape = RoundedCornerShape(20.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = QuickyPink),
-                                modifier = Modifier.weight(1f)
+                                contentPadding = PaddingValues(horizontal = 8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
                             ) {
                                 Icon(Icons.Filled.ChatBubble, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Chat Now", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Chat Now",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
 
                             OutlinedButton(
-                                onClick = { onPlayTruthOrDare(match) },
+                                onClick = {
+                                    Analytics.log(Analytics.MATCH_TRUTH_OR_DARE_CLICKED, "match_id" to match.id)
+                                    onPlayTruthOrDare(match)
+                                },
                                 shape = RoundedCornerShape(20.dp),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickyPurple),
                                 border = androidx.compose.foundation.BorderStroke(1.dp, QuickyPurple),
-                                modifier = Modifier.weight(1f)
+                                contentPadding = PaddingValues(horizontal = 8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
                             ) {
                                 Icon(Icons.Filled.SportsEsports, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Truth or Dare", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Truth or Dare",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
                         }
                     }

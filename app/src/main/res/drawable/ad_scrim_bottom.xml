@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bottom scrim behind the native-ad text block (v3.2 PRD §5): a soft
+     deep-ink gradient that guarantees white headline/body/CTA text stays
+     readable over any ad media — including bright creatives. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient
+        android:angle="270"
+        android:startColor="#00272740"
+        android:centerColor="#8C1E1E2E"
+        android:endColor="#F21A1A28" />
+</shape>

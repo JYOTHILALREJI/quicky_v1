@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -381,18 +380,61 @@ private fun LudoArenaMatchScreen(
     }
 
     // ------------------------------------------------------------------
-    // v3.1 DICE FACE HOLD (user request): the die STAYS on the number the
-    // player rolled until all of his moves are finished (extra rolls from
-    // a 6 / capture / finish included); once the turn passes to the next
-    // player, the number stays up for [LudoRules.TURN_HANDOFF_MS] (~1s)
-    // and then the face resets to blank — "…and then after a second go to
-    // the next user". The engine now RETAINS diceValue across turn
-    // advances, so this layer only decides WHEN to blank the face.
+    // v3.2 TURN STATE MACHINE GATE (PRD §16–§24):
+    //   IDLE → ROLLING → ROLLED → MOVING → SETTLING → HANDOFF_DELAY(500ms)
+    //        → NEXT_TURN
+    // The board reports [moveAnimationActive] while a coin is travelling
+    // (MOVING/SETTLING). While it runs — or for exactly
+    // [LudoRules.TURN_HANDOFF_MS] after it completes (HANDOFF_DELAY) — the
+    // die stays showing the ROLLER's number and is NOT tappable by the next
+    // player, on EVERY client: the gate is derived from the authoritative
+    // seq-diff everyone receives, so all clients replay the same timeline
+    // (PRD §21/§22) and nobody's dice activates while a coin still moves.
+    // ------------------------------------------------------------------
+    var moveAnimationActive by remember { mutableStateOf(false) }
+    var rollGateOpen by remember { mutableStateOf(true) }
+    var gateMatchId by remember { mutableStateOf<String?>(null) }
+    var gateLastSeq by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(match.id, match.seq, match.turnIndex, moveAnimationActive) {
+        if (gateMatchId != match.id) {
+            // Fresh match (or rematch) — first turn is immediately playable.
+            gateMatchId = match.id
+            gateLastSeq = match.seq
+            rollGateOpen = true
+            return@LaunchedEffect
+        }
+        if (gateLastSeq == match.seq && !moveAnimationActive) {
+            rollGateOpen = true // nothing new to settle
+            return@LaunchedEffect
+        }
+        if (gateLastSeq != match.seq) {
+            // A new authoritative event landed — close the gate (ROLLING,
+            // MOVING, SETTLING or HANDOFF_DELAY all keep the die inactive).
+            gateLastSeq = match.seq
+            rollGateOpen = false
+        }
+        if (moveAnimationActive) {
+            rollGateOpen = false
+            return@LaunchedEffect // reopen when the coin settles (effect re-runs)
+        }
+        // Coin settled (or no movement at all) — the 500ms handoff delay.
+        delay(LudoRules.TURN_HANDOFF_MS)
+        rollGateOpen = true
+    }
+
+    // ------------------------------------------------------------------
+    // v3.1 DICE FACE HOLD (PRD v3.2 §3/§18 "result ownership"): the die
+    // STAYS on the number the roller rolled until the turn is fully
+    // completed — extra rolls from a 6 / capture / finish included. Once
+    // the turn passes on, the number stays up while the coin animation
+    // finishes and then for [LudoRules.TURN_HANDOFF_MS] (500ms) before the
+    // face resets to blank for its new owner (§20/§23 — never blank the
+    // face at the instant the result is shown).
     // ------------------------------------------------------------------
     var diceOwnerSeat by remember { mutableIntStateOf(-1) }
     var diceShownValue by remember { mutableStateOf<Int?>(null) }
     var diceHoldMatchId by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(match.id, match.seq, match.diceValue, match.turnIndex, match.phase) {
+    LaunchedEffect(match.id, match.seq, match.diceValue, match.turnIndex, match.phase, moveAnimationActive) {
         if (diceHoldMatchId != match.id) {
             // Fresh match (or rematch) — no die face carries over.
             diceHoldMatchId = match.id
@@ -412,8 +454,10 @@ private fun LudoArenaMatchScreen(
                 // Same player's extra roll pending — the face stays up.
                 diceShownValue = match.diceValue
             } else {
-                // Turn passed to the next player: hold the rolled number
-                // for ~1s, then blank the die for its new owner.
+                // Turn passed on: the rolled number belongs to the ROLLER
+                // until the coin settles + the 500ms handoff elapses —
+                // then the die blanks for its new owner.
+                if (moveAnimationActive) return@LaunchedEffect // coin still moving → keep the face
                 delay(LudoRules.TURN_HANDOFF_MS)
                 diceShownValue = null
             }
@@ -426,7 +470,9 @@ private fun LudoArenaMatchScreen(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .imePadding()
+        // v3.2 (PRD §7): the board and top bars stay STABLE when the room
+        // chat's keyboard opens — the IME insets are consumed INSIDE
+        // LudoRoomChat (below) instead of shrinking this whole column.
     ) {
         // --- Top bar ---
         Row(
@@ -504,6 +550,7 @@ private fun LudoArenaMatchScreen(
             LudoArenaBoard(
                 match = match,
                 onTokenClick = onMoveToken,
+                onMoveAnimationChanged = { moveAnimationActive = it },
                 modifier = Modifier
                     .fillMaxSize()
                     .aspectRatio(1f)
@@ -581,17 +628,17 @@ private fun LudoArenaMatchScreen(
                     )
                 }
 
-                // v3.1: the die always carries the CURRENT player's seat
-                // color (border + pips) — whose turn it is, at a glance.
-                val turnPlayerColor = if (match.isStarted && match.players.isNotEmpty())
-                    Color(match.currentPlayer.color.colorHex) else QuickyGold
-
+                // v3.2 (PRD §14): the die has ONE GLOBAL visual identity for
+                // every player — deep-ink face, champagne-gold border + pips.
+                // Whose turn it is stays communicated by the seat chips,
+                // the waiting label and the board glow — NEVER by the dice
+                // colors (player identity must not ride on the die).
                 LudoDiceButton(
                     diceValue = diceShownValue,
-                    playerColor = turnPlayerColor,
                     isRolling = isRolling,
                     enabled = match.isStarted && match.isMyTurn &&
-                            match.phase == LudoPhase.AWAITING_ROLL && !isRolling,
+                            match.phase == LudoPhase.AWAITING_ROLL && !isRolling &&
+                            rollGateOpen,
                     countdownSeconds = if (match.phase == LudoPhase.AWAITING_ROLL && match.isMyTurn)
                         rollSecondsLeft else null,
                     waitingLabel = if (match.isStarted && match.players.isNotEmpty() &&
@@ -752,6 +799,7 @@ private fun tokenPositionFor(seat: Int, tokenId: Int, stepCount: Int): TokenPosi
 private fun LudoArenaBoard(
     match: LudoMatch,
     onTokenClick: (Int) -> Unit,
+    onMoveAnimationChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val haptics = LocalHapticFeedback.current
@@ -791,13 +839,15 @@ private fun LudoArenaBoard(
         if (previous == null || isNewMatch || gap) {
             // First render or recovery: snap to the authoritative board.
             lastSteps = authoritative
+            onMoveAnimationChanged(false)
         } else {
             val changed = authoritative.filterKeys { previous[it] != authoritative[it] }
 
-            // MOVER: the token whose step count increased (release/advance).
+            // MOVING / SETTLING (PRD §24): report the animation window so the
+            // turn-state gate holds the dice + handoff until the coin lands.
             val mover = changed.entries.firstOrNull { (key, to) -> to > (previous[key] ?: 0) }
-            // CAPTURED: opponent tokens sent back to their yard.
             val captured = changed.entries.filter { (key, to) -> to == 0 && (previous[key] ?: 0) > 0 }
+            if (mover != null || captured.isNotEmpty()) onMoveAnimationChanged(true)
 
             // Freeze captured tokens at their PRE-move cells until the
             // attacker arrives — otherwise the authoritative yard position
@@ -874,6 +924,9 @@ private fun LudoArenaBoard(
         lastMatchId = match.id
         // Clear overrides → authoritative rendering takes over.
         visualPositions = emptyMap()
+        // Coin settled — release the turn gate (reopens after the 500ms
+        // HANDOFF_DELAY, PRD §20).
+        onMoveAnimationChanged(false)
     }
 
     BoxWithConstraints(modifier = modifier) {
@@ -1142,7 +1195,6 @@ private fun LudoArenaToken(
 @Composable
 private fun LudoDiceButton(
     diceValue: Int?,
-    playerColor: Color,
     isRolling: Boolean,
     enabled: Boolean,
     countdownSeconds: Int?,
@@ -1176,16 +1228,16 @@ private fun LudoDiceButton(
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
             shape = RoundedCornerShape(14.dp),
-            // v3.1 (user request — supersedes the v2.3 §2.1 always-gold
-            // identity): the die takes the CURRENT player's seat color so
-            // everyone can tell whose turn it is at a glance — RED / GREEN /
-            // YELLOW-gold / BLUE border + pips, in both themes, while
-            // rolling AND while idle. The deep-ink face is kept so all four
-            // seat colors stay readable on light surfaces and dark boards.
+            // v3.2 (PRD §14 — supersedes the v3.1 per-player colors): ONE
+            // GLOBAL dice identity for EVERY player — deep-ink face,
+            // champagne-gold border and champagne-gold pips, identical in
+            // both themes, while rolling AND while idle. Player identity is
+            // never expressed through the die (seat chips, board glow and
+            // the waiting label carry it instead).
             color = LudoDiceInk,
             border = androidx.compose.foundation.BorderStroke(
                 if (enabled) 2.5.dp else 1.5.dp,
-                playerColor
+                QuickyGold
             ),
             shadowElevation = 6.dp,
             modifier = Modifier
@@ -1195,10 +1247,11 @@ private fun LudoDiceButton(
                 .testTag("ludo_dice_button")
         ) {
             Box(contentAlignment = Alignment.Center) {
-                // Pips in the SAME seat color — rolling tumbling faces and
-                // settled results alike; no face at all while idle.
+                // Champagne-gold pips for everyone (the default tint) —
+                // rolling tumbling faces and settled results alike; no
+                // face at all while idle.
                 if (face != null) {
-                    DiceFaceDots(value = face, tint = playerColor)
+                    DiceFaceDots(value = face)
                 }
             }
         }
@@ -1229,11 +1282,9 @@ private val LudoDiceInk = Color(0xFF272740)
 
 /**
  * Real pips drawn on Canvas (PRD v2.3 §2.1): the glyph dice (⚀–⚅) could not
- * be reliably recolored across OEM fonts. v3.1 (user request): the Ludo dice
- * passes the CURRENT player's seat color as [tint] — RED / GREEN /
- * YELLOW-gold / BLUE pips matching the border, so the die itself signals
- * whose turn it is. The default stays Quicky's champagne gold for any other
- * call site.
+ * be reliably recolored across OEM fonts. v3.2 (PRD §14): the Ludo die
+ * uses the DEFAULT champagne-gold tint for EVERY player — one global
+ * dice identity; the [tint] override remains for any other call site.
  */
 @Composable
 fun DiceFaceDots(value: Int, tint: Color = Color.Unspecified) {
