@@ -1,5 +1,7 @@
 package com.example.data
 
+import com.example.model.Club
+import com.example.model.ClubMember
 import com.example.model.GameDefinition
 import com.example.model.GeoSuggestion
 import com.example.model.OnboardingDraft
@@ -715,6 +717,185 @@ object SupabaseRepository {
                 method = "DELETE",
                 path = "/rest/v1/${SupabaseConfig.TABLE_CLUBS}",
                 query = mapOf("id" to "eq.$clubId"),
+                accessToken = accessToken,
+                prefer = "return=minimal"
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Fetches every ACTIVE club + its member list (one batched read each)
+     * so the Clubs tab shows clubs created by ANY account — the core of
+     * club discovery. The caller derives the user's own membership (and
+     * therefore activeClubId) from the returned member lists.
+     *
+     * @return null when not configured or the request failed (caller keeps
+     *         its local state); an empty list when no clubs exist yet.
+     */
+    suspend fun fetchClubs(accessToken: String?): List<Club>? {
+        if (!isConfigured()) return null
+        return runCatching {
+            // 1) All active clubs, newest first (discovery order).
+            val rawClubs = SupabaseClient.rest(
+                method = "GET",
+                path = "/rest/v1/${SupabaseConfig.TABLE_CLUBS}",
+                query = mapOf(
+                    "select" to "id,owner_id,name,description,logo_emoji,max_members,status,category,created_at",
+                    "status" to "eq.ACTIVE",
+                    "order" to "created_at.desc",
+                    "limit" to "200"
+                ),
+                accessToken = accessToken
+            )
+            val clubRows = SupabaseClient.parseArray(rawClubs)
+            if (clubRows.length() == 0) return@runCatching emptyList()
+
+            // 2) Member rows (one batched read; the table is small and the
+            //    RLS policy allows reads for any authenticated user).
+            val membersByClub = mutableMapOf<String, MutableList<ClubMember>>()
+            runCatching {
+                val rawMembers = SupabaseClient.rest(
+                    method = "GET",
+                    path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MEMBERS}",
+                    query = mapOf(
+                        "select" to "club_id,user_id,user_name,character_badge,is_verified,role,status,joined_at",
+                        "order" to "joined_at.asc"
+                    ),
+                    accessToken = accessToken
+                )
+                val memberRows = SupabaseClient.parseArray(rawMembers)
+                for (i in 0 until memberRows.length()) {
+                    val row = memberRows.optJSONObject(i) ?: continue
+                    val clubId = row.optString("club_id")
+                    if (clubId.isBlank()) continue
+                    membersByClub.getOrPut(clubId) { mutableListOf() }.add(
+                        ClubMember(
+                            id = "${clubId}_${row.optString("user_id")}",
+                            userId = row.optString("user_id"),
+                            userName = row.optString("user_name").ifBlank { "Member" },
+                            characterBadge = row.optString("character_badge").ifBlank { "The Explorer" },
+                            isVerified = row.optBoolean("is_verified", true),
+                            role = row.optString("role").ifBlank { "MEMBER" },
+                            status = row.optString("status").ifBlank { "ACTIVE" },
+                            joinedAt = isoToClubLabel(row.optString("joined_at"))
+                        )
+                    )
+                }
+            } // member-list failures are non-fatal — clubs still list
+
+            buildList {
+                for (i in 0 until clubRows.length()) {
+                    val row = clubRows.optJSONObject(i) ?: continue
+                    val id = row.optString("id")
+                    if (id.isBlank()) continue
+                    add(
+                        Club(
+                            id = id,
+                            ownerId = row.optString("owner_id"),
+                            name = row.optString("name").ifBlank { "Unnamed Club" },
+                            description = row.optString("description"),
+                            logoEmoji = row.optString("logo_emoji").ifBlank { "🎮" },
+                            maxMembers = row.optInt("max_members", 15),
+                            status = row.optString("status").ifBlank { "ACTIVE" },
+                            createdAt = isoToClubLabel(row.optString("created_at")),
+                            category = row.optString("category").ifBlank { "Casual Gaming" },
+                            members = membersByClub[id] ?: mutableListOf()
+                        )
+                    )
+                }
+            }
+        }.getOrNull()
+    }
+
+    /** "Oct 5"-style label for a Supabase timestamptz ("" → placeholder). */
+    private fun isoToClubLabel(iso: String): String {
+        val epoch = LudoTime.parseIsoToEpochMs(iso.takeIf { it.isNotBlank() } ?: return "Recently")
+        return epoch?.let {
+            java.text.SimpleDateFormat("MMM d", java.util.Locale.US).format(java.util.Date(it))
+        } ?: "Recently"
+    }
+
+    /**
+     * Persists a newly created club: the `clubs` row + the owner's
+     * `club_members` row. Both writes are plain inserts (RLS allows them
+     * for authenticated users); the 15-member cap is enforced by the
+     * database trigger on club_members.
+     */
+    suspend fun createClub(club: Club, accessToken: String?): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/${SupabaseConfig.TABLE_CLUBS}",
+                query = mapOf("Prefer" to "return=minimal"),
+                body = JSONObject()
+                    .put("id", club.id)
+                    .put("owner_id", club.ownerId)
+                    .put("name", club.name)
+                    .put("description", club.description)
+                    .put("logo_emoji", club.logoEmoji)
+                    .put("max_members", club.maxMembers)
+                    .put("status", club.status)
+                    .put("category", club.category)
+                    .toString()
+            )
+            val owner = club.members.firstOrNull()
+            SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MEMBERS}",
+                query = mapOf("Prefer" to "return=minimal"),
+                body = JSONObject()
+                    .put("club_id", club.id)
+                    .put("user_id", owner?.userId ?: club.ownerId)
+                    .put("user_name", owner?.userName ?: "")
+                    .put("character_badge", owner?.characterBadge ?: "The Explorer")
+                    .put("is_verified", owner?.isVerified ?: true)
+                    .put("role", "OWNER")
+                    .put("status", "ACTIVE")
+                    .toString()
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    /** Adds a member row (Join Club / Leave & Join). */
+    suspend fun joinClub(clubId: String, member: ClubMember, accessToken: String?): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MEMBERS}",
+                query = mapOf("Prefer" to "return=minimal"),
+                body = JSONObject()
+                    .put("club_id", clubId)
+                    .put("user_id", member.userId)
+                    .put("user_name", member.userName)
+                    .put("character_badge", member.characterBadge)
+                    .put("is_verified", member.isVerified)
+                    .put("role", member.role)
+                    .put("status", member.status)
+                    .toString()
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Removes a member row — used for Leave Club AND for the owner
+     * removing another member (the RLS delete policy allows both for
+     * authenticated users).
+     */
+    suspend fun removeClubMembership(clubId: String, userId: String, accessToken: String?): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "DELETE",
+                path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MEMBERS}",
+                query = mapOf(
+                    "club_id" to "eq.$clubId",
+                    "user_id" to "eq.$userId"
+                ),
                 accessToken = accessToken,
                 prefer = "return=minimal"
             )

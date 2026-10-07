@@ -185,6 +185,14 @@ class SparkViewModel : ViewModel() {
     }
 
     fun setTab(tab: SparkTab) {
+        // v3.2.2: opening the Clubs tab re-fetches the server list so
+        // clubs created by other accounts since sign-in show up without
+        // a logout/login cycle (search + interest-tag filter see them).
+        if (tab == SparkTab.CLUBS) {
+            _uiState.value.authSession?.let { session ->
+                if (SupabaseRepository.isConfigured()) loadClubsFromServer(session)
+            }
+        }
         _uiState.update { it.copy(currentTab = tab, selectedMatchForChat = null) }
     }
 
@@ -467,6 +475,10 @@ class SparkViewModel : ViewModel() {
             // history) from the server so the Chats tab survives restarts
             // and seeded demo chats show up right after sign-in.
             if (remote.onboardingCompleted) loadServerConversations(session)
+            // v3.2.2: club discovery — load EVERY account's clubs (with
+            // member lists) so the Clubs tab lists and searches across
+            // all users, and re-attach this account's own membership.
+            if (remote.onboardingCompleted) loadClubsFromServer(session)
         }
         // v2.3 §12 — after login, this account's Boost loads from ITS OWN
         // Supabase row (auth user id), never from the previous account's
@@ -549,6 +561,44 @@ class SparkViewModel : ViewModel() {
     /** "Oct 5"-style label for a matched-at epoch (ChatsScreen right meta). */
     private fun matchedAtLabel(epochMs: Long): String =
         java.text.SimpleDateFormat("MMM d", Locale.US).format(java.util.Date(epochMs))
+
+    /**
+     * v3.2.2: loads ALL active clubs + member lists from Supabase into
+     * the Clubs tab. Until now clubs were session-only in-memory state —
+     * a club created on one account never appeared for any other account
+     * (search / interest-tag filters found nothing) and disappeared on
+     * sign-out. The server list wins; clubs created locally THIS session
+     * (e.g. just now, offline) keep their place. activeClubId is re-derived
+     * from this account's own membership row.
+     */
+    private fun loadClubsFromServer(session: SupabaseAuth.AuthSession) {
+        if (!SupabaseRepository.isConfigured()) return
+        viewModelScope.launch {
+            val remoteClubs = SupabaseRepository.fetchClubs(
+                accessToken = session.accessToken
+            ) ?: return@launch
+
+            _uiState.update { state ->
+                // Locally created clubs this session that the server hasn't
+                // seen yet stay on top (their server writes are in flight).
+                val localOnly = state.clubs.filter { local ->
+                    remoteClubs.none { it.id == local.id }
+                }
+                val merged = localOnly + remoteClubs
+                val myMembershipClubId = merged.firstOrNull { club ->
+                    club.members.any { it.userId == session.userId }
+                }?.id
+                state.copy(
+                    clubs = merged,
+                    activeClubId = myMembershipClubId
+                        ?: state.activeClubId?.takeIf { id -> merged.any { it.id == id } },
+                    selectedClubForDetail = state.selectedClubForDetail?.let { sel ->
+                        merged.firstOrNull { it.id == sel.id } ?: sel
+                    }
+                )
+            }
+        }
+    }
 
 
     /** Flips an active boost off at its exact expiry (PRD v2.3 §10). */
@@ -2342,12 +2392,25 @@ class SparkViewModel : ViewModel() {
                 toastMessage = "Joined ${targetClub.name}! Welcome to the community 🎉"
             )
         }
+        // v3.2.2: mirror the membership row so the join survives restarts
+        // and shows for every other account.
+        if (SupabaseRepository.isConfigured()) {
+            val memberToSync = newMember
+            viewModelScope.launch {
+                SupabaseRepository.joinClub(
+                    clubId = clubId,
+                    member = memberToSync,
+                    accessToken = _uiState.value.authSession?.accessToken
+                )
+            }
+        }
     }
 
     fun leaveClub(clubId: String) {
+        val myUserId = _uiState.value.userProfile.id
         val updatedClubs = _uiState.value.clubs.map { club ->
             if (club.id == clubId) {
-                club.copy(members = club.members.filter { m -> m.userId != _uiState.value.userProfile.id })
+                club.copy(members = club.members.filter { m -> m.userId != myUserId })
             } else club
         }
         _uiState.update {
@@ -2357,6 +2420,15 @@ class SparkViewModel : ViewModel() {
                 selectedClubForDetail = null,
                 toastMessage = "You left the Club."
             )
+        }
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                SupabaseRepository.removeClubMembership(
+                    clubId = clubId,
+                    userId = myUserId,
+                    accessToken = _uiState.value.authSession?.accessToken
+                )
+            }
         }
     }
 
@@ -2396,6 +2468,26 @@ class SparkViewModel : ViewModel() {
                 selectedClubForDetail = updatedClubs.find { c -> c.id == newClubId },
                 toastMessage = "Left previous club and joined ${targetClub.name}! Welcome 🎉"
             )
+        }
+        // v3.2.2: mirror the switch on the server (remove old membership,
+        // add the new one) so it survives restarts.
+        if (SupabaseRepository.isConfigured()) {
+            val memberToSync = newMember
+            val token = _uiState.value.authSession?.accessToken
+            viewModelScope.launch {
+                if (currentClubId != null) {
+                    SupabaseRepository.removeClubMembership(
+                        clubId = currentClubId,
+                        userId = myUserId,
+                        accessToken = token
+                    )
+                }
+                SupabaseRepository.joinClub(
+                    clubId = newClubId,
+                    member = memberToSync,
+                    accessToken = token
+                )
+            }
         }
     }
 
@@ -2447,6 +2539,18 @@ class SparkViewModel : ViewModel() {
                 showCreateClubDialog = false,
                 toastMessage = "🎉 Club '$name' created! You are the Owner."
             )
+        }
+        // v3.2.2: persist the club so OTHER accounts can discover it
+        // (search + interest-tag filter). Fire-and-forget — the local
+        // club stays usable even when the write fails.
+        if (SupabaseRepository.isConfigured()) {
+            val clubToSync = newClub
+            viewModelScope.launch {
+                SupabaseRepository.createClub(
+                    club = clubToSync,
+                    accessToken = _uiState.value.authSession?.accessToken
+                )
+            }
         }
     }
 
@@ -2532,6 +2636,16 @@ class SparkViewModel : ViewModel() {
                 clubMessages = updatedMessages,
                 toastMessage = "$memberName has been removed from the club."
             )
+        }
+        // v3.2.2: mirror the owner's removal on the server.
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                SupabaseRepository.removeClubMembership(
+                    clubId = clubId,
+                    userId = memberUserId,
+                    accessToken = _uiState.value.authSession?.accessToken
+                )
+            }
         }
     }
 

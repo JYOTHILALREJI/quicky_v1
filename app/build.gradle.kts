@@ -188,6 +188,10 @@ dependencies {
   // implementation(libs.googleid)
   implementation(libs.firebase.appcheck.recaptcha)
   implementation(libs.firebase.appcheck.debug)
+  // FCM push notifications (match/message/club alerts) + Firebase
+  // Analytics — both versioned by the BoM platform above.
+  implementation(libs.firebase.messaging)
+  implementation(libs.firebase.analytics)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.logging.interceptor)
