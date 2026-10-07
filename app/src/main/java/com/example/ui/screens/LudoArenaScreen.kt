@@ -380,6 +380,48 @@ private fun LudoArenaMatchScreen(
         }
     }
 
+    // ------------------------------------------------------------------
+    // v3.1 DICE FACE HOLD (user request): the die STAYS on the number the
+    // player rolled until all of his moves are finished (extra rolls from
+    // a 6 / capture / finish included); once the turn passes to the next
+    // player, the number stays up for [LudoRules.TURN_HANDOFF_MS] (~1s)
+    // and then the face resets to blank — "…and then after a second go to
+    // the next user". The engine now RETAINS diceValue across turn
+    // advances, so this layer only decides WHEN to blank the face.
+    // ------------------------------------------------------------------
+    var diceOwnerSeat by remember { mutableIntStateOf(-1) }
+    var diceShownValue by remember { mutableStateOf<Int?>(null) }
+    var diceHoldMatchId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(match.id, match.seq, match.diceValue, match.turnIndex, match.phase) {
+        if (diceHoldMatchId != match.id) {
+            // Fresh match (or rematch) — no die face carries over.
+            diceHoldMatchId = match.id
+            diceOwnerSeat = -1
+            diceShownValue = null
+        }
+        if (match.phase == LudoPhase.FINISHED) {
+            diceShownValue = null
+            return@LaunchedEffect
+        }
+        if (match.phase == LudoPhase.AWAITING_MOVE && match.diceValue != null) {
+            // A live roll just landed — the current player owns the face.
+            diceOwnerSeat = match.turnIndex
+            diceShownValue = match.diceValue
+        } else if (match.diceValue != null) {
+            if (match.turnIndex == diceOwnerSeat) {
+                // Same player's extra roll pending — the face stays up.
+                diceShownValue = match.diceValue
+            } else {
+                // Turn passed to the next player: hold the rolled number
+                // for ~1s, then blank the die for its new owner.
+                delay(LudoRules.TURN_HANDOFF_MS)
+                diceShownValue = null
+            }
+        } else {
+            diceShownValue = null
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -539,13 +581,23 @@ private fun LudoArenaMatchScreen(
                     )
                 }
 
+                // v3.1: the die always carries the CURRENT player's seat
+                // color (border + pips) — whose turn it is, at a glance.
+                val turnPlayerColor = if (match.isStarted && match.players.isNotEmpty())
+                    Color(match.currentPlayer.color.colorHex) else QuickyGold
+
                 LudoDiceButton(
-                    diceValue = match.diceValue,
+                    diceValue = diceShownValue,
+                    playerColor = turnPlayerColor,
                     isRolling = isRolling,
                     enabled = match.isStarted && match.isMyTurn &&
                             match.phase == LudoPhase.AWAITING_ROLL && !isRolling,
                     countdownSeconds = if (match.phase == LudoPhase.AWAITING_ROLL && match.isMyTurn)
                         rollSecondsLeft else null,
+                    waitingLabel = if (match.isStarted && match.players.isNotEmpty() &&
+                        match.phase != LudoPhase.FINISHED)
+                        "${match.currentPlayer.name.split(" ").firstOrNull()?.take(10) ?: "PLAYER"}'S TURN"
+                    else "WAITING",
                     onRoll = {
                         haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onRollDice()
@@ -1090,9 +1142,11 @@ private fun LudoArenaToken(
 @Composable
 private fun LudoDiceButton(
     diceValue: Int?,
+    playerColor: Color,
     isRolling: Boolean,
     enabled: Boolean,
     countdownSeconds: Int?,
+    waitingLabel: String,
     onRoll: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "diceRoll")
@@ -1114,19 +1168,24 @@ private fun LudoDiceButton(
         }
     }
     val urgent = enabled && (countdownSeconds ?: 10) <= 3
+    // v3.1 (user request): while idle the die shows a BLANK face instead of
+    // a stale tumble number — the face only fills with a REAL roll result
+    // (live AWAITING_MOVE value or the held number during the handoff).
+    val face = if (isRolling) rollingFace else diceValue
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
             shape = RoundedCornerShape(14.dp),
-            // FIXED die identity (PRD v2.3 §2.1): deep-ink face + ALWAYS-GOLD
-            // border and pips in BOTH themes and EVERY state (enabled / idle /
-            // rolling). Never derived from player color, turn, theme accent or
-            // random state — the ink face keeps the champagne gold readable
-            // on light surfaces and dark boards alike.
+            // v3.1 (user request — supersedes the v2.3 §2.1 always-gold
+            // identity): the die takes the CURRENT player's seat color so
+            // everyone can tell whose turn it is at a glance — RED / GREEN /
+            // YELLOW-gold / BLUE border + pips, in both themes, while
+            // rolling AND while idle. The deep-ink face is kept so all four
+            // seat colors stay readable on light surfaces and dark boards.
             color = LudoDiceInk,
             border = androidx.compose.foundation.BorderStroke(
                 if (enabled) 2.5.dp else 1.5.dp,
-                QuickyGold
+                playerColor
             ),
             shadowElevation = 6.dp,
             modifier = Modifier
@@ -1136,10 +1195,11 @@ private fun LudoDiceButton(
                 .testTag("ludo_dice_button")
         ) {
             Box(contentAlignment = Alignment.Center) {
-                // Gold pips both while tumbling and settled — the roll state is
-                // conveyed by the rotation + "ROLLING…" label instead of a
-                // theme-dependent spinner.
-                DiceFaceDots(value = diceValue ?: rollingFace)
+                // Pips in the SAME seat color — rolling tumbling faces and
+                // settled results alike; no face at all while idle.
+                if (face != null) {
+                    DiceFaceDots(value = face, tint = playerColor)
+                }
             }
         }
         Text(
@@ -1147,7 +1207,7 @@ private fun LudoDiceButton(
                 isRolling -> "ROLLING…"
                 enabled && countdownSeconds != null -> "ROLL · ${countdownSeconds}s"
                 enabled -> "TAP ROLL"
-                else -> "WAITING"
+                else -> waitingLabel
             },
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 9.sp),
             color = when {
@@ -1157,6 +1217,8 @@ private fun LudoDiceButton(
                 enabled -> MaterialTheme.colorScheme.primary
                 else -> MaterialTheme.colorScheme.onSurfaceVariant
             },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(top = 2.dp)
         )
     }
@@ -1165,12 +1227,16 @@ private fun LudoDiceButton(
 /** Fixed deep-ink die face — the champagne gold pips/border stay readable on it in BOTH themes. */
 private val LudoDiceInk = Color(0xFF272740)
 
+/**
+ * Real pips drawn on Canvas (PRD v2.3 §2.1): the glyph dice (⚀–⚅) could not
+ * be reliably recolored across OEM fonts. v3.1 (user request): the Ludo dice
+ * passes the CURRENT player's seat color as [tint] — RED / GREEN /
+ * YELLOW-gold / BLUE pips matching the border, so the die itself signals
+ * whose turn it is. The default stays Quicky's champagne gold for any other
+ * call site.
+ */
 @Composable
 fun DiceFaceDots(value: Int, tint: Color = Color.Unspecified) {
-    // REAL pips drawn on Canvas (PRD v2.3 §2.1): the glyph dice (⚀–⚅) could
-    // not be reliably recolored across OEM fonts. Pips are ALWAYS Quicky's
-    // gold (unless a caller explicitly overrides [tint]) — never derived
-    // from the player, turn, coin color or theme.
     val pipColor = if (tint != Color.Unspecified) tint else QuickyGold
     Canvas(modifier = Modifier.size(30.dp)) {
         val c = Offset(size.width / 2f, size.height / 2f)

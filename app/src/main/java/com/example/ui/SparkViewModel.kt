@@ -15,6 +15,7 @@ import com.example.data.AppContent
 import com.example.data.FaceVerifier
 import com.example.data.LudoMatchRepository
 import com.example.data.LudoRealtime
+import com.example.data.LudoTime
 import com.example.data.SupabaseAuth
 import com.example.data.SupabaseRepository
 import com.example.game.LudoEngine
@@ -452,6 +453,10 @@ class SparkViewModel : ViewModel() {
             }
             // v2: fill the discovery deck from the server-side ranked RPC.
             if (remote.onboardingCompleted) autoLoadDiscoveryDeck()
+            // v3.1: restore this account's conversations (chats + message
+            // history) from the server so the Chats tab survives restarts
+            // and seeded demo chats show up right after sign-in.
+            if (remote.onboardingCompleted) loadServerConversations(session)
         }
         // v2.3 §12 — after login, this account's Boost loads from ITS OWN
         // Supabase row (auth user id), never from the previous account's
@@ -465,6 +470,71 @@ class SparkViewModel : ViewModel() {
 
     /** Hourly session keeper — refreshes the JWT shortly before it expires. */
     private var sessionRefreshJob: Job? = null
+
+    /**
+     * v3.1: loads the signed-in account's conversations (match rows +
+     * message history + other-side profiles) from Supabase into the Chats
+     * tab. Chats used to be session-only; now they survive restarts, and
+     * seeded demo conversations (supabase/seed_data.sql) appear here too.
+     *
+     * Merge rules: conversations created locally THIS session (e.g. a
+     * just-celebrated match) always win — the server list only fills gaps.
+     */
+    private fun loadServerConversations(session: SupabaseAuth.AuthSession) {
+        if (!SupabaseRepository.isConfigured()) return
+        viewModelScope.launch {
+            val remote = SupabaseRepository.fetchConversations(
+                session.userId, session.accessToken
+            ) ?: return@launch
+            if (remote.isEmpty()) return@launch
+
+            _uiState.update { state ->
+                val serverMatches = remote.map { conv ->
+                    MatchItem(
+                        id = conv.conversationId,
+                        user = conv.profile,
+                        matchedAt = LudoTime.parseIsoToEpochMs(conv.matchedAtIso)
+                            ?.let { matchedAtLabel(it) } ?: "Recently",
+                        lastMessage = conv.lastMessageText,
+                        unreadCount = conv.unreadCount,
+                        hasActiveGame = conv.hasActiveGame,
+                        isNewMatch = conv.isNewMatch && conv.unreadCount > 0
+                    )
+                }
+                // Locally created conversations (this session) keep their
+                // place; the server list only adds what is missing.
+                val localOnly = state.matches.filter { local ->
+                    remote.none { it.conversationId == local.id }
+                }
+                val messageMap = state.messages.toMutableMap()
+                remote.forEach { conv ->
+                    if (!messageMap.containsKey(conv.conversationId)) {
+                        messageMap[conv.conversationId] = conv.messages.map { msg ->
+                            ChatMessage(
+                                id = msg.id,
+                                conversationId = msg.conversationId,
+                                senderId = msg.senderId,
+                                text = msg.text,
+                                timestamp = LudoTime.isoToClock(msg.createdAtIso) ?: "",
+                                isMine = msg.senderId == "user_me" ||
+                                        msg.senderId == session.userId,
+                                isRead = msg.isRead
+                            )
+                        }
+                    }
+                }
+                state.copy(
+                    matches = localOnly + serverMatches,
+                    messages = messageMap
+                )
+            }
+        }
+    }
+
+    /** "Oct 5"-style label for a matched-at epoch (ChatsScreen right meta). */
+    private fun matchedAtLabel(epochMs: Long): String =
+        java.text.SimpleDateFormat("MMM d", Locale.US).format(java.util.Date(epochMs))
+
 
     /** Flips an active boost off at its exact expiry (PRD v2.3 §10). */
     private var boostExpiryJob: Job? = null
@@ -1203,6 +1273,18 @@ class SparkViewModel : ViewModel() {
                 matches = updatedMatches,
                 currentTab = SparkTab.CHATS
             )
+        }
+
+        // v3.1: clear the unread badge server-side too — the chat history
+        // (and its unread counts) is loaded from Supabase on every sign-in,
+        // so a local-only reset would resurface after the next restart.
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                SupabaseRepository.markConversationRead(
+                    conversationId = match.id,
+                    accessToken = _uiState.value.authSession?.accessToken
+                )
+            }
         }
     }
 
@@ -2894,6 +2976,13 @@ class SparkViewModel : ViewModel() {
      * Bot driver: when the current turn belongs to a bot this device owns,
      * roll + pick a move after a short "thinking" delay, then repeat while
      * the extra-turn rules keep it the bot's turn.
+     *
+     * v3.1 PACING (user request — "slow the gameplay down a bit"):
+     *  · Every FRESH turn handoff waits [LudoRules.TURN_HANDOFF_MS] (~1s)
+     *    before the new owner acts — the dice visibly rests on the number
+     *    the previous player rolled instead of rolling non-stop.
+     *  · The tumble window and the post-roll "thinking" beat are longer and
+     *    human-like (see [LudoRules] BOT_* constants).
      */
     private fun maybeDriveBotTurn() {
         val match = _uiState.value.ludoMatch ?: return
@@ -2903,14 +2992,26 @@ class SparkViewModel : ViewModel() {
         if (ludoBotDriverJob?.isActive == true) return
 
         ludoBotDriverJob = viewModelScope.launch {
-            delay(900) // let the board breathe before the bot acts
             var current = _uiState.value.ludoMatch ?: return@launch
             var guard = 0
+            var drivenSeat = -1
             while (current.currentPlayer.isBot && current.phase != LudoPhase.FINISHED && guard < 40) {
                 guard++
+                if (current.turnIndex != drivenSeat) {
+                    // Fresh turn handoff — a different player just received the
+                    // dice. Hold the ~1s pause ("…and then after a second go to
+                    // the next user"); the die keeps showing the previous roll.
+                    delay(LudoRules.TURN_HANDOFF_MS)
+                    drivenSeat = current.turnIndex
+                    current = _uiState.value.ludoMatch ?: return@launch
+                    if (!current.currentPlayer.isBot ||
+                        current.phase == LudoPhase.FINISHED
+                    ) return@launch
+                    continue
+                }
                 if (current.phase == LudoPhase.AWAITING_ROLL) {
                     _uiState.update { it.copy(isLudoRolling = true) }
-                    delay((800..1200).random().toLong())
+                    delay((LudoRules.BOT_ROLL_MIN_MS..LudoRules.BOT_ROLL_MAX_MS).random().toLong())
                     val rolled = LudoEngine.applyRoll(_uiState.value.ludoMatch ?: return@launch, (1..6).random())
                     _uiState.update { it.copy(isLudoRolling = false, ludoMatch = rolled) }
                     ludoLastAppliedSeq = maxOf(ludoLastAppliedSeq, rolled.seq)
@@ -2918,7 +3019,7 @@ class SparkViewModel : ViewModel() {
                     current = rolled
                 }
                 if (current.phase == LudoPhase.AWAITING_MOVE) {
-                    delay(700)
+                    delay((LudoRules.BOT_THINK_MIN_MS..LudoRules.BOT_THINK_MAX_MS).random().toLong())
                     val tokenId = LudoEngine.pickBotMove(current)
                     if (tokenId == null) {
                         // No legal bot move — engine already advanced on roll.

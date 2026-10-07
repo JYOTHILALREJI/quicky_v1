@@ -444,6 +444,21 @@ object LudoRules {
     const val GAME_END_COMPLETED_PLAYERS: Int = 3
     /** Per-cell animation duration for step-by-step coin movement (PRD §12). */
     const val CELL_HOP_MS: Int = 160
+
+    // ------------------------------------------------------------
+    // v3.1 GAMEPLAY PACING (user request): the dice KEEPS the number the
+    // player rolled until all of his moves are finished; the next player
+    // only takes over after a ~1s handoff pause, and the bot "actors" wait
+    // human-like beats between roll → pick → move.
+    // ------------------------------------------------------------
+    /** "…and then after a second go to the next user" — turn handoff pause. */
+    const val TURN_HANDOFF_MS: Long = 1_000L
+    /** Bot tumble-animation window after the handoff pause (random within). */
+    const val BOT_ROLL_MIN_MS: Int = 900
+    const val BOT_ROLL_MAX_MS: Int = 1_400
+    /** Bot "thinking" window between the roll landing and the coin tap. */
+    const val BOT_THINK_MIN_MS: Int = 800
+    const val BOT_THINK_MAX_MS: Int = 1_200
 }
 
 data class LudoToken(

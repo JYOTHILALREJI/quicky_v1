@@ -432,6 +432,13 @@ create policy "matches_delete" on public.matches for delete using (auth.uid() = 
 -- (tighten with a participant lookup once the conversations table lands)
 drop policy if exists "messages_select" on public.messages;
 create policy "messages_select" on public.messages for select using (auth.role() = 'authenticated');
+
+-- v3.1: opening a conversation clears the unread badge server-side
+-- (chat history is loaded on sign-in and unread counts persist).
+drop policy if exists "messages_update_mark_read" on public.messages;
+create policy "messages_update_mark_read" on public.messages
+    for update using (auth.role() = 'authenticated')
+    with check (auth.role() = 'authenticated');
 drop policy if exists "messages_insert" on public.messages;
 create policy "messages_insert" on public.messages for insert with check (auth.role() = 'authenticated');
 

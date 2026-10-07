@@ -295,6 +295,9 @@ object LudoEngine {
             )
         } else {
             // No legal move: the dice is shown, then the turn passes.
+            // v3.1: advanceTurn KEEPS diceValue so the die keeps showing
+            // the rolled number during the ~1s handoff pause (the UI clears
+            // the face once the next player takes over).
             advanceTurn(rolled, nowMs).copy(
                 statusText = "${current.name} rolled $dice — no legal moves, turn passes."
             )
@@ -400,9 +403,14 @@ object LudoEngine {
         val extraTurn = !moverCompleted && !gameFinished &&
                 (dice == 6 || capturedOpponent || finishedToken)
 
+        // v3.1 (user request): the dice KEEPS the played number after the
+        // move — it stays on the die through the player's extra rolls and
+        // the ~1s turn-handoff pause, until the next player's roll replaces
+        // it. Legality is always gated on phase == AWAITING_MOVE, so the
+        // retained value is never consumed as a live roll.
         val afterMove = match.copy(
             players = updatedPlayers,
-            diceValue = null,
+            diceValue = dice,
             phase = when {
                 gameFinished -> LudoPhase.FINISHED
                 else -> LudoPhase.AWAITING_ROLL
@@ -459,6 +467,12 @@ object LudoEngine {
      * Moves the turn to the next seat clockwise, clearing per-turn state and
      * arming a fresh 10s roll deadline (v3 PRD §5). Players who already
      * brought all 4 coins home are SKIPPED — they are done racing.
+     *
+     * v3.1 (user request): the last rolled diceValue is deliberately KEPT —
+     * the die keeps showing the number the previous player rolled through
+     * the ~1s handoff pause; the next applyRoll replaces it. Legality checks
+     * are phase-gated (AWAITING_MOVE), never diceValue-gated, so a retained
+     * value can never be mistaken for a pending roll.
      */
     fun advanceTurn(match: LudoMatch, nowMs: Long = System.currentTimeMillis()): LudoMatch {
         if (match.phase == LudoPhase.FINISHED) return match
@@ -473,7 +487,6 @@ object LudoEngine {
         } while (match.players[nextIndex].hasWon && guard <= match.players.size)
         return match.copy(
             turnIndex = nextIndex,
-            diceValue = null,
             phase = LudoPhase.AWAITING_ROLL,
             consecutiveSixes = 0,
             rollDeadlineAt = nowMs + LudoRules.ROLL_WINDOW_MS,

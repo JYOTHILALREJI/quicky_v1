@@ -327,6 +327,191 @@ object SupabaseRepository {
         }.getOrNull()
     }
 
+    // ==============================================================
+    // CONVERSATIONS (v3.1 — chats list survives restarts + seeded chats)
+    // ==============================================================
+
+    /** One chat message row as stored in the `messages` table. */
+    data class RemoteChatMessage(
+        val id: String,
+        val conversationId: String,
+        val senderId: String,
+        val text: String,
+        val isRead: Boolean,
+        val createdAtIso: String?
+    )
+
+    /**
+     * One conversation of the signed-in user: the other side's profile, the
+     * match row and its (server-side) message history.
+     *
+     * NOTE on sender attribution: outgoing messages written by this app
+     * store the literal sender id "user_me" (the long-standing convention of
+     * [insertChatMessage]); incoming/seeded rows carry the sender's profile
+     * id. Both are mapped to isMine by the caller.
+     */
+    data class RemoteConversation(
+        val conversationId: String,
+        val profile: UserProfile,
+        val matchedAtIso: String?,
+        val isNewMatch: Boolean,
+        val hasActiveGame: Boolean,
+        val lastMessageText: String?,
+        val unreadCount: Int,
+        val messages: List<RemoteChatMessage>
+    )
+
+    /**
+     * Loads every conversation of [userId]: match rows from `matches`
+     * (either side), the other side's `profiles` row and the shared
+     * `messages` history. Three plain PostgREST reads — no RPC, so this
+     * works against the already-deployed schema (RLS: participants read
+     * their own matches, authenticated read profiles/messages).
+     *
+     * @return null when not configured or the request failed (caller keeps
+     *         its local state); an empty list when the user has no chats.
+     */
+    suspend fun fetchConversations(
+        userId: String,
+        accessToken: String?
+    ): List<RemoteConversation>? {
+        if (!isConfigured()) return null
+        return runCatching {
+            // 1) The user's match rows (most recent first).
+            val rawMatches = SupabaseClient.rest(
+                method = "GET",
+                path = "/rest/v1/${SupabaseConfig.TABLE_MATCHES}",
+                query = mapOf(
+                    "select" to "id,user_a_id,user_b_id,matched_at,last_message,is_new,has_active_game",
+                    "or" to "(user_a_id.eq.$userId,user_b_id.eq.$userId)",
+                    "order" to "matched_at.desc",
+                    "limit" to "30"
+                ),
+                accessToken = accessToken
+            )
+            val matchRows = SupabaseClient.parseArray(rawMatches)
+            if (matchRows.length() == 0) return@runCatching emptyList()
+
+            // 2) The other side's profile per match (one batched read).
+            val otherIds = linkedSetOf<String>()
+            val otherByMatch = mutableMapOf<String, String>() // match row id -> other profile id
+            for (i in 0 until matchRows.length()) {
+                val row = matchRows.optJSONObject(i) ?: continue
+                val a = row.optString("user_a_id")
+                val b = row.optString("user_b_id")
+                val other = if (a == userId) b else a
+                if (other.isBlank()) continue
+                otherByMatch[row.optString("id")] = other
+                otherIds.add(other)
+            }
+            val profileById = mutableMapOf<String, UserProfile>()
+            if (otherIds.isNotEmpty()) {
+                val idFilter = otherIds.joinToString(",") { "\"$it\"" }
+                val rawProfiles = SupabaseClient.rest(
+                    method = "GET",
+                    path = "/rest/v1/${SupabaseConfig.TABLE_PROFILES}",
+                    query = mapOf(
+                        "select" to "*",
+                        "id" to "in.($idFilter)"
+                    ),
+                    accessToken = accessToken
+                )
+                val profileRows = SupabaseClient.parseArray(rawProfiles)
+                for (i in 0 until profileRows.length()) {
+                    val row = profileRows.optJSONObject(i) ?: continue
+                    val id = row.optString("id")
+                    if (id.isBlank()) continue
+                    profileById[id] = chatProfileFromRow(row)
+                }
+            }
+
+            // 3) The message history for every conversation (one batched read).
+            //    conversation_id == "match_<otherProfileId>" (client convention).
+            val conversationIdByMatch = otherByMatch.mapValues { (_, other) -> "match_$other" }
+            val convFilter = conversationIdByMatch.values
+                .distinct()
+                .joinToString(",") { "\"$it\"" }
+            val messagesByConversation = mutableMapOf<String, List<RemoteChatMessage>>()
+            runCatching {
+                val rawMessages = SupabaseClient.rest(
+                    method = "GET",
+                    path = "/rest/v1/${SupabaseConfig.TABLE_MESSAGES}",
+                    query = mapOf(
+                        "select" to "id,conversation_id,sender_id,text,is_read,created_at",
+                        "conversation_id" to "in.($convFilter)",
+                        "order" to "created_at.asc",
+                        "limit" to "500"
+                    ),
+                    accessToken = accessToken
+                )
+                val messageRows = SupabaseClient.parseArray(rawMessages)
+                for (i in 0 until messageRows.length()) {
+                    val row = messageRows.optJSONObject(i) ?: continue
+                    val conv = row.optString("conversation_id")
+                    if (conv.isBlank()) continue
+                    messagesByConversation[conv] =
+                        (messagesByConversation[conv] ?: emptyList()) + RemoteChatMessage(
+                            id = row.optString("id"),
+                            conversationId = conv,
+                            senderId = row.optString("sender_id"),
+                            text = row.optString("text"),
+                            isRead = row.optBoolean("is_read", false),
+                            createdAtIso = row.optString("created_at").takeIf { it.isNotBlank() }
+                        )
+                }
+            } // unread-history failures are non-fatal
+
+            buildList {
+                for (i in 0 until matchRows.length()) {
+                    val row = matchRows.optJSONObject(i) ?: continue
+                    val matchRowId = row.optString("id")
+                    val other = otherByMatch[matchRowId] ?: continue
+                    val profile = profileById[other] ?: continue
+                    val convId = conversationIdByMatch[matchRowId] ?: "match_$other"
+                    val messages = messagesByConversation[convId].orEmpty()
+                    val unread = messages.count {
+                        it.senderId != "user_me" && it.senderId != userId && !it.isRead
+                    }
+                    add(
+                        RemoteConversation(
+                            conversationId = convId,
+                            profile = profile,
+                            matchedAtIso = row.optString("matched_at").takeIf { it.isNotBlank() },
+                            isNewMatch = row.optBoolean("is_new", false),
+                            hasActiveGame = row.optBoolean("has_active_game", false),
+                            lastMessageText = messages.lastOrNull()?.text
+                                ?: row.optString("last_message").takeIf { it.isNotBlank() },
+                            unreadCount = unread,
+                            messages = messages
+                        )
+                    )
+                }
+            }
+        }.getOrNull()
+    }
+
+    /** Compact profiles-row → [UserProfile] mapping for chat list rows. */
+    private fun chatProfileFromRow(row: JSONObject): UserProfile = UserProfile(
+        id = row.optString("id"),
+        name = row.optString("name").ifBlank { "Quicky user" },
+        age = row.optInt("age", 21),
+        bio = row.optString("bio"),
+        city = row.optString("city"),
+        distanceKm = row.optInt("distance_km", 0),
+        relationshipIntent = row.optString("relationship_intent").ifBlank { "Long-term partner" },
+        occupation = row.optString("occupation"),
+        gender = row.optString("gender").ifBlank { "Female" },
+        languages = row.optJSONArray("languages").toStringList().ifEmpty { listOf("English") },
+        isVerified = row.optBoolean("is_verified", false),
+        isOnline = row.optBoolean("is_online", false),
+        characterBadge = row.optString("character_badge", "The Explorer"),
+        characterDescription = row.optString("character_description"),
+        photoUris = row.optJSONArray("photo_urls").toStringList(),
+        interests = row.optJSONArray("interests").toStringList(),
+        hobbies = row.optJSONArray("hobbies").toStringList(),
+        compatibilityScore = row.optInt("compatibility_score", 85)
+    )
+
     /**
      * Records a LIKE / PASS / SUPER_LIKE server-side via the
      * `record_swipe` RPC (PRD §6.1/§6.2): rate-limited (200/hour),
@@ -431,6 +616,35 @@ object SupabaseRepository {
     // ==============================================================
     // WRITES
     // ==============================================================
+
+    /**
+     * Marks the UNREAD messages of one conversation as read server-side
+     * (v3.1 — unread badges persist across restarts now that the chat
+     * history is loaded on sign-in). Fire-and-forget; returns false
+     * instead of throwing.
+     *
+     * @param accessToken the signed-in user's JWT — the update policy
+     *        requires the authenticated role (the anon key is rejected).
+     */
+    suspend fun markConversationRead(
+        conversationId: String,
+        accessToken: String?
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "PATCH",
+                path = "/rest/v1/${SupabaseConfig.TABLE_MESSAGES}",
+                query = mapOf(
+                    "conversation_id" to "eq.$conversationId",
+                    "is_read" to "eq.false"
+                ),
+                body = JSONObject().put("is_read", true).toString(),
+                accessToken = accessToken
+            )
+            true
+        }.getOrDefault(false)
+    }
 
     /**
      * Persists a personal-chat message to the `messages` table.

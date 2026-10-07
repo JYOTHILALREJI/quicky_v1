@@ -30,6 +30,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.AppContent
 import com.example.model.*
@@ -158,16 +159,30 @@ fun ChatDetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.clickable { onViewProfile(match.user) }
                     ) {
-                        val photo = match.user.photoResIds.firstOrNull() ?: R.drawable.img_profile_sarah
+                        // v3.1: remote (seeded / uploaded) photo URLs render
+                        // through Coil; bundled drawables stay the fallback.
+                        val remotePhoto = match.user.photoUris.firstOrNull()
                         Box(modifier = Modifier.size(40.dp)) {
-                            Image(
-                                painter = painterResource(id = photo),
-                                contentDescription = match.user.name,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(CircleShape),
-                                contentScale = ContentScale.Crop
-                            )
+                            if (remotePhoto != null) {
+                                AsyncImage(
+                                    model = remotePhoto,
+                                    contentDescription = match.user.name,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(CircleShape)
+                                )
+                            } else {
+                                val photo = match.user.photoResIds.firstOrNull() ?: R.drawable.img_profile_sarah
+                                Image(
+                                    painter = painterResource(id = photo),
+                                    contentDescription = match.user.name,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(CircleShape),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
                             if (match.user.isOnline) {
                                 Box(
                                     modifier = Modifier

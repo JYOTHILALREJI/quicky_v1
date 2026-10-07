@@ -343,7 +343,11 @@ Deno.serve(async (req) => {
         const advanced: Board = {
           ...board,
           turn_index: nextSeat,
-          dice_value: null,
+          // v3.1: board_state KEEPS the rolled number across the turn
+          // advance (the Kotlin engine mirrors this) — the client die rests
+          // on the value through the ~1s handoff pause. The table COLUMN
+          // below stays null: it is the AWAITING_MOVE CAS proxy.
+          dice_value: dice,
           phase: "AWAITING_ROLL",
           consecutive_sixes: 0,
           status_text: `${current.name} had no legal moves — turn passes.`,
@@ -463,7 +467,13 @@ Deno.serve(async (req) => {
       ...board,
       players,
       turn_index: nextTurnIndex,
-      dice_value: null,
+      // v3.1 (user request — mirror of LudoEngine.applyMove): the played
+      // number STAYS on the die after the move — through extra rolls and
+      // the ~1s turn-handoff pause — until the next roll replaces it. The
+      // table COLUMN write below is still null (AWAITING_MOVE CAS proxy),
+      // and every legality check is phase-gated, so a retained value can
+      // never be consumed as a live roll.
+      dice_value: dice,
       phase: nextPhase,
       consecutive_sixes: dice === 6 ? (board.consecutive_sixes ?? 0) : 0,
       winner_id: winnerId,
