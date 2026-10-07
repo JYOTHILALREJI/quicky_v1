@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "701890194330",
+    "project_id": "quicky-b0a83",
+    "storage_bucket": "quicky-b0a83.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:701890194330:android:26b9dcb6ff6614a5662823",
+        "android_client_info": {
+          "package_name": "com.aistudio.sparkdating.kqwzt"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyANTzPGa3uCJ9cVbBSFlCMaivsyCiI6uIg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
