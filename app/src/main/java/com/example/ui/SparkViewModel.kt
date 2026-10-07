@@ -2479,7 +2479,7 @@ class SparkViewModel : ViewModel() {
         Analytics.log(
             Analytics.LUDO_COIN_MOVE_STARTED,
             "game_id" to next.id,
-            "player_id" to next.players.getOrNull(previous.turnIndex)?.id ?: "?",
+            "player_id" to (next.players.getOrNull(previous.turnIndex)?.id ?: "?"),
             "movement_duration" to duration
         )
     }
@@ -2498,7 +2498,7 @@ class SparkViewModel : ViewModel() {
                 Analytics.LUDO_TURN_HANDOFF,
                 "game_id" to match.id,
                 "turn_handoff_delay" to LudoRules.TURN_HANDOFF_MS,
-                "player_id" to match.players.getOrNull(match.turnIndex)?.id ?: "?"
+                "player_id" to (match.players.getOrNull(match.turnIndex)?.id ?: "?")
             )
         }
     }
@@ -3120,7 +3120,7 @@ class SparkViewModel : ViewModel() {
                     Analytics.log(
                         Analytics.LUDO_DICE_ROLL_COMPLETED,
                         "game_id" to rolled.id,
-                        "player_id" to rolled.players.getOrNull(drivenSeat)?.id ?: "?",
+                        "player_id" to (rolled.players.getOrNull(drivenSeat)?.id ?: "?"),
                         "roll_result" to (rolled.diceValue ?: 0)
                     )
                     if (rolled.mode == LudoMode.ONLINE) pushOnlineLudoState(rolled)
