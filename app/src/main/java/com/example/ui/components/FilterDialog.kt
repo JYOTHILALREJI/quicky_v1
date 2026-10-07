@@ -1,6 +1,9 @@
 package com.example.ui.components
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -11,14 +14,19 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Cake
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Female
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Male
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material.icons.outlined.Wc
 import androidx.compose.material.icons.outlined.Work
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -53,6 +61,8 @@ fun FilterSheet(
     var verifiedOnly by remember { mutableStateOf(currentFilter.verifiedOnly) }
     var intent by remember { mutableStateOf(currentFilter.relationshipIntent) }
     var occupationInput by remember { mutableStateOf(currentFilter.occupation) }
+    // Gender filter ("Show Me") — "Women", "Men" or "Everyone".
+    var showMe by remember { mutableStateOf(currentFilter.whoDoYouWantToSee) }
     // Language filter (change request #7) — empty means "any language".
     var selectedLanguages by remember { mutableStateOf(currentFilter.languages) }
 
@@ -95,6 +105,77 @@ fun FilterSheet(
                 IconButton(onClick = onDismiss) {
                     Icon(imageVector = Icons.Filled.Close, contentDescription = "Close")
                 }
+            }
+
+            // ---------------------------------------------------------
+            // SHOW ME — gender filter (Women / Men / Everyone)
+            // ---------------------------------------------------------
+            FilterSectionBox(
+                icon = Icons.Outlined.Wc,
+                title = "Show Me",
+                valueText = showMe,
+                testTag = "filter_show_me_box"
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf(
+                            Triple("Women", "Women", Icons.Outlined.Female),
+                            Triple("Men", "Men", Icons.Outlined.Male),
+                            Triple("Everyone", "Everyone", Icons.Outlined.Groups)
+                        ).forEach { (option, label, optionIcon) ->
+                            val selected = showMe == option
+                            val segmentColor by animateColorAsState(
+                                targetValue = if (selected) QuickyPink else Color.Transparent,
+                                animationSpec = tween(200),
+                                label = "showMeSegment"
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = segmentColor,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("filter_show_me_${option.lowercase()}")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center,
+                                    modifier = Modifier
+                                        .heightIn(min = 44.dp)
+                                        .clickable { showMe = option }
+                                        .padding(horizontal = 6.dp, vertical = 10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = optionIcon,
+                                        contentDescription = null,
+                                        tint = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                        color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Text(
+                    text = "Pick who appears in your deck — Everyone keeps discovery open to all genders.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
             }
 
             // ---------------------------------------------------------
@@ -351,6 +432,7 @@ fun FilterSheet(
                 onClick = {
                     onApply(
                         DiscoveryFilter(
+                            whoDoYouWantToSee = showMe,
                             minAge = minAge.toInt(),
                             maxAge = maxAge.toInt(),
                             distanceKm = distance.toInt(),

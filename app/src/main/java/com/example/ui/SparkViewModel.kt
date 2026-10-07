@@ -2171,9 +2171,9 @@ class SparkViewModel : ViewModel() {
 
     /**
      * Filters a set of candidate profiles by the user's discovery
-     * preferences: age window, distance, occupation keyword,
-     * verification and shared interests (a profile matches when it
-     * shares at least one).
+     * preferences: gender ("Show Me"), age window, distance, occupation
+     * keyword, verification and shared interests (a profile matches when
+     * it shares at least one).
      */
     private fun applyDiscoveryFilters(
         deck: List<UserProfile>,
@@ -2181,8 +2181,18 @@ class SparkViewModel : ViewModel() {
     ): List<UserProfile> {
         val occupationQuery = prefs.occupation.trim()
         val preferredLanguages = prefs.languages.map { it.trim().lowercase() }
+        // "Show Me" gender filter — null means "Everyone" (no restriction).
+        // Candidate genders are stored as "Male"/"Female" (same mapping the
+        // server-side RPC uses), so a non-binary/blank gender only shows
+        // under "Everyone", never under Men/Women.
+        val wantedGender = when (prefs.whoDoYouWantToSee) {
+            "Men" -> "Male"
+            "Women" -> "Female"
+            else -> null
+        }
         return deck.filter { profile ->
-            profile.age in prefs.minAge..prefs.maxAge &&
+            (wantedGender == null || profile.gender.equals(wantedGender, ignoreCase = true)) &&
+                profile.age in prefs.minAge..prefs.maxAge &&
                 profile.distanceKm <= prefs.distanceKm &&
                 (occupationQuery.isBlank() ||
                         profile.occupation.contains(occupationQuery, ignoreCase = true)) &&
