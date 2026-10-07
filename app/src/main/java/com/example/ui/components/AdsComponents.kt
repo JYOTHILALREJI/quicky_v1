@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +26,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -42,6 +44,8 @@ import com.example.data.AdConfig
 import com.example.data.AdsManager
 import com.example.ui.theme.QuickyPink
 import com.example.ui.theme.QuickyPurple
+import com.google.android.gms.ads.AdListener
+import com.google.android.gms.ads.LoadAdError
 import kotlinx.coroutines.delay
 
 /* ============================================================================
@@ -246,6 +250,74 @@ fun ClubChatBannerAd(modifier: Modifier = Modifier) {
             update = { adView ->
                 adView.loadAd(AdsManager.newBannerRequest())
             }
+        )
+    }
+}
+
+/**
+ * PRD v2.3 §26–§28: anchored ADAPTIVE banner pinned DIRECTLY under the
+ * personal-chat header — a fixed chat-header element (Column: Header →
+ * Banner → MessageList → Composer, §43), never part of the scrolling
+ * message list.
+ *
+ *  - Unit id comes from [AdConfig] (the supplied anchored-adaptive TEST id).
+ *  - Renders NOTHING until a real ad arrives — a failed load leaves no
+ *    blank/huge container behind (PRD §49 "fail gracefully"); a previously
+ *    loaded ad stays visible across refresh failures instead of flashing.
+ *  - Respects the 60s minimum refresh policy.
+ *  - Eligibility (free users only) is decided by the CALLER through
+ *    PremiumGate.isAdsEnabled — no UI-only premium flags (§27).
+ */
+@Composable
+fun ChatHeaderBannerAd(modifier: Modifier = Modifier) {
+    if (!AdConfig.chatBannerEnabled) return
+
+    val context = LocalContext.current
+    // Nothing renders until the first real ad is loaded (graceful failure).
+    var adLoaded by remember { mutableStateOf(false) }
+    var everLoaded by remember { mutableStateOf(false) }
+
+    val adView = remember {
+        com.google.android.gms.ads.AdView(context).apply {
+            val widthDp = context.resources.configuration.screenWidthDp.coerceAtLeast(320)
+            setAdSize(
+                com.google.android.gms.ads.AdSize
+                    .getCurrentOrientationAnchoredAdaptiveBannerAdSize(context, widthDp)
+            )
+            adUnitId = AdConfig.CHAT_BANNER_AD_UNIT_ID
+            adListener = object : AdListener() {
+                override fun onAdLoaded() {
+                    adLoaded = true
+                    everLoaded = true
+                }
+
+                override fun onAdFailedToLoad(error: LoadAdError) {
+                    // Keep showing a previously loaded ad; collapse only if
+                    // nothing ever arrived (no blank container, §49).
+                    adLoaded = everLoaded
+                }
+            }
+            loadAd(AdsManager.newBannerRequest())
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { adView.destroy() }
+    }
+
+    // 60s manual refresh policy (never faster — AdMob policy).
+    var reloadTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(reloadTick) {
+        delay(AdConfig.MIN_REFRESH_INTERVAL_MS)
+        reloadTick++
+        adView.loadAd(AdsManager.newBannerRequest())
+    }
+
+    if (adLoaded) {
+        AndroidView(
+            modifier = modifier
+                .fillMaxWidth()
+                .heightIn(min = 50.dp),
+            factory = { adView }
         )
     }
 }

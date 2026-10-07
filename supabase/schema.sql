@@ -1535,3 +1535,62 @@ begin
   return v_dice;
 end;
 $$;
+
+
+-- ----------------------------------------------------------------------------
+-- v2.8  PROFILE BOOST — ACCOUNT-SCOPED ACTIVATION (PRD v2.3 §9–§15)
+--
+-- The `boosts` table (v2.6) is the AUTHORITATIVE, per-user boost state.
+-- RLS already restricts SELECT to the owner; writes go through this
+-- SECURITY DEFINER function so a client can never read, create or retire
+-- another account's boost. Boost state belongs to the Supabase Auth user
+-- id — NEVER to the device, Android prefs or in-memory globals.
+--
+-- PRD Test A: A activates → A active; A logs out; B logs in → B INACTIVE
+-- (B's own row is fetched); A logs back in → A ACTIVE (restored from A's
+-- row). Deactivating the previous row keeps "one active boost per user".
+-- ----------------------------------------------------------------------------
+
+create or replace function public.activate_boost(p_minutes int default 30)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_expires timestamptz;
+begin
+  if v_user is null then
+    raise exception 'Not authenticated';
+  end if;
+  if p_minutes is null or p_minutes < 1 or p_minutes > 1440 then
+    raise exception 'Invalid boost duration';
+  end if;
+
+  -- Retire THIS user's earlier boost only (account isolation, §10/§13).
+  update public.boosts
+     set is_active = false,
+         expires_at = least(expires_at, now())
+   where user_id = v_user
+     and is_active;
+
+  insert into public.boosts (user_id, started_at, expires_at, is_active)
+  values (v_user, now(), now() + make_interval(mins => p_minutes), true);
+
+  select expires_at into v_expires
+    from public.boosts
+   where user_id = v_user
+   order by started_at desc
+   limit 1;
+
+  return jsonb_build_object(
+    'user_id', v_user,
+    'started_at', (select started_at from public.boosts where user_id = v_user order by started_at desc limit 1),
+    'expires_at', v_expires
+  );
+end;
+$$;
+
+revoke all on function public.activate_boost(int) from public, anon;
+grant execute on function public.activate_boost(int) to authenticated;

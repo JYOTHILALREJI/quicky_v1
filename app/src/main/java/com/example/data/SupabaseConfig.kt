@@ -49,6 +49,11 @@ object SupabaseConfig {
     const val TABLE_GAME_PROMPTS = "game_prompts"
 
     // ------------------------------------------------------------
+    // Profile Boost (PRD v2.3 §11) — authoritative per-user boost rows
+    // ------------------------------------------------------------
+    const val TABLE_BOOSTS = "boosts"
+
+    // ------------------------------------------------------------
     // Ludo Arena (v2.1 §3.2.4) — online match tables
     // ------------------------------------------------------------
     const val TABLE_LUDO_MATCHES = "ludo_matches"
@@ -63,6 +68,9 @@ object SupabaseConfig {
     // ------------------------------------------------------------
     const val RPC_GET_DISCOVERY_PROFILES = "get_discovery_profiles"
     const val RPC_RECORD_SWIPE = "record_swipe"
+
+    /** PRD v2.3 §11: SECURITY DEFINER activation — keeps boosts account-scoped. */
+    const val RPC_ACTIVATE_BOOST = "activate_boost"
 
     /**
      * True once real credentials have been filled in above.

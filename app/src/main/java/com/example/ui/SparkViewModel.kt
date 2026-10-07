@@ -11,7 +11,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.R
 import com.example.BuildConfig
-import com.example.data.AdConfig
 import com.example.data.AppContent
 import com.example.data.FaceVerifier
 import com.example.data.LudoMatchRepository
@@ -137,9 +136,11 @@ data class SparkUiState(
     val notificationPrefs: NotificationPreferences = NotificationPreferences(),
     val showMeOnDiscovery: Boolean = true,
 
-    // Discovery native-ad cadence (v2.1 §3.6.1)
+    // Discovery native-ad cadence (v2.1 §3.6.1; v2.3 §17–§19 random 1–6)
     val showDiscoveryAdCard: Boolean = false,
     val discoverySwipesSinceAd: Int = 0,
+    /** Random 1–6 swipe threshold for the NEXT ad; regenerated after each ad. */
+    val discoveryAdThreshold: Int = (1..6).random(),
 
     // Edit Location sheet (change request #5)
     val showEditLocationSheet: Boolean = false,
@@ -346,6 +347,7 @@ class SparkViewModel : ViewModel() {
     fun signOut(context: Context) {
         viewModelScope.launch {
             sessionRefreshJob?.cancel()
+            boostExpiryJob?.cancel()
             SupabaseAuth.signOut(context)
             onboardingPhotoBytes.clear()
             _uiState.update {
@@ -364,8 +366,17 @@ class SparkViewModel : ViewModel() {
                     isLocating = false,
                     userProfile = AppContent.currentUser,
                     currentTab = SparkTab.DISCOVER,
+                    // v2.3 §13/§46 — every account-scoped value resets on
+                    // sign-out: the NEXT account starts from its own
+                    // server-side state, never from what this device cached.
+                    entitlements = Entitlements(),
                     discoveryDeck = emptyList(),
                     passedHistory = emptyList(),
+                    // v2.3 §45 — Discovery ad session state never leaks
+                    // across accounts (fresh random threshold for B).
+                    showDiscoveryAdCard = false,
+                    discoverySwipesSinceAd = 0,
+                    discoveryAdThreshold = (1..6).random(),
                     matchCelebration = null,
                     matches = emptyList(),
                     selectedMatchForChat = null,
@@ -442,6 +453,10 @@ class SparkViewModel : ViewModel() {
             // v2: fill the discovery deck from the server-side ranked RPC.
             if (remote.onboardingCompleted) autoLoadDiscoveryDeck()
         }
+        // v2.3 §12 — after login, this account's Boost loads from ITS OWN
+        // Supabase row (auth user id), never from the previous account's
+        // in-memory state: A active → B inactive → A active again (Test A).
+        loadAccountBoost(session)
         // Keep the JWT fresh while the app stays open (Supabase access
         // tokens expire ~1h) — the session itself lives in SharedPreferences
         // and survives app closure until the user explicitly signs out.
@@ -450,6 +465,41 @@ class SparkViewModel : ViewModel() {
 
     /** Hourly session keeper — refreshes the JWT shortly before it expires. */
     private var sessionRefreshJob: Job? = null
+
+    /** Flips an active boost off at its exact expiry (PRD v2.3 §10). */
+    private var boostExpiryJob: Job? = null
+
+    /**
+     * v2.3 §12: loads the AUTHENTICATED user's boost from Supabase and
+     * mirrors it into the UI. The authoritative state is the user-scoped
+     * `boosts` row — local in-memory state is only a reflection of it.
+     */
+    private fun loadAccountBoost(session: SupabaseAuth.AuthSession) {
+        boostExpiryJob?.cancel()
+        if (!SupabaseRepository.isConfigured()) return
+        viewModelScope.launch {
+            val boost = SupabaseRepository.fetchActiveBoost(session)
+            val active = boost?.isActive == true
+            _uiState.update {
+                it.copy(entitlements = it.entitlements.copy(isBoostActive = active))
+            }
+            if (active && boost != null) watchBoostExpiry(boost.expiresAtMs)
+        }
+    }
+
+    /** Clears the boost flag the moment its window ends while the app is open. */
+    private fun watchBoostExpiry(expiresAtMs: Long) {
+        boostExpiryJob?.cancel()
+        boostExpiryJob = viewModelScope.launch {
+            val remaining = expiresAtMs - System.currentTimeMillis()
+            if (remaining > 0) delay(remaining)
+            if (_uiState.value.entitlements.isBoostActive) {
+                _uiState.update {
+                    it.copy(entitlements = it.entitlements.copy(isBoostActive = false))
+                }
+            }
+        }
+    }
 
     private fun scheduleSessionRefresh(session: SupabaseAuth.AuthSession) {
         sessionRefreshJob?.cancel()
@@ -931,14 +981,30 @@ class SparkViewModel : ViewModel() {
         }
     }
 
-    /** v2.1 §3.6.1: injects the Sponsored card once every N swipes. */
+    /**
+     * v2.3 §16–§19: injects the Sponsored card after a RANDOM 1–6 swipe
+     * threshold — freshly generated after every ad, never a fixed cadence.
+     * Quicky Gold accounts are ad-free (real entitlement, not the QA
+     * unlock); only COMPLETED profile swipes feed the counter; the counter
+     * resets between ads so two ads can never appear back-to-back (the
+     * minimum gap of one full swipe always leaves a real profile between
+     * them, PRD §24).
+     */
     private fun maybeTriggerDiscoveryAd() {
         val state = _uiState.value
         if (state.showDiscoveryAdCard) return
-        if (state.discoverySwipesSinceAd >= AdConfig.discoveryNativeEveryNSwipes &&
+        if (!PremiumGate.isAdsEnabled(state.entitlements)) return
+        if (state.discoverySwipesSinceAd >= state.discoveryAdThreshold &&
             state.discoveryDeck.isNotEmpty()
         ) {
-            _uiState.update { it.copy(showDiscoveryAdCard = true, discoverySwipesSinceAd = 0) }
+            _uiState.update {
+                it.copy(
+                    showDiscoveryAdCard = true,
+                    discoverySwipesSinceAd = 0,
+                    // Fresh independent threshold for the NEXT ad (§17).
+                    discoveryAdThreshold = (1..6).random()
+                )
+            }
         }
     }
 
@@ -973,7 +1039,9 @@ class SparkViewModel : ViewModel() {
                     it.copy(
                         discoveryDeck = candidates,
                         showDiscoveryAdCard = false,
-                        discoverySwipesSinceAd = 0
+                        discoverySwipesSinceAd = 0,
+                        // Fresh random cadence for the new session (§17).
+                        discoveryAdThreshold = (1..6).random()
                     )
                 }
             }
@@ -1058,6 +1126,12 @@ class SparkViewModel : ViewModel() {
         }
     }
 
+    /**
+     * v2.3 §9–§15: Boost state belongs to the AUTHENTICATED user's Supabase
+     * row (activated through the SECURITY DEFINER RPC) — never to the
+     * device. Logging out and back in re-derives it from the server, so
+     * Account B can never inherit Account A's boost (PRD Test A).
+     */
     fun activateBoost() {
         if (!PremiumGate.isPremium(_uiState.value.entitlements) &&
             _uiState.value.entitlements.boostsRemaining <= 0) {
@@ -1076,6 +1150,16 @@ class SparkViewModel : ViewModel() {
                 entitlements = updatedEntitlements,
                 toastMessage = "🚀 Profile Boost active! 10x discovery exposure for the next 30 minutes!"
             )
+        }
+
+        // Persist to THIS account's row in Supabase (authoritative source of
+        // truth). Offline / un-configured installs keep the local mirror
+        // above until the next sign-in reload — never another account's data.
+        _uiState.value.authSession?.let { session ->
+            viewModelScope.launch {
+                val boost = SupabaseRepository.activateBoostRpc(session)
+                if (boost != null) watchBoostExpiry(boost.expiresAtMs)
+            }
         }
     }
 
@@ -1770,6 +1854,9 @@ class SparkViewModel : ViewModel() {
             it.copy(
                 entitlements = updated,
                 showPremiumStore = false,
+                // Quicky Gold is ad-free from this moment on (§16/§27): drop
+                // any Sponsored card that is currently on screen.
+                showDiscoveryAdCard = false,
                 toastMessage = "🎉 Welcome to Quicky Premium! All filters, voice chat, and dating games unlocked."
             )
         }

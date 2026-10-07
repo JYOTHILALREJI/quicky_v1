@@ -319,6 +319,9 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                         onBlock = { viewModel.blockUser(selectedChat.user.id) },
                         onReport = { reason -> viewModel.reportUser(selectedChat.user.id, reason) },
                         isPremium = PremiumGate.isPremium(state.entitlements),
+                        // PRD v2.3 §27 — chat-header banner for FREE accounts
+                        // only (real entitlement, not the QA unlock).
+                        showBannerAd = PremiumGate.isAdsEnabled(state.entitlements),
                         onOpenPremiumStore = { viewModel.openPremiumStore() },
                         onOpenLudo = { viewModel.openLudoGame() },
                         onOpenStickerPicker = { viewModel.openStickerPicker() },

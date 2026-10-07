@@ -108,7 +108,13 @@ object LudoMatchRepository {
         val players = buildList {
             for (i in 0 until playersJson.length()) {
                 val p = playersJson.optJSONObject(i) ?: continue
-                val seat = p.optInt("seat", 0)
+                // Seat-ownership hardening (PRD v2.3 §5): the server treats
+                // the array INDEX as the seat (Edge Functions index players
+                // by position), so the client normalizes seat = index — the
+                // seat is the immutable coin COLOR identity (0=RED, 1=GREEN,
+                // 2=YELLOW, 3=BLUE) and drives which home triangle the coins
+                // finish in. Never trust a drifted `seat` field in the row.
+                val seat = i
                 val tokensJson = p.optJSONArray("tokens") ?: JSONArray()
                 add(
                     LudoPlayer(

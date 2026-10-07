@@ -358,6 +358,77 @@ object SupabaseRepository {
     }
 
     // ==============================================================
+    // PROFILE BOOST (PRD v2.3 §9–§15) — account-scoped via Supabase
+    // ==============================================================
+
+    /** The signed-in user's active boost window (epoch millis), if any. */
+    data class ActiveBoost(
+        val startedAtMs: Long,
+        val expiresAtMs: Long
+    ) {
+        val isActive: Boolean get() = expiresAtMs > System.currentTimeMillis()
+    }
+
+    /**
+     * Loads the AUTHENTICATED user's active boost row (RLS: own rows only).
+     * Returns null when none is active or it has already expired — the
+     * boost state belongs to the Supabase Auth user id, never to the
+     * device, so a newly signed-in account can never inherit the previous
+     * account's boost (PRD Test A).
+     */
+    suspend fun fetchActiveBoost(session: SupabaseAuth.AuthSession): ActiveBoost? {
+        if (!isConfigured()) return null
+        return runCatching {
+            val raw = SupabaseClient.rest(
+                method = "GET",
+                path = "/rest/v1/${SupabaseConfig.TABLE_BOOSTS}",
+                query = mapOf(
+                    "select" to "started_at,expires_at",
+                    "user_id" to "eq.${session.userId}",
+                    "is_active" to "eq.true",
+                    "order" to "started_at.desc",
+                    "limit" to "1"
+                ),
+                accessToken = session.accessToken
+            )
+            val row = SupabaseClient.parseArray(raw).optJSONObject(0)
+                ?: return@runCatching null
+            val started = LudoTime.parseIsoToEpochMs(row.optString("started_at"))
+            val expires = LudoTime.parseIsoToEpochMs(row.optString("expires_at"))
+            if (started == null || expires == null) return@runCatching null
+            ActiveBoost(started, expires)
+        }.getOrNull()
+    }
+
+    /**
+     * Activates a fresh 30-minute boost for the AUTHENTICATED user through
+     * the SECURITY DEFINER RPC (schema.sql v2.8): the previous row is
+     * retired first, and only the caller's own row is ever touched.
+     * Returns the new window, or null when the RPC is unavailable
+     * (offline / not yet deployed) — callers then keep local-only state.
+     */
+    suspend fun activateBoostRpc(
+        session: SupabaseAuth.AuthSession,
+        minutes: Int = 30
+    ): ActiveBoost? {
+        if (!isConfigured()) return null
+        return runCatching {
+            val raw = SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/rpc/${SupabaseConfig.RPC_ACTIVATE_BOOST}",
+                body = JSONObject().put("p_minutes", minutes).toString(),
+                accessToken = session.accessToken
+            )
+            // PostgREST returns the function's jsonb result directly
+            // (or an error object — guard both shapes).
+            val obj = JSONObject(raw)
+            val started = LudoTime.parseIsoToEpochMs(obj.optString("started_at"))
+            val expires = LudoTime.parseIsoToEpochMs(obj.optString("expires_at"))
+            if (started == null || expires == null) null else ActiveBoost(started, expires)
+        }.getOrNull()
+    }
+
+    // ==============================================================
     // WRITES
     // ==============================================================
 

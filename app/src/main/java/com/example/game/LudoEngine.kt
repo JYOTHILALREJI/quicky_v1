@@ -135,6 +135,56 @@ object LudoEngine {
     }
 
     // --------------------------------------------------------------
+    // Finish slots — per-seat home-triangle ownership (PRD v2.3 §4–§8)
+    // --------------------------------------------------------------
+
+    /**
+     * The 4 dedicated resting slots of one seat's OWN colored center
+     * triangle, in cell units (fractional grid coordinates; the board is
+     * 15x15 cells). Classic 3+1 parking layout — three coins along the
+     * triangle's base plus one deeper on the centerline:
+     *
+     *        RED seat 0 — LEFT triangle        GREEN seat 1 — TOP triangle
+     *   (6.40,6.90)                (6.90,6.40)
+     *   (6.40,7.50)  (7.00,7.50)   (7.50,6.40)  (7.50,7.00)
+     *   (6.40,8.10)                (8.10,6.40)
+     *
+     *        YELLOW seat 2 — RIGHT triangle    BLUE seat 3 — BOTTOM triangle
+     *   (8.60,6.90)                (6.90,8.60)
+     *   (8.60,7.50)  (8.00,7.50)   (7.50,8.60)  (7.50,8.00)
+     *   (8.60,8.10)                (8.10,8.60)
+     *
+     * The mapping seat → triangle is IMMUTABLE for the whole game
+     * (RED→left, GREEN→top, YELLOW→right, BLUE→bottom) and is resolved
+     * from the coin OWNER's seat→color identity — never from the board
+     * position, never shared between players. Every slot keeps the full
+     * 0.6-cell parked coin (circle) inside its own triangle — verified
+     * against the base edge AND both diagonal edges (distance ≥ radius),
+     * so a red coin can never finish in another player's triangle
+     * (PRD §3/§4) and multiple coins never overlap.
+     */
+    fun finishSlotFor(seat: Int, tokenId: Int): Pair<Float, Float> {
+        val t = tokenId.coerceIn(0, 3)
+        // Base row: three slots at depth 0.40 from the outer edge, lateral
+        // -0.60 / 0.0 / +0.60 across the base midpoint. Apex: one slot on
+        // the centerline at depth 1.00.
+        val isApex = t == 3
+        val depth = if (isApex) 1.0f else 0.4f
+        val lateral = when (t) {
+            0 -> -0.6f
+            1 -> 0f
+            2 -> 0.6f
+            else -> 0f // apex rides the centerline
+        }
+        return when (seat.coerceIn(0, 3)) {
+            0 -> 6.0f + depth to 7.5f + lateral    // RED    — left triangle
+            1 -> 7.5f + lateral to 6.0f + depth    // GREEN  — top triangle
+            2 -> 9.0f - depth to 7.5f + lateral    // YELLOW — right triangle
+            else -> 7.5f + lateral to 9.0f - depth  // BLUE   — bottom triangle
+        }
+    }
+
+    // --------------------------------------------------------------
     // Occupancy helpers
     // --------------------------------------------------------------
 

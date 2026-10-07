@@ -44,4 +44,16 @@ object PremiumGate {
 
     /** Convenience overload for gates that only know the subscription flag. */
     fun isPremium(subscribed: Boolean): Boolean = FORCE_UNLOCKED || subscribed
+
+    /**
+     * PRD v2.3 §16/§27 — ad eligibility for Discovery feed ads and the chat
+     * banner: FREE accounts only. Quicky Gold (and any entitlement that
+     * grants ad removal) sees no ads.
+     *
+     * Deliberately reads the REAL account subscription state and NOT
+     * [FORCE_UNLOCKED]: the QA unlock opens premium FEATURES for testing —
+     * it does not purchase ad removal, otherwise ads could never be
+     * validated on debug builds.
+     */
+    fun isAdsEnabled(entitlements: Entitlements): Boolean = !entitlements.isPremium
 }

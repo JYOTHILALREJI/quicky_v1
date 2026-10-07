@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -33,12 +34,14 @@ import com.example.R
 import com.example.data.AppContent
 import com.example.model.*
 import com.example.ui.components.ChatBubble
+import com.example.ui.components.ChatHeaderBannerAd
 import com.example.ui.components.QuickyGamesIcon
 import com.example.ui.components.QuickyStickerIcon
 import com.example.ui.components.ReplyPreviewBanner
 import com.example.ui.components.dismissKeyboardOnTap
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,6 +63,8 @@ fun ChatDetailScreen(
     onOpenLudo: () -> Unit = {},
     onOpenStickerPicker: () -> Unit = {},
     onSendVoiceMessage: (Int) -> Unit = {},
+    /** PRD v2.3 §26/§27 — free users see the fixed banner under the header. */
+    showBannerAd: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -83,10 +88,61 @@ fun ChatDetailScreen(
         }
     }
 
-    // Auto-scroll to the newest message (never clipped behind the composer).
+    // ------------------------------------------------------------------
+    // v2.3 §36–§39 — WhatsApp-style arrival behavior:
+    //  · OUTGOING message  → ALWAYS scroll to the newest message.
+    //  · INCOMING message   → auto-scroll only when the user is already
+    //    near the bottom; otherwise a floating "N new messages ↓" pill lets
+    //    them jump down on demand (reading history is never interrupted).
+    // Only COMPLETED list changes trigger effects — never recomposition.
+    // ------------------------------------------------------------------
+    val isNearBottom by remember {
+        derivedStateOf {
+            val info = chatListState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            lastVisible >= info.totalItemsCount - 2
+        }
+    }
+    var unseenMessages by remember { mutableIntStateOf(0) }
+    var lastKnownCount by remember { mutableIntStateOf(0) }
+
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            chatListState.animateScrollToItem(messages.size) // +1: header tile at index 0
+        if (messages.isEmpty()) {
+            lastKnownCount = 0
+            unseenMessages = 0
+            return@LaunchedEffect
+        }
+        val previousCount = lastKnownCount
+        lastKnownCount = messages.size
+        if (previousCount >= messages.size) return@LaunchedEffect // no new arrivals
+
+        if (previousCount == 0) {
+            // Fresh open: land instantly on the newest message (WhatsApp).
+            chatListState.scrollToItem(messages.size) // +1: header tile at index 0
+            unseenMessages = 0
+        } else {
+            val newestIsMine = messages.last().isMine
+            if (newestIsMine || isNearBottom) {
+                unseenMessages = 0
+                chatListState.animateScrollToItem(messages.size)
+            } else {
+                // Reading history: count it, never yank the user down (§38).
+                unseenMessages += messages.size - previousCount
+            }
+        }
+    }
+
+    // §40 — with the keyboard open, the newest message stays visible: the
+    // composer already rides above the IME (imePadding below); this keeps
+    // the bottom of the conversation pinned whenever the IME appears while
+    // the user is at/near the bottom (or just sent a message).
+    val density = LocalDensity.current
+    val imeOpen = WindowInsets.ime.getBottom(density) > 0
+    LaunchedEffect(imeOpen, messages.size) {
+        if (imeOpen && messages.isNotEmpty() &&
+            (messages.last().isMine || isNearBottom)
+        ) {
+            chatListState.animateScrollToItem(messages.size)
         }
     }
 
@@ -230,60 +286,101 @@ fun ChatDetailScreen(
                 // (8dp gap comes from the composer's own bottom padding).
                 .imePadding()
         ) {
+            // PRD v2.3 §26/§43 — advertising banner pinned DIRECTLY under the
+            // chat header, as a fixed chat-header element (never inside the
+            // scrolling message list). Free users only — the caller resolves
+            // eligibility through the centralized entitlement check (§27).
+            if (showBannerAd) {
+                ChatHeaderBannerAd()
+            }
+
             // Chat Messages List — tap on the background dismisses the
             // keyboard (v2.1 §3.5) and the bottom padding keeps the last
             // bubble clear of the composer.
-            LazyColumn(
-                state = chatListState,
+            Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .dismissKeyboardOnTap(),
-                reverseLayout = false,
-                // v2.1 §3.3 spacing grid: 6dp between bubbles, 4dp for
-                // consecutive same-sender bubbles, 12dp between sender
-                // blocks (handled per-item below).
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                contentPadding = PaddingValues(bottom = 12.dp)
             ) {
-                // Header notice
-                item {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = SparkRose.copy(alpha = 0.15f),
-                            modifier = Modifier.padding(bottom = 8.dp)
+                LazyColumn(
+                    state = chatListState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .dismissKeyboardOnTap(),
+                    reverseLayout = false,
+                    // v2.1 §3.3 spacing grid: 6dp between bubbles, 4dp for
+                    // consecutive same-sender bubbles, 12dp between sender
+                    // blocks (handled per-item below).
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    contentPadding = PaddingValues(bottom = 12.dp)
+                ) {
+                    // Header notice
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = SparkRose.copy(alpha = 0.15f),
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            ) {
+                                Text(
+                                    text = "🎉 You matched with ${match.user.name}",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = SparkRose,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
                             Text(
-                                text = "🎉 You matched with ${match.user.name}",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = SparkRose,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                text = "Send a thoughtful message or challenge them to Truth or Dare!",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Text(
-                            text = "Send a thoughtful message or challenge them to Truth or Dare!",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+
+                    itemsIndexed(messages, key = { _, msg -> msg.id }) { index, msg ->
+                        val previous = messages.getOrNull(index - 1)
+                        val sameSenderAsPrevious = previous != null && previous.isMine == msg.isMine
+                        ChatBubble(
+                            message = msg,
+                            modifier = if (sameSenderAsPrevious) Modifier.padding(top = (-2).dp) else Modifier,
+                            onReactionClick = { emoji -> onAddReaction(msg.id, emoji) },
+                            onAnswerGame = { answer -> onAnswerGame(msg.id, answer) },
+                            onSwipeToReply = { replyingToMessage = msg }
                         )
                     }
                 }
 
-                itemsIndexed(messages, key = { _, msg -> msg.id }) { index, msg ->
-                    val previous = messages.getOrNull(index - 1)
-                    val sameSenderAsPrevious = previous != null && previous.isMine == msg.isMine
-                    ChatBubble(
-                        message = msg,
-                        modifier = if (sameSenderAsPrevious) Modifier.padding(top = (-2).dp) else Modifier,
-                        onReactionClick = { emoji -> onAddReaction(msg.id, emoji) },
-                        onAnswerGame = { answer -> onAnswerGame(msg.id, answer) },
-                        onSwipeToReply = { replyingToMessage = msg }
-                    )
+                // v2.3 §38 — "N new messages ↓" jump pill: appears only
+                // while newer messages sit BELOW the current viewport; one
+                // tap scrolls to the newest (never auto-interrupts reading).
+                if (unseenMessages > 0) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        shape = RoundedCornerShape(50),
+                        shadowElevation = 4.dp,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 10.dp)
+                            .testTag("chat_new_messages_pill"),
+                        onClick = {
+                            unseenMessages = 0
+                            coroutineScope.launch {
+                                chatListState.animateScrollToItem(messages.size)
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = "$unseenMessages new message${if (unseenMessages == 1) "" else "s"} ↓",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                        )
+                    }
                 }
             }
 

@@ -44,7 +44,6 @@ import androidx.compose.material.icons.filled.PersonAddAlt1
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -687,14 +686,13 @@ private fun tokenPositionFor(seat: Int, tokenId: Int, stepCount: Int): TokenPosi
         TokenPosition(c + 0.5f, r + 0.5f)
     }
     else -> {
-        // Finished tokens rest inside their seat's center triangle.
-        val along = (tokenId - 1.5f) * 0.22f
-        when (seat) {
-            0 -> TokenPosition(6.1f, 7f + along)          // RED left triangle
-            1 -> TokenPosition(7f + along, 6.1f)          // GREEN top triangle
-            2 -> TokenPosition(7.9f, 7f + along)          // YELLOW right triangle
-            else -> TokenPosition(7f + along, 7.9f)       // BLUE bottom triangle
-        }
+        // Finished tokens rest inside their OWN colored triangle via the
+        // per-seat finish-slot system (PRD v2.3 §4/§6/§7): the destination
+        // is resolved from the coin OWNER's seat→color identity — never
+        // inferred from the board position — so a red coin can only ever
+        // finish in the red triangle (and so on for every color).
+        val (c, r) = LudoEngine.finishSlotFor(seat, tokenId)
+        TokenPosition(c, r)
     }
 }
 
@@ -943,7 +941,14 @@ private fun LudoArenaBoard(
         )
 
         val placements: List<TokenPlacement> = buildList {
-            match.players.forEachIndexed { seat, player ->
+            match.players.forEach { player ->
+                // Final-triangle ownership hardening (PRD v2.3 §8): the
+                // destination triangle is resolved from the coin OWNER's
+                // color identity (player.seat → RED/GREEN/YELLOW/BLUE), not
+                // from the array position — a red coin can never render in
+                // another player's triangle even if a legacy board row ever
+                // drifted out of seat order.
+                val seat = player.seat.coerceIn(0, 3)
                 player.tokens.forEach { token ->
                     val override = visualPositions[seat to token.id]
                     val pos = override ?: tokenPositionFor(seat, token.id, token.stepCount)
@@ -976,7 +981,10 @@ private fun LudoArenaBoard(
                 tokenId = placement.token.id,
                 isMovable = isMovable,
                 isFinished = placement.token.isFinished,
-                tokenSizeDp = tokenSizeDp.value,
+                // Parked (finished) coins render slightly smaller so all four
+                // fit their own triangle's 3+1 slot grid without crowding.
+                tokenSizeDp = if (placement.token.isFinished) tokenSizeDp.value * 0.88f
+                else tokenSizeDp.value,
                 xDp = (placement.col + spread) * cellDp.value - tokenSizeDp.value / 2f,
                 yDp = (placement.row + spread) * cellDp.value - tokenSizeDp.value / 2f,
                 onClick = {
@@ -1110,14 +1118,15 @@ private fun LudoDiceButton(
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
             shape = RoundedCornerShape(14.dp),
-            color = if (enabled) QuickyPink else MaterialTheme.colorScheme.surfaceVariant,
+            // FIXED die identity (PRD v2.3 §2.1): deep-ink face + ALWAYS-GOLD
+            // border and pips in BOTH themes and EVERY state (enabled / idle /
+            // rolling). Never derived from player color, turn, theme accent or
+            // random state — the ink face keeps the champagne gold readable
+            // on light surfaces and dark boards alike.
+            color = LudoDiceInk,
             border = androidx.compose.foundation.BorderStroke(
-                2.dp,
-                when {
-                    urgent -> MaterialTheme.colorScheme.error
-                    enabled -> QuickyGold
-                    else -> Color.Transparent
-                }
+                if (enabled) 2.5.dp else 1.5.dp,
+                QuickyGold
             ),
             shadowElevation = 6.dp,
             modifier = Modifier
@@ -1127,27 +1136,10 @@ private fun LudoDiceButton(
                 .testTag("ludo_dice_button")
         ) {
             Box(contentAlignment = Alignment.Center) {
-                if (isRolling) {
-                    // While rolling the button is disabled (gray surface), so
-                    // the spinner must follow the theme: BLACK in light, WHITE
-                    // in dark — same rule as the settled pips (user report).
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(22.dp),
-                        color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White
-                        else Color.Black,
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    // Theme-aware pip color (user report: white dice invisible
-                    // in light theme): black in light, white in dark. While
-                    // ENABLED the pink face keeps white/gold pips in BOTH themes.
-                    DiceFaceDots(
-                        value = diceValue ?: rollingFace,
-                        tint = if (enabled) Color.Unspecified
-                        else if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White
-                        else Color.Black
-                    )
-                }
+                // Gold pips both while tumbling and settled — the roll state is
+                // conveyed by the rotation + "ROLLING…" label instead of a
+                // theme-dependent spinner.
+                DiceFaceDots(value = diceValue ?: rollingFace)
             }
         }
         Text(
@@ -1170,20 +1162,39 @@ private fun LudoDiceButton(
     }
 }
 
+/** Fixed deep-ink die face — the champagne gold pips/border stay readable on it in BOTH themes. */
+private val LudoDiceInk = Color(0xFF272740)
+
 @Composable
 fun DiceFaceDots(value: Int, tint: Color = Color.Unspecified) {
-    val emoji = when (value) {
-        1 -> "⚀"; 2 -> "⚁"; 3 -> "⚂"; 4 -> "⚃"; 5 -> "⚄"
-        else -> "⚅"
+    // REAL pips drawn on Canvas (PRD v2.3 §2.1): the glyph dice (⚀–⚅) could
+    // not be reliably recolored across OEM fonts. Pips are ALWAYS Quicky's
+    // gold (unless a caller explicitly overrides [tint]) — never derived
+    // from the player, turn, coin color or theme.
+    val pipColor = if (tint != Color.Unspecified) tint else QuickyGold
+    Canvas(modifier = Modifier.size(30.dp)) {
+        val c = Offset(size.width / 2f, size.height / 2f)
+        val o = size.minDimension * 0.26f
+        val r = size.minDimension * 0.095f
+        val pipCenters: List<Offset> = when (value) {
+            1 -> listOf(c)
+            2 -> listOf(c + Offset(-o, -o), c + Offset(o, o))
+            3 -> listOf(c + Offset(-o, -o), c, c + Offset(o, o))
+            4 -> listOf(
+                c + Offset(-o, -o), c + Offset(o, -o),
+                c + Offset(-o, o), c + Offset(o, o)
+            )
+            5 -> listOf(
+                c + Offset(-o, -o), c + Offset(o, -o), c,
+                c + Offset(-o, o), c + Offset(o, o)
+            )
+            else -> listOf(
+                c + Offset(-o, -o), c + Offset(-o, 0f), c + Offset(-o, o),
+                c + Offset(o, -o), c + Offset(o, 0f), c + Offset(o, o)
+            )
+        }
+        pipCenters.forEach { center ->
+            drawCircle(color = pipColor, radius = r, center = center)
+        }
     }
-    Text(
-        emoji,
-        fontSize = 34.sp,
-        color = when {
-            tint != Color.Unspecified -> tint
-            value == 6 -> QuickyGold
-            else -> Color.White
-        },
-        fontWeight = FontWeight.ExtraBold
-    )
 }
