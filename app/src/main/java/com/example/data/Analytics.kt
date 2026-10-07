@@ -1,13 +1,15 @@
 package com.example.data
 
+import android.os.Bundle
 import android.util.Log
+import com.google.firebase.Firebase
+import com.google.firebase.analytics.FirebaseAnalytics
+import com.google.firebase.analytics.analytics
 
 /**
  * Lightweight product-analytics shim (PRD v3.2 §29).
  *
- * The app currently ships WITHOUT a third-party analytics SDK, but the PRD
- * requires named events around the changed interactions. This object gives
- * every call-site a single, dependency-free funnel:
+ * Every call-site uses one funnel:
  *
  *   Analytics.log(Analytics.LUDO_DICE_ROLL_COMPLETED, "roll_result" to 6)
  *
@@ -16,11 +18,17 @@ import android.util.Log
  *
  *   I/QuickyAnalytics: ludo_dice_roll_completed {player_id=user_me, roll_result=6}
  *
- * When a real SDK (Firebase Analytics / Amplitude / …) is wired in, ONLY this
- * file changes — every call site keeps the same signature. The constant
- * strings below are the canonical PRD §29 event names; timing properties
- * (roll_result, movement_duration, turn_handoff_delay, player_id, game_id)
- * are attached at the call sites that own those values.
+ * v3.3: with google-services.json + firebase-analytics now wired in,
+ * every event is ALSO forwarded to Firebase Analytics (same event name,
+ * stringified properties — Firebase Analytics has no numeric params).
+ * The Firebase side degrades to a no-op whenever Firebase isn't
+ * available (unit tests, missing config), so the Logcat funnel above
+ * stays the source of truth for local debugging.
+ *
+ * The constant strings below are the canonical PRD §29 event names;
+ * timing properties (roll_result, movement_duration, turn_handoff_delay,
+ * player_id, game_id) are attached at the call sites that own those
+ * values.
  */
 object Analytics {
 
@@ -47,6 +55,20 @@ object Analytics {
     const val SAFETY_USER_BLOCKED = "safety_user_blocked"
     const val SAFETY_USER_UNBLOCKED = "safety_user_unblocked"
 
+    // ---- Push notifications (v3.3) ----
+    const val PUSH_NOTIFICATION_SHOWN = "push_notification_shown"
+    const val PUSH_NOTIFICATION_TAPPED = "push_notification_tapped"
+    const val PUSH_PERMISSION_RESULT = "push_permission_result"
+
+    /**
+     * Firebase Analytics forwarder — null when Firebase isn't available
+     * (unit tests / missing google-services config); never crashes the
+     * caller either way.
+     */
+    private val firebase: FirebaseAnalytics? by lazy {
+        runCatching { Firebase.analytics }.getOrNull()
+    }
+
     /** Logs one structured event; `props` are key/value pairs (any order). */
     fun log(event: String, vararg props: Pair<String, Any?>) {
         if (props.isEmpty()) {
@@ -54,6 +76,14 @@ object Analytics {
         } else {
             val body = props.joinToString(", ") { (k, v) -> "$k=$v" }
             Log.i(TAG, "$event {$body}")
+        }
+        firebase?.let { fa ->
+            runCatching {
+                val params = Bundle().apply {
+                    props.forEach { (k, v) -> putString(k, v?.toString()) }
+                }
+                fa.logEvent(event, params)
+            }
         }
     }
 }

@@ -17,6 +17,7 @@ import com.example.data.FaceVerifier
 import com.example.data.LudoMatchRepository
 import com.example.data.LudoRealtime
 import com.example.data.LudoTime
+import com.example.data.QuickyPushService
 import com.example.data.SupabaseAuth
 import com.example.data.SupabaseRepository
 import com.example.game.LudoEngine
@@ -92,6 +93,13 @@ data class SparkUiState(
     val discoveryPreferences: DiscoveryPreferences = DiscoveryPreferences(),
     val interactionInsights: List<InteractionInsight> = emptyList(),
     val notifications: List<NotificationItem> = emptyList(),
+    /**
+     * v3.3: quicky://notify deep link from a tapped push notification that
+     * couldn't be routed yet (e.g. cold start — matches/clubs still loading
+     * from the server). Retried as that data lands; see
+     * [SparkViewModel.tryConsumePendingNotificationRoute].
+     */
+    val pendingNotificationRoute: String? = null,
     val toastMessage: String? = null,
     val selectedProfileDetail: UserProfile? = null,
     val showFilterSheet: Boolean = false,
@@ -359,6 +367,84 @@ class SparkViewModel : ViewModel() {
     }
 
     /**
+     * v3.3: routes a quicky://notify deep link (a tapped push
+     * notification — see PushNotifications.buildDeepLink). The route is
+     * always stashed first: on cold start the session / matches / clubs
+     * are still loading, so routing is retried by
+     * [tryConsumePendingNotificationRoute] as that data lands. Returns
+     * true when the link was a notify link (handled now or queued).
+     */
+    fun handleNotificationDeepLink(uri: Uri): Boolean {
+        if (uri.scheme != "quicky" || uri.host != "notify") return false
+        _uiState.update { it.copy(pendingNotificationRoute = uri.toString()) }
+        Analytics.log(
+            Analytics.PUSH_NOTIFICATION_TAPPED,
+            "target" to (uri.getQueryParameter("target") ?: "app")
+        )
+        tryConsumePendingNotificationRoute()
+        return true
+    }
+
+    /**
+     * Attempts to route the pending notification deep link. Called from
+     * the UI whenever the pending route / matches / clubs change (a
+     * LaunchedEffect in SparkApp) — cheap no-op when nothing is pending.
+     * Waits while the needed list is still empty (server fetch in
+     * flight), and falls back to the owning tab once data arrived
+     * without the referenced id.
+     */
+    fun tryConsumePendingNotificationRoute() {
+        val state = _uiState.value
+        val route = state.pendingNotificationRoute ?: return
+        if (state.authGate != AuthGate.SIGNED_IN || !state.isOnboardingComplete) return
+        val uri = Uri.parse(route)
+        when (uri.getQueryParameter("target")) {
+            "chat", "message" -> {
+                val chatId =
+                    uri.getQueryParameter("chat_id") ?: uri.getQueryParameter("match_id")
+                val match = chatId?.let { id -> state.matches.firstOrNull { it.id == id } }
+                when {
+                    match != null -> {
+                        openChat(match)
+                        _uiState.update { it.copy(pendingNotificationRoute = null) }
+                    }
+                    // Matches still loading (cold start) — retry on arrival.
+                    state.matches.isEmpty() -> Unit
+                    // Loaded, but the id is stale — land on the Chats tab.
+                    else -> {
+                        setTab(SparkTab.CHATS)
+                        _uiState.update { it.copy(pendingNotificationRoute = null) }
+                    }
+                }
+            }
+            "match" -> {
+                setTab(SparkTab.MATCHES)
+                _uiState.update { it.copy(pendingNotificationRoute = null) }
+            }
+            "club" -> {
+                val clubId = uri.getQueryParameter("club_id")
+                val club = clubId?.let { id -> state.clubs.firstOrNull { it.id == id } }
+                when {
+                    club != null -> {
+                        setTab(SparkTab.CLUBS)
+                        openClub(club)
+                        _uiState.update { it.copy(pendingNotificationRoute = null) }
+                    }
+                    // Clubs still loading — retry on arrival (the signed-in
+                    // bootstrap / setTab(CLUBS) fetch populates them).
+                    state.clubs.isEmpty() -> Unit
+                    else -> {
+                        setTab(SparkTab.CLUBS)
+                        _uiState.update { it.copy(pendingNotificationRoute = null) }
+                    }
+                }
+            }
+            // No target — plain "open the app" notification tap.
+            else -> _uiState.update { it.copy(pendingNotificationRoute = null) }
+        }
+    }
+
+    /**
      * Signs out: revokes the session server-side, clears local tokens
      * and resets all in-memory app state. Profile, matches and chat
      * history live in the database and reload on the next sign-in.
@@ -406,6 +492,7 @@ class SparkViewModel : ViewModel() {
                     selectedClubForDetail = null,
                     clubMessages = emptyMap(),
                     notifications = emptyList(),
+                    pendingNotificationRoute = null,
                     interactionInsights = emptyList(),
                     ludoMatch = null,
                     isLudoActive = false,
@@ -488,6 +575,11 @@ class SparkViewModel : ViewModel() {
         // tokens expire ~1h) — the session itself lives in SharedPreferences
         // and survives app closure until the user explicitly signs out.
         scheduleSessionRefresh(session)
+        // v3.3: link this device's FCM registration token to the freshly
+        // signed-in account (device_tokens upsert) so server-side pushes
+        // can address it. Covers token-before-sign-in and account switches;
+        // fire-and-forget — offline just logs, retried next sign-in.
+        appContext?.let { ctx -> QuickyPushService.syncTokenToServer(ctx) }
     }
 
     /** Hourly session keeper — refreshes the JWT shortly before it expires. */

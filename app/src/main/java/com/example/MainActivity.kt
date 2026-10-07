@@ -1,9 +1,11 @@
 package com.example
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -31,6 +33,9 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.AdsManager
+import com.example.data.Analytics
+import com.example.data.PushNotifications
+import com.example.data.QuickyPushService
 import com.example.data.SupabaseAuth
 import com.example.model.AuthGate
 import com.example.model.DiscoveryFilter
@@ -40,6 +45,7 @@ import com.example.ui.SparkViewModel
 import com.example.ui.components.*
 import com.example.ui.screens.*
 import com.example.ui.theme.SparkTheme
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -105,6 +111,55 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
         // v2.1 §3.6 — AdMob bootstrap (idempotent).
         LaunchedEffect(Unit) { AdsManager.initialize(context) }
 
+        // v3.3 — push notification bootstrap: create the Quicky channels
+        // (matches / messages / clubs) and capture the FCM registration
+        // token, mirroring it to Supabase for the signed-in account. Grab
+        // the token from logcat (tag "QuickyPush") to test server-side
+        // sends via the FCM console or curl.
+        LaunchedEffect(Unit) {
+            PushNotifications.ensureChannels(context)
+            runCatching {
+                FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
+                    PushNotifications.saveToken(context, token)
+                    Log.i("QuickyPush", "FCM registration token: $token")
+                    QuickyPushService.syncTokenToServer(context)
+                }
+            }
+        }
+
+        // v3.3 — a tapped push notification may still be waiting for the
+        // session / matches / clubs to finish loading; retry on every
+        // state change until it is routed (or dropped as stale).
+        LaunchedEffect(
+            state.pendingNotificationRoute,
+            state.matches,
+            state.clubs,
+            state.authGate
+        ) {
+            if (state.pendingNotificationRoute != null) {
+                viewModel.tryConsumePendingNotificationRoute()
+            }
+        }
+
+        // v3.3 — POST_NOTIFICATIONS runtime permission (Android 13+):
+        // asked ONCE, only once the user is actually inside the app —
+        // never during auth/onboarding. Below Android 13 notifications
+        // are enabled by default; the one-shot asked-flag respects the
+        // user's "don't ask again" choice in the system dialog.
+        val notifPermissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            PushNotifications.markPermissionAsked(context)
+            Analytics.log(Analytics.PUSH_PERMISSION_RESULT, "granted" to granted)
+        }
+        LaunchedEffect(state.authGate, state.isOnboardingComplete) {
+            val insideApp =
+                state.authGate == AuthGate.SIGNED_IN && state.isOnboardingComplete
+            if (insideApp && PushNotifications.shouldRequestPermission(context)) {
+                notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
         // ---- Authentication session bootstrap (Auth PRD) ----
         // Restore the persisted Supabase session on cold start, then
         // route to the auth screen / onboarding / main app.
@@ -112,16 +167,22 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
         LaunchedEffect(Unit) {
             viewModel.onAppStart(context)
             // Cold-start Google OAuth return (quicky://auth-callback#…)
+            // or a tapped push notification (quicky://notify?…).
             activity?.intent?.data?.let { uri ->
-                if (uri.scheme == "quicky") viewModel.handleOAuthRedirect(context, uri)
+                if (uri.scheme == "quicky" &&
+                    !viewModel.handleOAuthRedirect(context, uri)
+                ) viewModel.handleNotificationDeepLink(uri)
             }
         }
         // Warm OAuth returns while the activity is already running
-        // (singleTask launchMode reuses this instance).
+        // (singleTask launchMode reuses this instance) — same for
+        // notification taps while the app is backgrounded.
         DisposableEffect(activity) {
             val listener = Consumer<Intent> { intent ->
                 intent?.data?.let { uri ->
-                    if (uri.scheme == "quicky") viewModel.handleOAuthRedirect(context, uri)
+                    if (uri.scheme == "quicky" &&
+                        !viewModel.handleOAuthRedirect(context, uri)
+                    ) viewModel.handleNotificationDeepLink(uri)
                 }
             }
             activity?.addOnNewIntentListener(listener)

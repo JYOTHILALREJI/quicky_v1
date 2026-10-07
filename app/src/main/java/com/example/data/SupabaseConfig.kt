@@ -54,6 +54,12 @@ object SupabaseConfig {
     const val TABLE_BOOSTS = "boosts"
 
     // ------------------------------------------------------------
+    // Push notifications (v3.3) — FCM device tokens, one row per
+    // signed-in account (supabase/device_tokens.sql)
+    // ------------------------------------------------------------
+    const val TABLE_DEVICE_TOKENS = "device_tokens"
+
+    // ------------------------------------------------------------
     // Ludo Arena (v2.1 §3.2.4) — online match tables
     // ------------------------------------------------------------
     const val TABLE_LUDO_MATCHES = "ludo_matches"

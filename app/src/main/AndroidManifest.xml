@@ -8,6 +8,11 @@
     <!-- Onboarding location capture — feeds the distance-based discovery filter -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Push notifications (v3.3): runtime permission on Android 13+;
+         below Android 13 notifications are granted by default and only
+         channels matter. Requested once, after sign-in (never during
+         auth/onboarding). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -24,6 +29,23 @@
         <meta-data
             android:name="com.google.android.gms.ads.APPLICATION_ID"
             android:value="ca-app-pub-3940256099942544~3347511713" />
+
+        <!-- FCM (v3.3): channel for background `notification` payloads that
+             FCM itself renders (data payloads pick their channel per
+             `type` in PushNotifications.show). -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="messages" />
+
+        <!-- FCM entry point: token refresh + foreground message handling
+             for match / message / club alerts. -->
+        <service
+            android:name=".data.QuickyPushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
 
         <!-- Live Face Verification (Get Verified): hands the temp selfie
              capture file to the system camera via ActivityResultContracts

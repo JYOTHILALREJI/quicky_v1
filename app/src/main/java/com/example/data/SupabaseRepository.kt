@@ -1207,6 +1207,39 @@ object SupabaseRepository {
         }
     }
 
+    // ----------------------------------------------------------------
+    // Push notifications (v3.3) — FCM device tokens
+    // ----------------------------------------------------------------
+
+    /**
+     * Upserts the caller's FCM registration token into `device_tokens`
+     * (one row per account — a second device for the same account takes
+     * over the row). Called fire-and-forget on every sign-in and on every
+     * FCM token refresh (QuickyPushService); returns false when Supabase
+     * isn't configured or the call failed.
+     */
+    suspend fun upsertDeviceToken(
+        userId: String,
+        fcmToken: String,
+        accessToken: String?
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/${SupabaseConfig.TABLE_DEVICE_TOKENS}",
+                body = JSONObject()
+                    .put("user_id", userId)
+                    .put("fcm_token", fcmToken)
+                    .toString(),
+                accessToken = accessToken,
+                // PK (user_id) conflict -> update instead of error.
+                prefer = "resolution=merge-duplicates"
+            )
+            true
+        }.getOrDefault(false)
+    }
+
     /** Plain HTTP client for external (non-Supabase) geocoding calls. */
     private val geoHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
