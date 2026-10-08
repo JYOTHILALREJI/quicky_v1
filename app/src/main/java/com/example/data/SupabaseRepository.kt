@@ -655,20 +655,26 @@ object SupabaseRepository {
     suspend fun insertChatMessage(
         conversationId: String,
         senderId: String,
-        text: String
+        text: String,
+        accessToken: String? = null
     ): Boolean {
         if (!isConfigured()) return false
         return runCatching {
             SupabaseClient.rest(
                 method = "POST",
                 path = "/rest/v1/${SupabaseConfig.TABLE_MESSAGES}",
-                // Prefer=return=minimal keeps the payload tiny
-                query = mapOf("select" to "id", "Prefer" to "return=minimal"),
+                // v3.3.2 fix: Prefer is an HTTP HEADER in PostgREST. Sent as
+                // a URL query param it 400s (PGRST100 "failed to parse filter
+                // (return=minimal)") — runCatching swallowed that, so no chat
+                // message ever reached the server. The JWT is also required
+                // by the messages_insert RLS policy (authenticated only).
+                prefer = "return=minimal",
                 body = JSONObject()
                     .put("conversation_id", conversationId)
                     .put("sender_id", senderId)
                     .put("text", text)
-                    .toString()
+                    .toString(),
+                accessToken = accessToken
             )
             true
         }.getOrDefault(false)
@@ -683,21 +689,26 @@ object SupabaseRepository {
         senderId: String,
         senderName: String,
         messageType: String,
-        text: String
+        text: String,
+        accessToken: String? = null
     ): Boolean {
         if (!isConfigured()) return false
         return runCatching {
             SupabaseClient.rest(
                 method = "POST",
                 path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MESSAGES}",
-                query = mapOf("Prefer" to "return=minimal"),
+                // v3.3.2 fix: Prefer as a query param 400s (PGRST100) —
+                // see insertChatMessage. Header form + JWT required by the
+                // club_messages_insert RLS policy.
+                prefer = "return=minimal",
                 body = JSONObject()
                     .put("club_id", clubId)
                     .put("sender_id", senderId)
                     .put("sender_name", senderName)
                     .put("message_type", messageType)
                     .put("text", text)
-                    .toString()
+                    .toString(),
+                accessToken = accessToken
             )
             true
         }.getOrDefault(false)
@@ -828,7 +839,9 @@ object SupabaseRepository {
             SupabaseClient.rest(
                 method = "POST",
                 path = "/rest/v1/${SupabaseConfig.TABLE_CLUBS}",
-                query = mapOf("Prefer" to "return=minimal"),
+                // v3.3.2 fix: Prefer as a URL query param 400s with
+                // PGRST100 — PostgREST only accepts it as a header.
+                prefer = "return=minimal",
                 body = JSONObject()
                     .put("id", club.id)
                     .put("owner_id", club.ownerId)
@@ -848,7 +861,7 @@ object SupabaseRepository {
             SupabaseClient.rest(
                 method = "POST",
                 path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MEMBERS}",
-                query = mapOf("Prefer" to "return=minimal"),
+                prefer = "return=minimal",
                 body = JSONObject()
                     .put("club_id", club.id)
                     .put("user_id", owner?.userId ?: club.ownerId)
@@ -871,7 +884,7 @@ object SupabaseRepository {
             SupabaseClient.rest(
                 method = "POST",
                 path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MEMBERS}",
-                query = mapOf("Prefer" to "return=minimal"),
+                prefer = "return=minimal",
                 body = JSONObject()
                     .put("club_id", clubId)
                     .put("user_id", member.userId)
@@ -1077,14 +1090,15 @@ object SupabaseRepository {
     }
 
     /** Generic single-row insert for any configured table. */
-    suspend fun insertRow(table: String, row: JSONObject): Boolean {
+    suspend fun insertRow(table: String, row: JSONObject, accessToken: String? = null): Boolean {
         if (!isConfigured()) return false
         return runCatching {
             SupabaseClient.rest(
                 method = "POST",
                 path = "/rest/v1/$table",
-                query = mapOf("Prefer" to "return=minimal"),
-                body = row.toString()
+                prefer = "return=minimal",
+                body = row.toString(),
+                accessToken = accessToken
             )
             true
         }.getOrDefault(false)

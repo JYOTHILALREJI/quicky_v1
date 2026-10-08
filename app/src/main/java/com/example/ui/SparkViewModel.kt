@@ -1530,7 +1530,8 @@ class SparkViewModel : ViewModel() {
                 SupabaseRepository.insertChatMessage(
                     conversationId = conversationId,
                     senderId = newMessage.senderId,
-                    text = text
+                    text = text,
+                    accessToken = _uiState.value.authSession?.accessToken
                 )
             }
         }
@@ -2724,7 +2725,8 @@ class SparkViewModel : ViewModel() {
                     senderId = newMessage.senderId,
                     senderName = newMessage.senderName,
                     messageType = newMessage.messageType,
-                    text = text
+                    text = text,
+                    accessToken = _uiState.value.authSession?.accessToken
                 )
             }
         }
