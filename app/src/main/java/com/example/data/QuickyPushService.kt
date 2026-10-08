@@ -10,52 +10,73 @@ import kotlinx.coroutines.launch
 
 /**
  * ============================================================================
- *  QUICKY PUSH SERVICE — FCM entry point (v3.3)
+ *  QUICKY PUSH SERVICE — FCM entry point (v3.4)
  * ============================================================================
  *
  * Registered in the manifest for `com.google.firebase.MESSAGING_EVENT`.
- * Two responsibilities only:
+ * Two responsibilities:
  *
- *  1. [onNewToken] — the FCM registration token changed (first launch,
- *     token rotation). It is persisted locally (survives restarts) and
- *     mirrored to the Supabase `device_tokens` table for the signed-in
- *     account, so server-side Edge Functions / triggers can send
- *     match / message / club alerts to THIS device. The token is also
- *     re-mirrored on every sign-in (SparkViewModel.adoptSession) —
- *     covering the account-switch case and the "token arrived before
- *     the user signed in" case.
+ *  1. [onNewToken] — token refresh → persist + mirror to Supabase device_tokens.
  *
- *  2. [onMessageReceived] — an FCM message arrived while the app is in
- *     the foreground (data messages ALWAYS land here; `notification`
- *     payloads only while foregrounded). It is rendered by
- *     [PushNotifications.show] on the channel matching its `type`
- *     (matches / messages / clubs) with a quicky://notify deep link.
+ *  2. [onMessageReceived] — routes the payload to the appropriate typed
+ *     [PushNotifications] helper, each of which posts on its own dedicated
+ *     channel and respects the per-type preference toggle that SparkViewModel
+ *     will surface in future via the device_tokens record.
  *
- * While the app is backgrounded and the payload is a `notification`
- * message, FCM renders it itself using the
- * `default_notification_channel_id` manifest meta-data ("messages").
+ * Payload shape (see PushNotifications for full reference):
+ *   type        = match | message | like | super_like | club | club_mention
+ *                 | truth_dare | promo
+ *   title, body = display strings
+ *   chat_id / match_id / club_id = routing ids
+ *   sender_name  = shown in the MessagingStyle sender Person label
+ *
+ * Truth-or-Dare (`type=truth_dare`) is an in-app overlay only — no system
+ * notification is posted here; the Supabase realtime subscription handles it.
  */
 class QuickyPushService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
         PushNotifications.saveToken(applicationContext, token)
-        // Easier to grab for server-side testing (curl / FCM console).
         Log.i(TAG, "New FCM registration token: $token")
         syncTokenToServer(applicationContext)
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
         val data = message.data
-        val type = data["type"]?.takeIf { it.isNotBlank() }
-        // Prefer the data payload; fall back to the notification payload
-        // (FCM console test sends / foreground notification messages).
-        val title = data["title"] ?: message.notification?.title
-        val body = data["body"] ?: message.notification?.body
-        val chatId = data["chat_id"] ?: data["match_id"]
-        val clubId = data["club_id"]
+        val type       = data["type"]?.takeIf { it.isNotBlank() }
+        val title      = data["title"] ?: message.notification?.title
+        val body       = data["body"]  ?: message.notification?.body
+        val chatId     = data["chat_id"] ?: data["match_id"]
+        val clubId     = data["club_id"]
+        val senderName = data["sender_name"]
 
-        PushNotifications.show(this, type, title, body, chatId, clubId)
+        when (type) {
+            PushNotifications.TYPE_MATCH ->
+                PushNotifications.showMatch(this, title, body)
+
+            PushNotifications.TYPE_LIKE ->
+                PushNotifications.showLike(this, title, body)
+
+            PushNotifications.TYPE_SUPER_LIKE ->
+                PushNotifications.showSuperLike(this, title, body)
+
+            PushNotifications.TYPE_CLUB ->
+                PushNotifications.showClub(this, title, body, clubId, isMention = false)
+
+            PushNotifications.TYPE_CLUB_MENTION ->
+                PushNotifications.showClub(this, title, body, clubId, isMention = true)
+
+            PushNotifications.TYPE_TRUTH_DARE ->
+                PushNotifications.onTruthDareReceived(enabled = true)
+
+            PushNotifications.TYPE_PROMO ->
+                PushNotifications.showPromotion(this, title, body)
+
+            // Default: personal message (TYPE_MESSAGE or unknown)
+            else ->
+                PushNotifications.showMessage(this, title, body, chatId, senderName)
+        }
     }
 
     companion object {
@@ -63,21 +84,19 @@ class QuickyPushService : FirebaseMessagingService() {
 
         /**
          * Mirrors the persisted FCM token to Supabase for the currently
-         * signed-in account (fire-and-forget — offline just logs a warning;
-         * the next sign-in retries). Safe to call from anywhere: the
-         * service (token refresh), the ViewModel (post sign-in), or tests.
+         * signed-in account (fire-and-forget). Called from [onNewToken] and
+         * after every sign-in via SparkViewModel.adoptSession.
          */
         fun syncTokenToServer(context: Context) {
             val appCtx = context.applicationContext
             val token = PushNotifications.readToken(appCtx) ?: return
-            // Not signed in yet — adoptSession re-pushes after sign-in.
             val session = SupabaseAuth.readSession(appCtx) ?: return
             if (!SupabaseRepository.isConfigured()) return
             CoroutineScope(Dispatchers.IO).launch {
                 runCatching {
                     SupabaseRepository.upsertDeviceToken(
-                        userId = session.userId,
-                        fcmToken = token,
+                        userId      = session.userId,
+                        fcmToken    = token,
                         accessToken = session.accessToken
                     )
                 }.onSuccess {

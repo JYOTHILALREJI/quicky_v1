@@ -360,12 +360,26 @@ enum class AppThemeMode {
 }
 
 /**
- * Push notification toggles for the dedicated Settings screen (v2.1 §3.9).
+ * Push / in-app notification toggles for the dedicated Settings screen (v2.2 §3.9).
+ * Each field maps 1-to-1 to a PushNotifications channel or in-app overlay.
+ *
+ *  matches      — someone matches back (CHANNEL_MATCHES)
+ *  messages     — personal 1-to-1 chat messages (CHANNEL_MESSAGES)
+ *  likes        — someone likes your profile (CHANNEL_LIKES)
+ *  superLikes   — a Super Like received (CHANNEL_SUPER_LIKES)
+ *  clubs        — club mentions / invites (CHANNEL_CLUBS)
+ *  clubMentions — @you inside a club chat (CHANNEL_CLUBS, sub-filter)
+ *  truthOrDare  — in-app overlay when a T&D challenge arrives (in-app only)
+ *  promotions   — Quicky offers / marketing (CHANNEL_PROMOTIONS)
  */
 data class NotificationPreferences(
     val matches: Boolean = true,
     val messages: Boolean = true,
+    val likes: Boolean = true,
+    val superLikes: Boolean = true,
     val clubs: Boolean = true,
+    val clubMentions: Boolean = true,
+    val truthOrDare: Boolean = true,
     val promotions: Boolean = false
 )
 

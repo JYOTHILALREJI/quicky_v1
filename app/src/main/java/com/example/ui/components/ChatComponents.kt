@@ -1,11 +1,19 @@
 package com.example.ui.components
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,6 +43,14 @@ import com.example.model.GameCardData
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.sin
+
+/** Formats an integer number of seconds as M:SS (e.g. 65 → "1:05"). */
+fun formatVoiceDuration(totalSeconds: Int): String {
+    val minutes = totalSeconds / 60
+    val secs = totalSeconds % 60
+    return "$minutes:${secs.toString().padStart(2, '0')}"
+}
 
 @Composable
 fun SwipeToReplyContainer(
@@ -458,35 +474,24 @@ fun ChatGameCard(
                         Spacer(modifier = Modifier.height(6.dp))
 
                         if (gameCard.responseType == "VOICE" || gameCard.answerText.startsWith("🎤")) {
-                            // Voice Answer Player
+                            // WhatsApp-style Voice Answer Player
                             Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = SparkPurple.copy(alpha = 0.3f),
+                                shape = RoundedCornerShape(12.dp),
+                                color = SparkPurple.copy(alpha = 0.25f),
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.PlayArrow,
-                                        contentDescription = "Play voice note",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(24.dp)
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text(
+                                        text = "Voice response for ${gameCard.promptType.lowercase()}:",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                        color = Color.White.copy(alpha = 0.8f),
+                                        modifier = Modifier.padding(bottom = 4.dp)
                                     )
-                                    Column {
-                                        Text(
-                                            text = "Voice Answer (0:0${gameCard.voiceDurationSeconds ?: 5})",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                            color = Color.White
-                                        )
-                                        Text(
-                                            text = "Audio recorded for ${gameCard.promptType.lowercase()}",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                            color = Color.White.copy(alpha = 0.7f)
-                                        )
-                                    }
+                                    VoiceMessagePlayer(
+                                        durationSeconds = gameCard.voiceDurationSeconds ?: 5,
+                                        isMine = isMine,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
                                 }
                             }
                         } else if (gameCard.responseType == "CAMERA" || gameCard.answerText.startsWith("📸")) {
@@ -893,85 +898,152 @@ fun VoiceMessagePlayer(
     isMine: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val coroutineScope = rememberCoroutineScope()
+
+    // Playback state
     var isPlaying by remember { mutableStateOf(false) }
     var currentSeconds by remember { mutableIntStateOf(0) }
-    val waveformHeights = remember { listOf(6, 12, 18, 14, 22, 16, 26, 20, 14, 18, 24, 12, 8, 15) }
+    val progressFraction by animateFloatAsState(
+        targetValue = if (durationSeconds > 0) currentSeconds.toFloat() / durationSeconds else 0f,
+        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        label = "voiceProgress"
+    )
 
+    // Waveform: 30 bars with natural voice amplitude pattern (sine-based)
+    val waveform = remember {
+        List(30) { i ->
+            val base = sin(i * 0.55).toFloat() * 0.5f + 0.5f     // 0..1
+            val jitter = ((i * 7 + 13) % 5) / 10f                // small irregular variation
+            (base + jitter).coerceIn(0.12f, 1f)
+        }
+    }
+
+    // Pulse animation while recording / playing
+    val infiniteTransition = rememberInfiniteTransition(label = "voicePulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.55f,
+        targetValue  = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+
+    // Colours
+    val playedColor = if (isMine) Color.White else SparkRose
+    val unplayedColor = if (isMine) Color.White.copy(alpha = 0.4f)
+    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+    val iconColor = if (isMine) Color.White else SparkPurple
+    val iconBg = if (isMine) Color.White.copy(alpha = 0.22f) else SparkPurple.copy(alpha = 0.12f)
+    val timeColor = if (isMine) Color.White.copy(alpha = 0.75f)
+    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+
+    // Tick while playing (1-second resolution matching WhatsApp)
     LaunchedEffect(isPlaying) {
         if (isPlaying) {
-            currentSeconds = 0
             while (currentSeconds < durationSeconds && isPlaying) {
-                delay(1000)
+                delay(1000L)
                 currentSeconds++
             }
-            isPlaying = false
-            currentSeconds = 0
+            if (currentSeconds >= durationSeconds) {
+                isPlaying = false
+                currentSeconds = 0
+            }
         }
     }
 
     Row(
         modifier = modifier
-            .padding(vertical = 4.dp),
+            .widthIn(min = 180.dp, max = 240.dp)
+            .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Play / Pause Icon Button
-        FilledIconButton(
-            onClick = { isPlaying = !isPlaying },
-            colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = if (isMine) Color.White.copy(alpha = 0.25f) else SparkPurple.copy(alpha = 0.15f),
-                contentColor = if (isMine) Color.White else SparkPurple
-            ),
-            modifier = Modifier.size(36.dp)
+        // ── Play / Pause button ──────────────────────────────────────────────
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(iconBg)
+                .clickable {
+                    isPlaying = !isPlaying
+                    if (!isPlaying) currentSeconds = 0
+                }
         ) {
             Icon(
                 imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                contentDescription = if (isPlaying) "Pause" else "Play",
-                modifier = Modifier.size(20.dp)
+                contentDescription = if (isPlaying) "Pause voice note" else "Play voice note",
+                tint = iconColor,
+                modifier = Modifier.size(22.dp)
             )
         }
 
-        // Waveform Visualizer & Duration
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // ── Waveform + time ──────────────────────────────────────────────────
+        Column(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            // Waveform bars — tappable to seek
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.5.dp),
-                modifier = Modifier.height(26.dp)
-            ) {
-                waveformHeights.forEachIndexed { index, height ->
-                    val playedFraction = if (durationSeconds > 0) currentSeconds.toFloat() / durationSeconds else 0f
-                    val barFraction = index.toFloat() / waveformHeights.size
-                    val isBarPlayed = isPlaying && barFraction <= playedFraction
-
-                    val barColor = when {
-                        isBarPlayed -> if (isMine) Color.White else SparkRose
-                        isMine -> Color.White.copy(alpha = 0.55f)
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp)
+                    .pointerInput(Unit) {
+                        detectTapGestures { offset ->
+                            val fraction = (offset.x / size.width).coerceIn(0f, 1f)
+                            currentSeconds = (fraction * durationSeconds).toInt()
+                        }
                     }
+            ) {
+                waveform.forEachIndexed { index, amplitude ->
+                    val barFraction = index.toFloat() / waveform.size
+                    val isBarPlayed = barFraction <= progressFraction
+
+                    // Animated bar height: played bars scale up slightly while playing
+                    val barHeightFraction by animateFloatAsState(
+                        targetValue = if (isPlaying && isBarPlayed) amplitude * 1.05f else amplitude,
+                        animationSpec = tween(120),
+                        label = "barH$index"
+                    )
+                    val barAlpha = if (isPlaying && isBarPlayed) pulseAlpha else 1f
 
                     Box(
                         modifier = Modifier
-                            .width(3.dp)
-                            .height(height.dp)
-                            .clip(RoundedCornerShape(1.5.dp))
-                            .background(barColor)
+                            .weight(1f)
+                            .fillMaxHeight(barHeightFraction.coerceIn(0.12f, 1f))
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(
+                                if (isBarPlayed) playedColor.copy(alpha = barAlpha)
+                                else unplayedColor
+                            )
                     )
                 }
             }
 
+            // Time: shows current position while playing, total duration at rest
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text(
-                    text = "🎙️",
-                    fontSize = 11.sp
+                Icon(
+                    imageVector = Icons.Filled.Mic,
+                    contentDescription = null,
+                    tint = if (isMine) Color.White.copy(alpha = 0.65f) else SparkPurple.copy(alpha = 0.65f),
+                    modifier = Modifier.size(10.dp)
                 )
                 Text(
-                    text = if (isPlaying) "0:0$currentSeconds / 0:0$durationSeconds" else "Voice note (0:0$durationSeconds)",
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Medium),
-                    color = if (isMine) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant
+                    text = if (isPlaying || currentSeconds > 0)
+                        "${formatVoiceDuration(currentSeconds)} / ${formatVoiceDuration(durationSeconds)}"
+                    else
+                        formatVoiceDuration(durationSeconds),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    color = timeColor
                 )
             }
         }

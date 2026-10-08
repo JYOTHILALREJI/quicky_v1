@@ -27,7 +27,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.FilledIconButton
@@ -475,22 +474,11 @@ private fun LudoChatBubble(
                     )
                 }
                 if (message.voiceDurationSeconds != null) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            tint = if (message.isMine) Color.White else QuickyPink,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            "Voice · 0:0${message.voiceDurationSeconds}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (message.isMine) Color.White else MaterialTheme.colorScheme.onSurface
-                        )
-                    }
+                    com.example.ui.components.VoiceMessagePlayer(
+                        durationSeconds = message.voiceDurationSeconds,
+                        isMine = message.isMine,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    )
                 }
                 Text(
                     text = message.timestamp,

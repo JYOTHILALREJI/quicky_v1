@@ -4,6 +4,8 @@ import android.Manifest
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.*
+import kotlin.math.sin
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -1424,7 +1426,7 @@ private fun ClubMessageBubble(
 }
 
 // ==========================================================================
-//  VOICE BUBBLE — play / pause + linear progress (v3.3.4)
+//  VOICE BUBBLE — WhatsApp-style waveform audio player (v3.4)
 // ==========================================================================
 @Composable
 private fun VoiceNoteBubble(
@@ -1435,37 +1437,116 @@ private fun VoiceNoteBubble(
     onPlayToggle: () -> Unit
 ) {
     val duration = message.voiceDurationSeconds ?: 0
-    val progress = if (duration > 0 && positionMs > 0) {
+    val progressFraction = if (duration > 0 && positionMs > 0) {
         (positionMs.toFloat() / (duration * 1000f)).coerceIn(0f, 1f)
     } else 0f
 
+    val currentSeconds = (positionMs / 1000).coerceIn(0, duration)
+
+    // Waveform: 28 bars with natural sine-derived voice amplitude pattern
+    val waveform = remember {
+        List(28) { i ->
+            val base = sin(i * 0.58).toFloat() * 0.5f + 0.5f
+            val jitter = ((i * 7 + 11) % 5) / 10f
+            (base + jitter).coerceIn(0.12f, 1f)
+        }
+    }
+
+    // Pulse animation while active
+    val infiniteTransition = rememberInfiniteTransition(label = "clubVoicePulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+
+    val playedColor = if (message.isMine) Color.White else SparkRose
+    val unplayedColor = if (message.isMine) Color.White.copy(alpha = 0.4f)
+    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+    val iconColor = if (message.isMine) Color.White else QuickyPurple
+    val iconBg = if (message.isMine) Color.White.copy(alpha = 0.22f) else QuickyPurple.copy(alpha = 0.12f)
+    val timeColor = if (message.isMine) Color.White.copy(alpha = 0.75f)
+    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+
     Row(
+        modifier = Modifier
+            .widthIn(min = 180.dp, max = 240.dp)
+            .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.padding(vertical = 4.dp)
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        IconButton(onClick = onPlayToggle, modifier = Modifier.size(32.dp)) {
+        // Play / Pause circular button
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(iconBg)
+                .clickable { onPlayToggle() }
+        ) {
             Icon(
-                imageVector = if (isPlaying || isPaused) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                contentDescription = if (isPlaying) "Pause voice message" else "Play voice message",
-                tint = if (message.isMine) Color.White else QuickyPurple,
-                modifier = Modifier.size(24.dp)
+                imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                contentDescription = if (isPlaying) "Pause voice note" else "Play voice note",
+                tint = iconColor,
+                modifier = Modifier.size(22.dp)
             )
         }
-        Column {
-            Text(
-                text = "🎙 Voice message • ${formatVoiceSeconds(duration)}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (message.isMine) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            if (isPlaying) {
-                LinearProgressIndicator(
-                    progress = { if (progress > 0f) progress else 0.05f },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 2.dp),
-                    color = if (message.isMine) Color.White else QuickyPurple,
-                    trackColor = if (message.isMine) Color.White.copy(alpha = 0.3f) else QuickyPurple.copy(alpha = 0.2f)
+
+        // Waveform + duration / elapsed time
+        Column(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(26.dp)
+            ) {
+                waveform.forEachIndexed { index, amplitude ->
+                    val barFraction = index.toFloat() / waveform.size
+                    val isBarPlayed = barFraction <= progressFraction
+                    val barAlpha = if (isPlaying && isBarPlayed) pulseAlpha else 1f
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(amplitude.coerceIn(0.12f, 1f))
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(
+                                if (isBarPlayed) playedColor.copy(alpha = barAlpha)
+                                else unplayedColor
+                            )
+                    )
+                }
+            }
+
+            // Time: current / total or total at rest
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Mic,
+                    contentDescription = null,
+                    tint = if (message.isMine) Color.White.copy(alpha = 0.65f) else QuickyPurple.copy(alpha = 0.65f),
+                    modifier = Modifier.size(10.dp)
+                )
+                Text(
+                    text = if (isPlaying || isPaused || currentSeconds > 0)
+                        "${formatVoiceSeconds(currentSeconds)} / ${formatVoiceSeconds(duration)}"
+                    else
+                        formatVoiceSeconds(duration),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    color = timeColor
                 )
             }
         }

@@ -2452,11 +2452,15 @@ class SparkViewModel : ViewModel() {
         _uiState.update {
             it.copy(
                 notificationPrefs = when (key) {
-                    "matches" -> it.notificationPrefs.copy(matches = value)
-                    "messages" -> it.notificationPrefs.copy(messages = value)
-                    "clubs" -> it.notificationPrefs.copy(clubs = value)
-                    "promotions" -> it.notificationPrefs.copy(promotions = value)
-                    else -> it.notificationPrefs
+                    "matches"      -> it.notificationPrefs.copy(matches      = value)
+                    "messages"     -> it.notificationPrefs.copy(messages     = value)
+                    "likes"        -> it.notificationPrefs.copy(likes        = value)
+                    "superLikes"   -> it.notificationPrefs.copy(superLikes   = value)
+                    "clubs"        -> it.notificationPrefs.copy(clubs        = value)
+                    "clubMentions" -> it.notificationPrefs.copy(clubMentions = value)
+                    "truthOrDare"  -> it.notificationPrefs.copy(truthOrDare  = value)
+                    "promotions"   -> it.notificationPrefs.copy(promotions   = value)
+                    else           -> it.notificationPrefs
                 }
             )
         }

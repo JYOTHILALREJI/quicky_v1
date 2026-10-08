@@ -251,27 +251,63 @@ fun SettingsScreen(
                     icon = Icons.Outlined.FavoriteBorder,
                     iconTint = QuickyPink,
                     title = "New Matches",
+                    subtitle = "When someone matches back with you",
                     checked = notificationPrefs.matches,
                     onCheckedChange = { onNotificationPrefChange("matches", it) }
                 )
                 SettingsToggleRow(
                     icon = Icons.Outlined.ChatBubbleOutline,
                     iconTint = QuickyPurple,
-                    title = "Messages",
+                    title = "Personal Messages",
+                    subtitle = "Chat messages from your matches",
                     checked = notificationPrefs.messages,
                     onCheckedChange = { onNotificationPrefChange("messages", it) }
                 )
                 SettingsToggleRow(
-                    icon = Icons.Outlined.Diversity3,
+                    icon = Icons.Outlined.Favorite,
+                    iconTint = QuickyPink,
+                    title = "Likes",
+                    subtitle = "When someone likes your profile",
+                    checked = notificationPrefs.likes,
+                    onCheckedChange = { onNotificationPrefChange("likes", it) }
+                )
+                SettingsToggleRow(
+                    icon = Icons.Filled.Stars,
                     iconTint = QuickyGold,
-                    title = "Clubs",
+                    title = "Super Likes",
+                    subtitle = "When you receive a Super Like",
+                    checked = notificationPrefs.superLikes,
+                    onCheckedChange = { onNotificationPrefChange("superLikes", it) }
+                )
+                SettingsToggleRow(
+                    icon = Icons.Outlined.Diversity3,
+                    iconTint = QuickyPurple,
+                    title = "Club Activity",
+                    subtitle = "Club invites and general activity",
                     checked = notificationPrefs.clubs,
                     onCheckedChange = { onNotificationPrefChange("clubs", it) }
                 )
                 SettingsToggleRow(
-                    icon = Icons.Outlined.LocalOffer,
+                    icon = Icons.Outlined.AlternateEmail,
                     iconTint = QuickyPink,
+                    title = "Club Mentions",
+                    subtitle = "When someone @mentions you in a club chat",
+                    checked = notificationPrefs.clubMentions,
+                    onCheckedChange = { onNotificationPrefChange("clubMentions", it) }
+                )
+                SettingsToggleRow(
+                    icon = Icons.Outlined.SportsEsports,
+                    iconTint = QuickyPurple,
+                    title = "Truth or Dare Challenges",
+                    subtitle = "In-app overlay when a challenge arrives",
+                    checked = notificationPrefs.truthOrDare,
+                    onCheckedChange = { onNotificationPrefChange("truthOrDare", it) }
+                )
+                SettingsToggleRow(
+                    icon = Icons.Outlined.LocalOffer,
+                    iconTint = QuickyGold,
                     title = "Promotions & Offers",
+                    subtitle = "Quicky Gold deals and feature news",
                     checked = notificationPrefs.promotions,
                     onCheckedChange = { onNotificationPrefChange("promotions", it) },
                     showDivider = false
@@ -394,13 +430,6 @@ fun SettingsScreen(
                     title = "Privacy Policy",
                     subtitle = "How your data is handled",
                     onClick = { infoDialog = "Your photos, chats and location live in your Supabase project. Nothing is sold. You can export or delete everything at any time." }
-                )
-                SettingsNavigationRow(
-                    icon = Icons.Outlined.Code,
-                    iconTint = QuickyPurple,
-                    title = "Open-Source Licenses",
-                    subtitle = "Jetpack Compose, Coil, OkHttp, Supabase",
-                    onClick = { infoDialog = "Built with Android Jetpack Compose, Material 3, Coil, OkHttp, Play Services (Ads & Location) and ML Kit." }
                 )
                 SettingsNavigationRow(
                     icon = Icons.Outlined.DeleteForever,
