@@ -967,6 +967,9 @@ fun ClubDetailScreen(
                                 }
 
                                 // Per-member moderation menu (v3.3.4).
+                                // v3.3.5: the dropdown is anchored to THIS
+                                // row's button — composed at the screen root
+                                // before, it floated UNDER the members sheet.
                                 if (member.userId != currentUserId) {
                                     Box {
                                         IconButton(
@@ -978,6 +981,50 @@ fun ClubDetailScreen(
                                                 contentDescription = "Member options",
                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
+                                        }
+                                        if (memberModerationMenu?.id == member.id) {
+                                            DropdownMenu(
+                                                expanded = true,
+                                                onDismissRequest = { memberModerationMenu = null }
+                                            ) {
+                                                DropdownMenuItem(
+                                                    text = { Text("🚩 Report Member") },
+                                                    onClick = {
+                                                        memberModerationMenu = null
+                                                        reportTargetMember = member
+                                                    },
+                                                    leadingIcon = { Icon(Icons.Outlined.Flag, contentDescription = null, tint = ActionPass) }
+                                                )
+                                                if (isOwner) {
+                                                    if (member.status == "SUSPENDED") {
+                                                        DropdownMenuItem(
+                                                            text = { Text("✅ Allow messaging again", color = ActionVerified, fontWeight = FontWeight.Bold) },
+                                                            onClick = {
+                                                                onSetMemberSuspended(club.id, member.userId, false)
+                                                                memberModerationMenu = null
+                                                            },
+                                                            leadingIcon = { Icon(Icons.Filled.VoiceOverOff, contentDescription = null, tint = ActionVerified) }
+                                                        )
+                                                    } else {
+                                                        DropdownMenuItem(
+                                                            text = { Text("🔇 Suspend from messaging", color = ActionPass, fontWeight = FontWeight.Bold) },
+                                                            onClick = {
+                                                                onSetMemberSuspended(club.id, member.userId, true)
+                                                                memberModerationMenu = null
+                                                            },
+                                                            leadingIcon = { Icon(Icons.Outlined.VoiceOverOff, contentDescription = null, tint = ActionPass) }
+                                                        )
+                                                    }
+                                                    DropdownMenuItem(
+                                                        text = { Text("Remove from club", color = ActionPass) },
+                                                        onClick = {
+                                                            memberModerationMenu = null
+                                                            memberToRemove = member
+                                                        },
+                                                        leadingIcon = { Icon(Icons.Outlined.PersonRemove, contentDescription = null, tint = ActionPass) }
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 } else {
@@ -1015,54 +1062,8 @@ fun ClubDetailScreen(
         }
     }
 
-    // Per-member moderation dropdown (report / suspend / remove)
-    memberModerationMenu?.let { target ->
-        DropdownMenu(
-            expanded = true,
-            onDismissRequest = { memberModerationMenu = null },
-            modifier = Modifier.wrapContentSize()
-        ) {
-            DropdownMenuItem(
-                text = { Text("🚩 Report Member") },
-                onClick = {
-                    memberModerationMenu = null
-                    reportTargetMember = target
-                },
-                leadingIcon = { Icon(Icons.Outlined.Flag, contentDescription = null, tint = ActionPass) }
-            )
-            if (isOwner) {
-                if (target.status == "SUSPENDED") {
-                    DropdownMenuItem(
-                        text = { Text("✅ Allow messaging again", color = ActionVerified, fontWeight = FontWeight.Bold) },
-                        onClick = {
-                            onSetMemberSuspended(club.id, target.userId, false)
-                            memberModerationMenu = null
-                        },
-                        leadingIcon = { Icon(Icons.Filled.VoiceOverOff, contentDescription = null, tint = ActionVerified) }
-                    )
-                } else {
-                    DropdownMenuItem(
-                        text = { Text("🔇 Suspend from messaging", color = ActionPass, fontWeight = FontWeight.Bold) },
-                        onClick = {
-                            onSetMemberSuspended(club.id, target.userId, true)
-                            memberModerationMenu = null
-                        },
-                        leadingIcon = { Icon(Icons.Outlined.VoiceOverOff, contentDescription = null, tint = ActionPass) }
-                    )
-                }
-                DropdownMenuItem(
-                    text = { Text("Remove from club", color = ActionPass) },
-                    onClick = {
-                        memberModerationMenu = null
-                        memberToRemove = target
-                    },
-                    leadingIcon = { Icon(Icons.Outlined.PersonRemove, contentDescription = null, tint = ActionPass) }
-                )
-            }
-        }
-    }
-
-    // Report member dialog (v3.3.4)
+    // Report member dialog (v3.3.4). The per-member moderation dropdown now
+    // lives anchored inside each member row of the members sheet (v3.3.5).
     reportTargetMember?.let { target ->
         var reportReason by remember(target.id) { mutableStateOf("TOXIC_LANGUAGE") }
         var reportDetails by remember(target.id) { mutableStateOf("") }

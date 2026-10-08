@@ -2776,10 +2776,14 @@ class SparkViewModel : ViewModel() {
     /**
      * Ensures a club voice note is on disk, downloading it from the
      * private `voice-notes` bucket on first play (v3.3.4).
+     *
+     * v3.3.5: the local cache is checked FIRST — the sender's own just-
+     * recorded note is parked there before the upload even starts, so
+     * tapping play immediately no longer toasts "unavailable".
      */
     suspend fun getClubVoiceNoteFile(message: ClubMessage): File? {
-        val path = message.voiceUrl ?: return null
         clubVoiceCache[message.id]?.let { if (it.exists()) return it }
+        val path = message.voiceUrl ?: return null
         val ctx = appContext ?: return null
         val bytes = SupabaseRepository.downloadClubVoiceNote(
             path, _uiState.value.authSession?.accessToken
@@ -3093,6 +3097,14 @@ class SparkViewModel : ViewModel() {
      * members): uploads the audio to the private `voice-notes` bucket
      * under `club-voice/<club>/…`, then posts the message row that
      * references it.
+     *
+     * v3.3.5 fixes:
+     *  - the recorded audio is cached on disk IMMEDIATELY, so the sender
+     *    can tap play while the upload is still in flight;
+     *  - the cache is re-keyed when the optimistic id is swapped for the
+     *    server row id (reconcile);
+     *  - an upload failure now REMOVES the optimistic bubble instead of
+     *    leaving a dead "Voice note unavailable" bubble behind.
      */
     fun sendClubVoiceMessage(
         clubId: String,
@@ -3121,6 +3133,17 @@ class SparkViewModel : ViewModel() {
             timestamp = "Just now",
             isMine = true
         )
+        // Immediate local playback: park the raw recording in the cache
+        // BEFORE the network leg, keyed by the optimistic message id.
+        val localCacheFile = runCatching {
+            val ctx = appContext
+            if (ctx != null) {
+                val f = File(ctx.cacheDir, "clubvoice_${newMessage.id}.m4a")
+                f.writeBytes(audioBytes)
+                clubVoiceCache[newMessage.id] = f
+                f
+            } else null
+        }.getOrNull()
         val currentList = _uiState.value.clubMessages[clubId] ?: emptyList()
         _uiState.update {
             it.copy(clubMessages = it.clubMessages.toMutableMap().apply {
@@ -3138,7 +3161,17 @@ class SparkViewModel : ViewModel() {
                 accessToken = token
             )
             if (voicePath == null) {
-                showToast("⚠️ Voice note not uploaded — check your connection.")
+                // Remove the dead optimistic bubble — an unplayable ghost
+                // bubble that vanishes on reload is worse than a retry toast.
+                _uiState.update { s ->
+                    val list = s.clubMessages[clubId] ?: emptyList()
+                    s.copy(clubMessages = s.clubMessages.toMutableMap().apply {
+                        put(clubId, list.filterNot { it.id == newMessage.id })
+                    })
+                }
+                clubVoiceCache.remove(newMessage.id)
+                localCacheFile?.delete()
+                showToast("⚠️ Voice note couldn't upload — please try again.")
                 return@launch
             }
             val result = SupabaseRepository.insertClubMessage(
@@ -3153,7 +3186,8 @@ class SparkViewModel : ViewModel() {
             )
             if (result != null) {
                 // Point the optimistic bubble at the uploaded audio so the
-                // sender can replay their own note immediately.
+                // sender can replay their own note immediately, and re-key
+                // the local cache to the server id (poll dedupe + playback).
                 _uiState.update { s ->
                     val list = s.clubMessages[clubId] ?: emptyList()
                     s.copy(clubMessages = s.clubMessages.toMutableMap().apply {
@@ -3164,7 +3198,24 @@ class SparkViewModel : ViewModel() {
                         })
                     })
                 }
+                clubVoiceCache.remove(newMessage.id)?.let { old ->
+                    val moved = File(old.parentFile, "clubvoice_${result.id}.m4a")
+                    if (old.renameTo(moved) || (runCatching {
+                            moved.writeBytes(audioBytes); true
+                        }.getOrDefault(false))
+                    ) clubVoiceCache[result.id] = moved
+                }
             } else {
+                // Row insert failed (e.g. suspension trigger): drop the
+                // bubble too — the audio exists but nobody can fetch it.
+                _uiState.update { s ->
+                    val list = s.clubMessages[clubId] ?: emptyList()
+                    s.copy(clubMessages = s.clubMessages.toMutableMap().apply {
+                        put(clubId, list.filterNot { it.id == newMessage.id })
+                    })
+                }
+                clubVoiceCache.remove(newMessage.id)
+                localCacheFile?.delete()
                 showToast("⚠️ Voice note not delivered — check your connection.")
             }
         }

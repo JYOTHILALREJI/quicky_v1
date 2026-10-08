@@ -810,6 +810,20 @@ object SupabaseRepository {
         }.getOrNull()
     }
 
+    /**
+     * Null-safe JSON string read (v3.3.5 fix).
+     *
+     * `JSONObject.optString(key)` returns the LITERAL string "null" when the
+     * value is JSON null — which is how every non-reply club message ended up
+     * rendering a "null" reply-quote block and a giant "null" sticker. This
+     * helper maps JSON null / missing / blank / literal-"null" to Kotlin null.
+     */
+    private fun JSONObject.optStringOrNull(key: String): String? {
+        if (isNull(key)) return null
+        val v = optString(key)
+        return if (v.isBlank() || v == "null") null else v
+    }
+
     /** Maps one `club_messages` row to the app model. */
     private fun JSONObject.toClubMessage(currentUserId: String): ClubMessage {
         val iso = normalizeIsoCursor(optString("created_at"))
@@ -824,17 +838,17 @@ object SupabaseRepository {
             id = optString("id"),
             clubId = optString("club_id"),
             senderId = optString("sender_id"),
-            senderName = optString("sender_name").ifBlank { "Member" },
+            senderName = optStringOrNull("sender_name") ?: "Member",
             messageType = optString("message_type").ifBlank { "TEXT" },
-            text = optString("text"),
-            stickerEmoji = optString("sticker_emoji").takeIf { it.isNotBlank() },
+            text = optStringOrNull("text") ?: "",
+            stickerEmoji = optStringOrNull("sticker_emoji"),
             voiceDurationSeconds = if (isNull("voice_duration_seconds")) null
             else optInt("voice_duration_seconds"),
-            voiceUrl = optString("voice_url").takeIf { it.isNotBlank() },
+            voiceUrl = optStringOrNull("voice_url"),
             timestamp = LudoTime.isoToClock(iso) ?: "Now",
             isMine = optString("sender_id") == currentUserId,
-            replyToText = optString("reply_to_text").takeIf { it.isNotBlank() },
-            replyToSender = optString("reply_to_sender").takeIf { it.isNotBlank() },
+            replyToText = optStringOrNull("reply_to_text"),
+            replyToSender = optStringOrNull("reply_to_sender"),
             createdAtIso = iso,
             mentions = mentions
         )
@@ -878,8 +892,8 @@ object SupabaseRepository {
                         id = row.optString("id"),
                         messageId = messageId,
                         userId = row.optString("user_id"),
-                        userName = row.optString("user_name").ifBlank { "Member" },
-                        emoji = row.optString("emoji")
+                        userName = row.optStringOrNull("user_name") ?: "Member",
+                        emoji = row.optStringOrNull("emoji") ?: "❤️"
                     )
                 )
             }

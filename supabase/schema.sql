@@ -1869,3 +1869,12 @@ create policy "club_voice_authenticated_upload" on storage.objects
         and auth.role() = 'authenticated'
     );
 
+-- v3.3.5: uploads ride x-upsert, which needs the UPDATE grant too.
+drop policy if exists "club_voice_authenticated_update" on storage.objects;
+create policy "club_voice_authenticated_update" on storage.objects
+    for update using (
+        bucket_id = 'voice-notes'
+        and (storage.foldername(name))[1] = 'club-voice'
+        and auth.role() = 'authenticated'
+    );
+

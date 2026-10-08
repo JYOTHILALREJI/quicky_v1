@@ -123,12 +123,22 @@ object SupabaseClient {
                 .build()
 
             http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext null
+                if (!response.isSuccessful) {
+                    android.util.Log.w(
+                        "QuickyStorage",
+                        "Upload failed ($bucket/$objectPath): HTTP ${response.code} — " +
+                                response.body?.string().orEmpty().take(300)
+                    )
+                    return@withContext null
+                }
+                // optString("Key") yields the literal "null" for a JSON-null
+                // Key — treat that as a failure instead of persisting it.
                 JSONObject(response.body?.string().orEmpty())
                     .optString("Key")
-                    .ifEmpty { null }
+                    .takeIf { it.isNotBlank() && it != "null" }
             }
         } catch (e: Exception) {
+            android.util.Log.w("QuickyStorage", "Upload threw ($bucket/$objectPath): ${e.message}")
             null
         }
     }
@@ -156,7 +166,13 @@ object SupabaseClient {
                 .get()
                 .build()
             http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@runCatching null
+                if (!response.isSuccessful) {
+                    android.util.Log.w(
+                        "QuickyStorage",
+                        "Download failed ($bucket/$objectPath): HTTP ${response.code}"
+                    )
+                    return@runCatching null
+                }
                 response.body?.bytes()
             }
         }.getOrNull()
