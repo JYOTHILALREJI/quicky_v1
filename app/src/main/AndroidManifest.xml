@@ -13,6 +13,9 @@
          channels matter. Requested once, after sign-in (never during
          auth/onboarding). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Club voice messages (v3.3.4): real mic capture via MediaRecorder;
+         requested at the mic button, only when the user records. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:allowBackup="true"

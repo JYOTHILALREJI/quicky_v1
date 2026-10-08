@@ -298,11 +298,18 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 currentUserId = state.userProfile.id,
                 activeClubId = state.activeClubId,
                 myClubName = state.clubs.find { it.id == state.activeClubId }?.name,
+                chatMeta = state.clubChatMeta[club.id] ?: com.example.ui.ClubChatMeta(),
+                onLoadOlderMessages = { viewModel.loadOlderClubMessages(club.id) },
                 onBack = { viewModel.closeClubDetail() },
                 onSendMessage = { text, replyText, replySender ->
                     viewModel.sendClubMessage(club.id, text, replyToText = replyText, replyToSender = replySender)
                 },
-                onSendVoiceMessage = { viewModel.sendClubMessage(club.id, "", isVoice = true) },
+                onSendVoiceMessage = { bytes, duration ->
+                    viewModel.sendClubVoiceMessage(club.id, bytes, duration)
+                },
+                onRequestVoiceNote = { message ->
+                    viewModel.getClubVoiceNoteFile(message)
+                },
                 onOpenStickerPicker = { viewModel.openStickerPicker() },
                 onOpenPremiumStore = { viewModel.openPremiumStore() },
                 onViewMemberProfile = { userId ->
@@ -312,6 +319,15 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 },
                 onRemoveMember = { clubId, memberUserId ->
                     viewModel.removeClubMember(clubId, memberUserId)
+                },
+                onToggleReaction = { messageId, emoji ->
+                    viewModel.toggleClubMessageReaction(club.id, messageId, emoji)
+                },
+                onReportMember = { clubId, memberUserId, reason, details ->
+                    viewModel.reportClubMember(clubId, memberUserId, reason, details)
+                },
+                onSetMemberSuspended = { clubId, memberUserId, suspendMember ->
+                    viewModel.setClubMemberSuspended(clubId, memberUserId, suspendMember)
                 },
                 onDeleteClub = { clubId -> viewModel.deleteClub(clubId) },
                 onJoinClub = { clubId ->

@@ -327,7 +327,9 @@ data class NotificationItem(
     val message: String,
     val type: String, // "MATCH", "MESSAGE", "GAME", "LIKE", "SYSTEM"
     val timeAgo: String,
-    val isRead: Boolean = false
+    val isRead: Boolean = false,
+    /** When set, tapping the notification deep-links into this club chat. */
+    val clubId: String? = null
 )
 
 data class DiscoveryPreferences(
@@ -421,10 +423,27 @@ data class ClubMessage(
     val stickerId: String? = null,
     val stickerEmoji: String? = null,
     val voiceDurationSeconds: Int? = null,
+    /** Storage path of the recorded audio inside the `voice-notes` bucket. */
+    val voiceUrl: String? = null,
     val timestamp: String = "Just now",
     val isMine: Boolean = false,
     val replyToText: String? = null,
-    val replyToSender: String? = null
+    val replyToSender: String? = null,
+    /** Server `created_at` — the cursor for chunked history + polling. */
+    val createdAtIso: String? = null,
+    /** Supabase auth ids of the "@mentioned" users (excludes the sender). */
+    val mentions: List<String> = emptyList(),
+    /** Emoji reactions rendered under the bubble. */
+    val reactions: List<ClubMessageReaction> = emptyList()
+)
+
+/** One user's emoji reaction on one club message (v3.3.4). */
+data class ClubMessageReaction(
+    val id: String,
+    val messageId: String,
+    val userId: String,
+    val userName: String,
+    val emoji: String
 )
 
 // -------------------------------------------------------------

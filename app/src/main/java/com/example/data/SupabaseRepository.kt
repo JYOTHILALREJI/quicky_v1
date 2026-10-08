@@ -2,8 +2,11 @@ package com.example.data
 
 import com.example.model.Club
 import com.example.model.ClubMember
+import com.example.model.ClubMessage
+import com.example.model.ClubMessageReaction
 import com.example.model.GameDefinition
 import com.example.model.GeoSuggestion
+import com.example.model.NotificationItem
 import com.example.model.OnboardingDraft
 import com.example.model.TruthOrDarePrompt
 import com.example.model.UserProfile
@@ -680,9 +683,26 @@ object SupabaseRepository {
         }.getOrDefault(false)
     }
 
+    /** Server echo of a persisted club message (for state reconciliation). */
+    data class ClubMessageInsertResult(
+        val id: String,
+        val createdAtIso: String
+    )
+
     /**
-     * Persists a club-chat message to the `club_messages` table.
-     * Fire-and-forget: returns false instead of throwing.
+     * Persists a club-chat message to the `club_messages` table (v3.3.4).
+     *
+     * Sends the FULL payload — reply quote, sticker, voice note URL/duration
+     * and the "@mentioned" user ids (a database trigger turns each mention
+     * into a tailored notification row for that user).
+     *
+     * Uses `Prefer: return=representation` so the server echoes the created
+     * row (id + created_at): the ViewModel then patches its optimistic local
+     * message, which keeps pagination + polling cursors and re-loads from
+     * ever duplicating it.
+     *
+     * @return the created row's id/created_at, or null on failure (network,
+     *         RLS, or the not-a-member / suspended trigger guard).
      */
     suspend fun insertClubMessage(
         clubId: String,
@@ -690,28 +710,402 @@ object SupabaseRepository {
         senderName: String,
         messageType: String,
         text: String,
+        stickerEmoji: String? = null,
+        voiceDurationSeconds: Int? = null,
+        voiceUrl: String? = null,
+        replyToText: String? = null,
+        replyToSender: String? = null,
+        mentions: List<String> = emptyList(),
         accessToken: String? = null
+    ): ClubMessageInsertResult? {
+        if (!isConfigured()) return null
+        return runCatching {
+            val body = JSONObject()
+                .put("club_id", clubId)
+                .put("sender_id", senderId)
+                .put("sender_name", senderName)
+                .put("message_type", messageType)
+                .put("text", text)
+                .put("mentions", JSONArray(mentions))
+            stickerEmoji?.let { body.put("sticker_emoji", it) }
+            voiceDurationSeconds?.let { body.put("voice_duration_seconds", it) }
+            voiceUrl?.let { body.put("voice_url", it) }
+            replyToText?.let { body.put("reply_to_text", it.take(200)) }
+            replyToSender?.let { body.put("reply_to_sender", it.take(80)) }
+
+            val raw = SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MESSAGES}",
+                query = mapOf("select" to "id,created_at"),
+                body = body.toString(),
+                accessToken = accessToken,
+                prefer = "return=representation"
+            )
+            val row = SupabaseClient.parseArray(raw).optJSONObject(0)
+                ?: return@runCatching null
+            ClubMessageInsertResult(
+                id = row.optString("id"),
+                createdAtIso = normalizeIsoCursor(row.optString("created_at"))
+            )
+        }.onFailure { e ->
+            android.util.Log.w(
+                "QuickyClubs",
+                "insertClubMessage failed (club=$clubId type=$messageType): ${e.message}"
+            )
+        }.getOrNull()
+    }
+
+    /**
+     * Loads ONE PAGE of club-chat history (v3.3.4 chunked loading).
+     *
+     * PostgREST cursor pagination: newest-first `created_at desc` window of
+     * [limit] rows, optionally older than [beforeIso] (scroll-up page) or
+     * newer than [afterIso] (live poll refresh). The page comes back
+     * newest-first; this function returns it oldest-first so callers can
+     * append/prepend directly, and enriches every message with its
+     * reactions (one batched read).
+     *
+     * @return null when not configured or the request failed.
+     */
+    suspend fun fetchClubMessagesPage(
+        clubId: String,
+        currentUserId: String,
+        limit: Int = 30,
+        beforeIso: String? = null,
+        afterIso: String? = null,
+        accessToken: String? = null
+    ): List<ClubMessage>? {
+        if (!isConfigured()) return null
+        return runCatching {
+            val query = mutableMapOf(
+                "select" to "id,club_id,sender_id,sender_name,message_type,text," +
+                        "sticker_emoji,voice_duration_seconds,voice_url," +
+                        "reply_to_text,reply_to_sender,mentions,created_at",
+                "club_id" to "eq.$clubId",
+                "order" to "created_at.desc",
+                "limit" to limit.toString()
+            )
+            beforeIso?.takeIf { it.isNotBlank() }?.let { query["created_at"] = "lt.$it" }
+            afterIso?.takeIf { it.isNotBlank() }?.let { query["created_at"] = "gt.$it" }
+
+            val raw = SupabaseClient.rest(
+                method = "GET",
+                path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MESSAGES}",
+                query = query,
+                accessToken = accessToken
+            )
+            val rows = SupabaseClient.parseArray(raw)
+            val messages = ArrayList<ClubMessage>(rows.length())
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                messages.add(row.toClubMessage(currentUserId))
+            }
+            // Attach reactions for this page (single batched read).
+            val reactions = fetchClubReactions(
+                messages.map { it.id }, accessToken
+            )
+            messages.map { msg ->
+                msg.copy(reactions = reactions[msg.id] ?: emptyList())
+            }.reversed()
+        }.getOrNull()
+    }
+
+    /** Maps one `club_messages` row to the app model. */
+    private fun JSONObject.toClubMessage(currentUserId: String): ClubMessage {
+        val iso = normalizeIsoCursor(optString("created_at"))
+        val mentionsJson = optJSONArray("mentions")
+        val mentions = mutableListOf<String>()
+        if (mentionsJson != null) {
+            for (i in 0 until mentionsJson.length()) {
+                mentionsJson.optString(i).takeIf { it.isNotBlank() }?.let { mentions.add(it) }
+            }
+        }
+        return ClubMessage(
+            id = optString("id"),
+            clubId = optString("club_id"),
+            senderId = optString("sender_id"),
+            senderName = optString("sender_name").ifBlank { "Member" },
+            messageType = optString("message_type").ifBlank { "TEXT" },
+            text = optString("text"),
+            stickerEmoji = optString("sticker_emoji").takeIf { it.isNotBlank() },
+            voiceDurationSeconds = if (isNull("voice_duration_seconds")) null
+            else optInt("voice_duration_seconds"),
+            voiceUrl = optString("voice_url").takeIf { it.isNotBlank() },
+            timestamp = LudoTime.isoToClock(iso) ?: "Now",
+            isMine = optString("sender_id") == currentUserId,
+            replyToText = optString("reply_to_text").takeIf { it.isNotBlank() },
+            replyToSender = optString("reply_to_sender").takeIf { it.isNotBlank() },
+            createdAtIso = iso,
+            mentions = mentions
+        )
+    }
+
+    /** "…+00:00" → "…Z" so the value is URL-safe as a PostgREST cursor. */
+    private fun normalizeIsoCursor(iso: String): String =
+        iso.trim().replace("+00:00", "Z").replace("+0000", "Z")
+
+    /**
+     * Batched read of the reactions for a set of club messages (v3.3.4).
+     *
+     * @return message id → its reactions; empty map when there are none or
+     *         the read fails (reactions are cosmetic — never fatal).
+     */
+    suspend fun fetchClubReactions(
+        messageIds: List<String>,
+        accessToken: String?
+    ): Map<String, List<ClubMessageReaction>> {
+        if (!isConfigured() || messageIds.isEmpty()) return emptyMap()
+        return runCatching {
+            val raw = SupabaseClient.rest(
+                method = "GET",
+                path = "/rest/v1/club_message_reactions",
+                query = mapOf(
+                    "select" to "id,message_id,user_id,user_name,emoji",
+                    "message_id" to "in.(${messageIds.joinToString(",")})",
+                    "order" to "created_at.asc",
+                    "limit" to "500"
+                ),
+                accessToken = accessToken
+            )
+            val rows = SupabaseClient.parseArray(raw)
+            val map = mutableMapOf<String, MutableList<ClubMessageReaction>>()
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                val messageId = row.optString("message_id")
+                if (messageId.isBlank()) continue
+                map.getOrPut(messageId) { mutableListOf() }.add(
+                    ClubMessageReaction(
+                        id = row.optString("id"),
+                        messageId = messageId,
+                        userId = row.optString("user_id"),
+                        userName = row.optString("user_name").ifBlank { "Member" },
+                        emoji = row.optString("emoji")
+                    )
+                )
+            }
+            map
+        }.getOrDefault(emptyMap())
+    }
+
+    /** Adds a reaction row (idempotent per (message, user, emoji) unique). */
+    suspend fun addClubReaction(
+        clubId: String,
+        messageId: String,
+        userId: String,
+        userName: String,
+        emoji: String,
+        accessToken: String?
     ): Boolean {
         if (!isConfigured()) return false
         return runCatching {
             SupabaseClient.rest(
                 method = "POST",
-                path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MESSAGES}",
-                // v3.3.2 fix: Prefer as a query param 400s (PGRST100) —
-                // see insertChatMessage. Header form + JWT required by the
-                // club_messages_insert RLS policy.
-                prefer = "return=minimal",
+                path = "/rest/v1/club_message_reactions",
+                prefer = "return=minimal,resolution=ignore-duplicates",
                 body = JSONObject()
+                    .put("message_id", messageId)
                     .put("club_id", clubId)
-                    .put("sender_id", senderId)
-                    .put("sender_name", senderName)
-                    .put("message_type", messageType)
-                    .put("text", text)
+                    .put("user_id", userId)
+                    .put("user_name", userName)
+                    .put("emoji", emoji)
                     .toString(),
                 accessToken = accessToken
             )
             true
         }.getOrDefault(false)
+    }
+
+    /** Removes one user's own reaction row. */
+    suspend fun removeClubReaction(
+        messageId: String,
+        userId: String,
+        emoji: String,
+        accessToken: String?
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "DELETE",
+                path = "/rest/v1/club_message_reactions",
+                query = mapOf(
+                    "message_id" to "eq.$messageId",
+                    "user_id" to "eq.$userId",
+                    "emoji" to "eq.$emoji"
+                ),
+                accessToken = accessToken,
+                prefer = "return=minimal"
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Owner action (v3.3.4): flips a member's status between ACTIVE and
+     * SUSPENDED. Suspended members are blocked from posting by the
+     * `club_messages_membership_gate` trigger server-side; the RLS update
+     * policy only lets the CLUB OWNER change member rows.
+     */
+    suspend fun updateClubMemberStatus(
+        clubId: String,
+        userId: String,
+        status: String,
+        accessToken: String?
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "PATCH",
+                path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_MEMBERS}",
+                query = mapOf(
+                    "club_id" to "eq.$clubId",
+                    "user_id" to "eq.$userId"
+                ),
+                body = JSONObject().put("status", status).toString(),
+                accessToken = accessToken,
+                prefer = "return=minimal"
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Member report (v3.3.4): flags toxic behaviour to the club owner.
+     * A database trigger drops a notification row on the owner's account.
+     */
+    suspend fun insertClubReport(
+        clubId: String,
+        reporterId: String,
+        reporterName: String,
+        reportedUserId: String,
+        reportedUserName: String,
+        reason: String,
+        details: String,
+        accessToken: String?
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/club_reports",
+                prefer = "return=minimal",
+                body = JSONObject()
+                    .put("club_id", clubId)
+                    .put("reporter_id", reporterId)
+                    .put("reporter_name", reporterName)
+                    .put("reported_user_id", reportedUserId)
+                    .put("reported_user_name", reportedUserName)
+                    .put("reason", reason)
+                    .put("details", details.take(500))
+                    .toString(),
+                accessToken = accessToken
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * The signed-in account's latest notification rows (v3.3.4 mention
+     * pushes): feeds the notification badge, the in-app sheet and the
+     * local system-notification render for unseen ones.
+     */
+    suspend fun fetchNotifications(
+        userId: String,
+        limit: Int = 40,
+        accessToken: String?
+    ): List<NotificationItem>? {
+        if (!isConfigured()) return null
+        return runCatching {
+            val raw = SupabaseClient.rest(
+                method = "GET",
+                path = "/rest/v1/${SupabaseConfig.TABLE_NOTIFICATIONS}",
+                query = mapOf(
+                    "select" to "id,title,message,type,is_read,club_id,created_at",
+                    "user_id" to "eq.$userId",
+                    "order" to "created_at.desc",
+                    "limit" to limit.toString()
+                ),
+                accessToken = accessToken
+            )
+            val rows = SupabaseClient.parseArray(raw)
+            (0 until rows.length()).mapNotNull { i ->
+                val row = rows.optJSONObject(i) ?: return@mapNotNull null
+                val iso = normalizeIsoCursor(row.optString("created_at"))
+                NotificationItem(
+                    id = row.optString("id"),
+                    title = row.optString("title").ifBlank { "Quicky" },
+                    message = row.optString("message"),
+                    type = row.optString("type").ifBlank { "SYSTEM" },
+                    timeAgo = iso.let { LudoTime.parseIsoToEpochMs(it) }
+                        ?.let { relativeTimeLabel(it) } ?: "Recently",
+                    isRead = row.optBoolean("is_read", false),
+                    clubId = row.optString("club_id").takeIf { it.isNotBlank() }
+                )
+            }
+        }.getOrNull()
+    }
+
+    /** Compact relative label for notification timestamps. */
+    private fun relativeTimeLabel(epochMs: Long): String {
+        val diff = System.currentTimeMillis() - epochMs
+        return when {
+            diff < 60_000 -> "Just now"
+            diff < 3_600_000 -> "${diff / 60_000}m ago"
+            diff < 86_400_000 -> "${diff / 3_600_000}h ago"
+            diff < 7 * 86_400_000L -> "${diff / 86_400_000}d ago"
+            else -> java.text.SimpleDateFormat("MMM d", java.util.Locale.US)
+                .format(java.util.Date(epochMs))
+        }
+    }
+
+    /**
+     * Uploads a recorded club voice note into the PRIVATE `voice-notes`
+     * bucket under `club-voice/<clubId>/…` (v3.3.4). Authenticated club
+     * members can read + write that prefix (storage policies), so every
+     * member can play the note back later.
+     *
+     * @return the storage object path to persist on the message row, or
+     *         null when the upload failed.
+     */
+    suspend fun uploadClubVoiceNote(
+        clubId: String,
+        senderId: String,
+        bytes: ByteArray,
+        accessToken: String?
+    ): String? {
+        if (!isConfigured()) return null
+        val objectPath = "club-voice/$clubId/${senderId}_${System.currentTimeMillis()}.m4a"
+        // storageUpload returns the object Key (= objectPath) on success,
+        // null on failure — failures surface as a "voice not delivered" log.
+        val key = SupabaseClient.storageUpload(
+            bucket = SupabaseConfig.BUCKET_VOICE_NOTES,
+            objectPath = objectPath,
+            bytes = bytes,
+            contentType = "audio/mp4",
+            accessToken = accessToken
+        )
+        if (key == null) {
+            android.util.Log.w(
+                "QuickyClubs",
+                "Club voice-note upload failed (club=$clubId sender=$senderId)"
+            )
+        }
+        return key
+    }
+
+    /**
+     * Downloads a club voice note for playback (private bucket, rides
+     * the user JWT). Returns null on any failure.
+     */
+    suspend fun downloadClubVoiceNote(
+        objectPath: String,
+        accessToken: String?
+    ): ByteArray? {
+        if (!isConfigured()) return null
+        return SupabaseClient.storageDownload(
+            bucket = SupabaseConfig.BUCKET_VOICE_NOTES,
+            objectPath = objectPath,
+            accessToken = accessToken
+        )
     }
 
     /**

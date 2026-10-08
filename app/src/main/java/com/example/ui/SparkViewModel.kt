@@ -42,8 +42,11 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.Locale
 import kotlin.coroutines.resume
+import kotlin.math.abs
+import com.example.data.PushNotifications
 
 enum class SparkTab {
     DISCOVER,
@@ -53,6 +56,25 @@ enum class SparkTab {
     CLUBS,
     PROFILE
 }
+
+/**
+ * Per-club chat synchronization state (v3.3.4 chunked history + polling).
+ * Lives in [SparkUiState.clubChatMeta] keyed by club id.
+ */
+data class ClubChatMeta(
+    /** True while the FIRST page of history loads (chat open spinner). */
+    val isLoadingInitial: Boolean = false,
+    /** True while an OLDER page is being fetched (scroll-up spinner). */
+    val isLoadingOlder: Boolean = false,
+    /** False once an older page came back short — no more history above. */
+    val hasMoreMessages: Boolean = false,
+    /** Cursor for the next older page (oldest `created_at` loaded). */
+    val oldestLoadedIso: String? = null,
+    /** Cursor for live polling (newest `created_at` loaded). */
+    val newestLoadedIso: String? = null,
+    /** True while the open-chat poll loop runs for this club. */
+    val isPolling: Boolean = false
+)
 
 data class SparkUiState(
     val isOnboardingComplete: Boolean = true,
@@ -124,6 +146,8 @@ data class SparkUiState(
     val activeClubId: String? = null,
     val selectedClubForDetail: Club? = null,
     val clubMessages: Map<String, List<ClubMessage>> = emptyMap(),
+    /** v3.3.4 chunked-history + polling cursors, keyed by club id. */
+    val clubChatMeta: Map<String, ClubChatMeta> = emptyMap(),
     val lastClubCreatedTimestamp: Long = 0L,
     val showCreateClubDialog: Boolean = false,
 
@@ -454,6 +478,12 @@ class SparkViewModel : ViewModel() {
         viewModelScope.launch {
             sessionRefreshJob?.cancel()
             boostExpiryJob?.cancel()
+            stopNotificationPolling()
+            shownNotificationIds.clear()
+            _uiState.value.clubChatMeta.filterValues { it.isPolling }.keys.forEach {
+                stopClubChatPolling(it)
+            }
+            clubVoiceCache.clear()
             SupabaseAuth.signOut(context)
             onboardingPhotoBytes.clear()
             _uiState.update {
@@ -511,6 +541,7 @@ class SparkViewModel : ViewModel() {
                     activeClubId = null,
                     selectedClubForDetail = null,
                     clubMessages = emptyMap(),
+                    clubChatMeta = emptyMap(),
                     notifications = emptyList(),
                     pendingNotificationRoute = null,
                     interactionInsights = emptyList(),
@@ -600,6 +631,10 @@ class SparkViewModel : ViewModel() {
         // can address it. Covers token-before-sign-in and account switches;
         // fire-and-forget — offline just logs, retried next sign-in.
         appContext?.let { ctx -> QuickyPushService.syncTokenToServer(ctx) }
+        // v3.3.4: poll notification rows (mentions / member reports) while
+        // the session is alive and render the unseen ones as real system
+        // notifications (clubs channel + quicky:// club deep link).
+        startNotificationPolling()
     }
 
     /** Hourly session keeper — refreshes the JWT shortly before it expires. */
@@ -2446,6 +2481,77 @@ class SparkViewModel : ViewModel() {
         _uiState.update { it.copy(notifications = updated) }
     }
 
+    // -------------------------------------------------------------
+    // v3.3.4 NOTIFICATION POLLING — mention & report pushes.
+    //
+    // The server drops notification rows (DB triggers) for every
+    // "@mention" and every member report; this loop surfaces them as
+    // REAL system notifications (channel + deep link) while the app is
+    // alive, and keeps the in-app notification sheet in sync. The first
+    // pass after sign-in only seeds the "already seen" set — history
+    // never re-pops.
+    // -------------------------------------------------------------
+    private var notificationPollJob: Job? = null
+    private val shownNotificationIds = mutableSetOf<String>()
+
+    fun startNotificationPolling() {
+        if (notificationPollJob?.isActive == true) return
+        if (!SupabaseRepository.isConfigured()) return
+        notificationPollJob = viewModelScope.launch {
+            var firstPass = true
+            while (isActive) {
+                val s = _uiState.value
+                val session = s.authSession ?: break
+                val fresh = SupabaseRepository.fetchNotifications(
+                    session.userId, accessToken = session.accessToken
+                )
+                if (fresh != null) {
+                    if (firstPass) {
+                        // Seed — existing rows are "known", not "pushed".
+                        shownNotificationIds.addAll(fresh.map { it.id })
+                        firstPass = false
+                    } else {
+                        fresh
+                            .filter { it.id !in shownNotificationIds && !it.isRead }
+                            .forEach { n ->
+                                shownNotificationIds.add(n.id)
+                                appContext?.let { ctx ->
+                                    PushNotifications.show(
+                                        context = ctx,
+                                        type = if (n.clubId != null) PushNotifications.TYPE_CLUB
+                                        else PushNotifications.TYPE_MESSAGE,
+                                        title = n.title,
+                                        body = n.message,
+                                        chatId = null,
+                                        clubId = n.clubId
+                                    )
+                                }
+                            }
+                    }
+                    _uiState.update { st ->
+                        st.copy(notifications = mergeNotifications(st.notifications, fresh))
+                    }
+                }
+                delay(NOTIFICATION_POLL_MS)
+            }
+        }
+    }
+
+    fun stopNotificationPolling() {
+        notificationPollJob?.cancel()
+        notificationPollJob = null
+    }
+
+    /** Server rows first (newest first), local-only items kept below. */
+    private fun mergeNotifications(
+        local: List<NotificationItem>,
+        remote: List<NotificationItem>
+    ): List<NotificationItem> {
+        val remoteIds = remote.map { it.id }.toHashSet()
+        val localOnly = local.filter { it.id !in remoteIds }
+        return remote + localOnly
+    }
+
     fun showToast(msg: String) {
         _uiState.update { it.copy(toastMessage = msg) }
     }
@@ -2457,13 +2563,236 @@ class SparkViewModel : ViewModel() {
     // -------------------------------------------------------------
     // CLUBS & SOCIAL COMMUNITY METHODS (PRD Section 11 - 18, 30)
     // -------------------------------------------------------------
+
+    companion object {
+        /** One page of club-chat history (chunk-by-chunk scroll loading). */
+        private const val CLUB_CHAT_PAGE_SIZE = 30
+        /** How often the OPEN club chat polls for fresh messages. */
+        private const val CLUB_CHAT_POLL_MS = 7_000L
+        /** Global poll for mention/report notifications. */
+        private const val NOTIFICATION_POLL_MS = 20_000L
+    }
+
     fun openClub(club: Club) {
         _uiState.update { it.copy(selectedClubForDetail = club) }
+        // v3.3.4: members opening the chat get chunked history + a live
+        // poll loop; non-members see the member list preview instead —
+        // the server's RLS keeps club_messages readable for authenticated
+        // users, but the product rule is "join first, read second".
+        val me = _uiState.value.userProfile.id
+        val isMember = club.members.any { it.userId == me }
+        if (isMember && SupabaseRepository.isConfigured()) {
+            loadClubChatInitial(club.id)
+            startClubChatPolling(club.id)
+        }
     }
 
     fun closeClubDetail() {
+        // Freeze the poll loops — history + cursors stay cached for the
+        // next open of the same club this session.
+        _uiState.value.clubChatMeta.filterValues { it.isPolling }.keys.forEach {
+            stopClubChatPolling(it)
+        }
         _uiState.update { it.copy(selectedClubForDetail = null) }
     }
+
+    /**
+     * Loads the FIRST page of a club's history (newest 30) and replaces
+     * the optimistic local list with the server truth (local-only
+     * messages this session — e.g. sends that never reached the server —
+     * are preserved and de-duplicated by content).
+     */
+    private fun loadClubChatInitial(clubId: String) {
+        val state = _uiState.value
+        if (state.clubChatMeta[clubId]?.isLoadingInitial == true) return
+        if ((state.clubMessages[clubId]?.size ?: 0) > 0) {
+            // Already loaded this session — just catch up on new ones.
+            viewModelScope.launch { pollClubChatOnce(clubId) }
+            return
+        }
+        _uiState.update { s ->
+            val meta = s.clubChatMeta[clubId] ?: ClubChatMeta()
+            s.copy(clubChatMeta = s.clubChatMeta + (clubId to meta.copy(isLoadingInitial = true)))
+        }
+        viewModelScope.launch {
+            val s = _uiState.value
+            val page = SupabaseRepository.fetchClubMessagesPage(
+                clubId = clubId,
+                currentUserId = s.userProfile.id,
+                limit = CLUB_CHAT_PAGE_SIZE,
+                accessToken = s.authSession?.accessToken
+            )
+            _uiState.update { s2 ->
+                val meta = s2.clubChatMeta[clubId] ?: ClubChatMeta()
+                if (page == null) {
+                    s2.copy(clubChatMeta = s2.clubChatMeta + (clubId to meta.copy(isLoadingInitial = false)))
+                } else {
+                    val merged = mergeClubMessages(s2.clubMessages[clubId] ?: emptyList(), page)
+                    val newMeta = meta.copy(
+                        isLoadingInitial = false,
+                        hasMoreMessages = page.size >= CLUB_CHAT_PAGE_SIZE,
+                        oldestLoadedIso = merged.firstOrNull()?.createdAtIso,
+                        newestLoadedIso = merged.lastOrNull()?.createdAtIso
+                    )
+                    s2.copy(
+                        clubMessages = s2.clubMessages + (clubId to merged),
+                        clubChatMeta = s2.clubChatMeta + (clubId to newMeta)
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Scroll-to-top pagination: loads the NEXT OLDER chunk of messages
+     * before the oldest one currently on screen (v3.3.4 — history is
+     * NEVER fully downloaded, only 30-message pages on demand).
+     */
+    fun loadOlderClubMessages(clubId: String) {
+        val state = _uiState.value
+        val meta = state.clubChatMeta[clubId] ?: return
+        if (meta.isLoadingOlder || !meta.hasMoreMessages) return
+        val before = meta.oldestLoadedIso ?: return
+        _uiState.update { s ->
+            s.copy(clubChatMeta = s.clubChatMeta + (clubId to meta.copy(isLoadingOlder = true)))
+        }
+        viewModelScope.launch {
+            val s = _uiState.value
+            val older = SupabaseRepository.fetchClubMessagesPage(
+                clubId = clubId,
+                currentUserId = s.userProfile.id,
+                limit = CLUB_CHAT_PAGE_SIZE,
+                beforeIso = before,
+                accessToken = s.authSession?.accessToken
+            )
+            _uiState.update { s2 ->
+                val m = s2.clubChatMeta[clubId] ?: ClubChatMeta()
+                if (older == null) {
+                    s2.copy(clubChatMeta = s2.clubChatMeta + (clubId to m.copy(isLoadingOlder = false)))
+                } else {
+                    val existing = s2.clubMessages[clubId] ?: emptyList()
+                    val existingIds = existing.map { it.id }.toHashSet()
+                    val newOnes = older.filter { it.id !in existingIds }
+                    val merged = sortClubMessages(newOnes + existing)
+                    s2.copy(
+                        clubMessages = s2.clubMessages + (clubId to merged),
+                        clubChatMeta = s2.clubChatMeta + (clubId to m.copy(
+                            isLoadingOlder = false,
+                            hasMoreMessages = older.size >= CLUB_CHAT_PAGE_SIZE,
+                            oldestLoadedIso = merged.firstOrNull()?.createdAtIso
+                        ))
+                    )
+                }
+            }
+        }
+    }
+
+    /** Starts the 7s refresh loop while a club chat stays open. */
+    private fun startClubChatPolling(clubId: String) {
+        if (clubPollJobs[clubId]?.isActive == true) return
+        clubPollJobs[clubId] = viewModelScope.launch {
+            while (isActive && _uiState.value.selectedClubForDetail?.id == clubId) {
+                delay(CLUB_CHAT_POLL_MS)
+                pollClubChatOnce(clubId)
+            }
+            _uiState.update { s ->
+                val meta = s.clubChatMeta[clubId] ?: return@update s
+                s.copy(clubChatMeta = s.clubChatMeta + (clubId to meta.copy(isPolling = false)))
+            }
+        }
+        _uiState.update { s ->
+            val meta = s.clubChatMeta[clubId] ?: ClubChatMeta()
+            s.copy(clubChatMeta = s.clubChatMeta + (clubId to meta.copy(isPolling = true)))
+        }
+    }
+
+    private fun stopClubChatPolling(clubId: String) {
+        clubPollJobs.remove(clubId)?.cancel()
+    }
+
+    /** One incremental poll: only rows NEWER than the newest loaded. */
+    private suspend fun pollClubChatOnce(clubId: String) {
+        val s = _uiState.value
+        if (!SupabaseRepository.isConfigured()) return
+        val fresh = SupabaseRepository.fetchClubMessagesPage(
+            clubId = clubId,
+            currentUserId = s.userProfile.id,
+            limit = CLUB_CHAT_PAGE_SIZE,
+            afterIso = s.clubChatMeta[clubId]?.newestLoadedIso,
+            accessToken = s.authSession?.accessToken
+        ) ?: return
+        if (fresh.isEmpty()) return
+        _uiState.update { s2 ->
+            val existing = s2.clubMessages[clubId] ?: emptyList()
+            val ids = existing.map { it.id }.toHashSet()
+            val newOnes = fresh.filter { it.id !in ids }
+            if (newOnes.isEmpty()) return@update s2
+            val merged = sortClubMessages(existing + newOnes)
+            val m = s2.clubChatMeta[clubId] ?: ClubChatMeta()
+            s2.copy(
+                clubMessages = s2.clubMessages + (clubId to merged),
+                clubChatMeta = s2.clubChatMeta + (clubId to m.copy(
+                    newestLoadedIso = merged.lastOrNull()?.createdAtIso ?: m.newestLoadedIso,
+                    oldestLoadedIso = merged.firstOrNull()?.createdAtIso ?: m.oldestLoadedIso,
+                    hasMoreMessages = m.hasMoreMessages || m.oldestLoadedIso == null
+                ))
+            )
+        }
+    }
+
+    /** Server truth order: by created_at (un-persisted locals sort as "now"). */
+    private fun sortClubMessages(list: List<ClubMessage>): List<ClubMessage> =
+        list.sortedBy { LudoTime.parseIsoToEpochMs(it.createdAtIso) ?: System.currentTimeMillis() }
+
+    /**
+     * Merges a fetched page into the current list: server rows win, local
+     * duplicates (same sender + text + type inside 90s) collapse so an
+     * optimistic send that already reached the server never shows twice.
+     */
+    private fun mergeClubMessages(
+        existing: List<ClubMessage>,
+        incoming: List<ClubMessage>
+    ): List<ClubMessage> {
+        val serverIds = incoming.map { it.id }.toHashSet()
+        val keptLocal = existing.filter { local ->
+            local.id !in serverIds && incoming.none { server ->
+                server.senderId == local.senderId &&
+                        server.messageType == local.messageType &&
+                        server.text == local.text &&
+                        local.id.startsWith("cmsg_") &&
+                        abs(
+                            (LudoTime.parseIsoToEpochMs(server.createdAtIso) ?: 0L) -
+                                    (LudoTime.parseIsoToEpochMs(local.createdAtIso)
+                                        ?: System.currentTimeMillis())
+                        ) < 90_000L
+            }
+        }
+        return sortClubMessages(keptLocal + incoming)
+    }
+
+    /** Cached playback files for downloaded voice notes (keyed by message id). */
+    private val clubVoiceCache = mutableMapOf<String, File>()
+
+    /**
+     * Ensures a club voice note is on disk, downloading it from the
+     * private `voice-notes` bucket on first play (v3.3.4).
+     */
+    suspend fun getClubVoiceNoteFile(message: ClubMessage): File? {
+        val path = message.voiceUrl ?: return null
+        clubVoiceCache[message.id]?.let { if (it.exists()) return it }
+        val ctx = appContext ?: return null
+        val bytes = SupabaseRepository.downloadClubVoiceNote(
+            path, _uiState.value.authSession?.accessToken
+        ) ?: return null
+        return runCatching {
+            val file = File(ctx.cacheDir, "clubvoice_${message.id}.m4a")
+            file.writeBytes(bytes)
+            clubVoiceCache[message.id] = file
+            file
+        }.getOrNull()
+    }
+
+    private val clubPollJobs = mutableMapOf<String, Job>()
 
     fun toggleCreateClubDialog(show: Boolean) {
         _uiState.update { it.copy(showCreateClubDialog = show) }
@@ -2677,56 +3006,328 @@ class SparkViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Sends a text / sticker club message.
+     *
+     * v3.3.4 changes:
+     *  - club voice notes are FREE for every member (the premium gate only
+     *    applies to 1:1 chat voice notes) — see [sendClubVoiceMessage];
+     *  - "@mentions" are parsed by the caller and arrive as user ids;
+     *    the database trigger turns each into a tailored push;
+     *  - the insert echoes the server row (id + created_at) which patches
+     *    the optimistic message, so reloads never duplicate it;
+     *  - failures are no longer silent — toast + logcat breadcrumb.
+     */
     fun sendClubMessage(
         clubId: String,
         text: String,
         stickerEmoji: String? = null,
-        isVoice: Boolean = false,
         replyToText: String? = null,
-        replyToSender: String? = null
+        replyToSender: String? = null,
+        mentions: List<String> = emptyList()
     ) {
-        if (isVoice && !PremiumGate.isPremium(_uiState.value.entitlements)) {
-            showToast("🔒 Voice messages are a Quicky Gold feature. Upgrade to unlock!")
-            openPremiumStore()
+        val me = _uiState.value.userProfile
+        // Local mirror of the server's membership gate (the DB trigger is
+        // the real enforcement; this keeps the UX honest without a round trip).
+        val myStatus = _uiState.value.clubs
+            .find { it.id == clubId }?.members
+            ?.find { it.userId == me.id }?.status
+        if (myStatus == "SUSPENDED") {
+            showToast("You are suspended from messaging in this club by the Owner.")
             return
         }
 
-        val currentList = _uiState.value.clubMessages[clubId] ?: emptyList()
         val newMessage = ClubMessage(
             id = "cmsg_${System.currentTimeMillis()}",
             clubId = clubId,
-            senderId = _uiState.value.userProfile.id,
-            senderName = _uiState.value.userProfile.name,
+            senderId = me.id,
+            senderName = me.name,
             senderAvatarRes = R.drawable.img_onboarding_hero,
-            senderBadge = _uiState.value.userProfile.characterBadge,
-            messageType = when {
-                isVoice -> "VOICE"
-                stickerEmoji != null -> "STICKER"
-                else -> "TEXT"
-            },
+            senderBadge = me.characterBadge,
+            messageType = if (stickerEmoji != null) "STICKER" else "TEXT",
             text = text,
             stickerEmoji = stickerEmoji,
-            voiceDurationSeconds = if (isVoice) 7 else null,
             timestamp = "Just now",
             isMine = true,
             replyToText = replyToText,
-            replyToSender = replyToSender
+            replyToSender = replyToSender,
+            mentions = mentions
         )
+        val currentList = _uiState.value.clubMessages[clubId] ?: emptyList()
         val updatedMap = _uiState.value.clubMessages.toMutableMap().apply {
             put(clubId, currentList + newMessage)
         }
         _uiState.update { it.copy(clubMessages = updatedMap) }
 
-        // Persist to Supabase when configured (fire-and-forget)
+        // Persist to Supabase when configured
         if (SupabaseRepository.isConfigured()) {
             viewModelScope.launch {
-                SupabaseRepository.insertClubMessage(
+                val result = SupabaseRepository.insertClubMessage(
                     clubId = clubId,
                     senderId = newMessage.senderId,
                     senderName = newMessage.senderName,
                     messageType = newMessage.messageType,
                     text = text,
+                    stickerEmoji = stickerEmoji,
+                    replyToText = replyToText,
+                    replyToSender = replyToSender,
+                    mentions = mentions,
                     accessToken = _uiState.value.authSession?.accessToken
+                )
+                if (result != null) {
+                    reconcileLocalClubMessage(clubId, newMessage.id, result)
+                } else {
+                    Log.w(
+                        "QuickyClubs",
+                        "Club message NOT saved to Supabase (club=$clubId) — " +
+                                "it will vanish on reload. Check network / RLS / suspension."
+                    )
+                    showToast("⚠️ Message not delivered — check your connection.")
+                }
+            }
+        }
+    }
+
+    /**
+     * Sends a REAL recorded club voice note (v3.3.4 — free for all club
+     * members): uploads the audio to the private `voice-notes` bucket
+     * under `club-voice/<club>/…`, then posts the message row that
+     * references it.
+     */
+    fun sendClubVoiceMessage(
+        clubId: String,
+        audioBytes: ByteArray,
+        durationSeconds: Int
+    ) {
+        val me = _uiState.value.userProfile
+        val myStatus = _uiState.value.clubs
+            .find { it.id == clubId }?.members
+            ?.find { it.userId == me.id }?.status
+        if (myStatus == "SUSPENDED") {
+            showToast("You are suspended from messaging in this club by the Owner.")
+            return
+        }
+
+        val newMessage = ClubMessage(
+            id = "cmsg_${System.currentTimeMillis()}",
+            clubId = clubId,
+            senderId = me.id,
+            senderName = me.name,
+            senderAvatarRes = R.drawable.img_onboarding_hero,
+            senderBadge = me.characterBadge,
+            messageType = "VOICE",
+            text = "",
+            voiceDurationSeconds = durationSeconds,
+            timestamp = "Just now",
+            isMine = true
+        )
+        val currentList = _uiState.value.clubMessages[clubId] ?: emptyList()
+        _uiState.update {
+            it.copy(clubMessages = it.clubMessages.toMutableMap().apply {
+                put(clubId, currentList + newMessage)
+            })
+        }
+
+        if (!SupabaseRepository.isConfigured()) return
+        viewModelScope.launch {
+            val token = _uiState.value.authSession?.accessToken
+            val voicePath = SupabaseRepository.uploadClubVoiceNote(
+                clubId = clubId,
+                senderId = me.id,
+                bytes = audioBytes,
+                accessToken = token
+            )
+            if (voicePath == null) {
+                showToast("⚠️ Voice note not uploaded — check your connection.")
+                return@launch
+            }
+            val result = SupabaseRepository.insertClubMessage(
+                clubId = clubId,
+                senderId = me.id,
+                senderName = me.name,
+                messageType = "VOICE",
+                text = "",
+                voiceDurationSeconds = durationSeconds,
+                voiceUrl = voicePath,
+                accessToken = token
+            )
+            if (result != null) {
+                // Point the optimistic bubble at the uploaded audio so the
+                // sender can replay their own note immediately.
+                _uiState.update { s ->
+                    val list = s.clubMessages[clubId] ?: emptyList()
+                    s.copy(clubMessages = s.clubMessages.toMutableMap().apply {
+                        put(clubId, list.map {
+                            if (it.id == newMessage.id) {
+                                it.copy(id = result.id, voiceUrl = voicePath, createdAtIso = result.createdAtIso)
+                            } else it
+                        })
+                    })
+                }
+            } else {
+                showToast("⚠️ Voice note not delivered — check your connection.")
+            }
+        }
+    }
+
+    /** Swaps an optimistic message's temp id for the server row's. */
+    private fun reconcileLocalClubMessage(
+        clubId: String,
+        localId: String,
+        result: SupabaseRepository.ClubMessageInsertResult
+    ) {
+        _uiState.update { s ->
+            val list = s.clubMessages[clubId] ?: return@update s
+            val meta = s.clubChatMeta[clubId]
+            s.copy(
+                clubMessages = s.clubMessages.toMutableMap().apply {
+                    put(clubId, list.map {
+                        if (it.id == localId) {
+                            it.copy(id = result.id, createdAtIso = result.createdAtIso)
+                        } else it
+                    })
+                },
+                clubChatMeta = if (meta == null) s.clubChatMeta else s.clubChatMeta.toMutableMap().apply {
+                    put(clubId, meta.copy(
+                        newestLoadedIso = maxOf(
+                            meta.newestLoadedIso ?: "",
+                            result.createdAtIso
+                        ).ifBlank { null } ?: result.createdAtIso
+                    ))
+                }
+            )
+        }
+    }
+
+    /** Parses "@Name" mentions in a draft into member ids (excludes self). */
+    fun resolveClubMentions(clubId: String, text: String): List<String> {
+        val club = _uiState.value.clubs.find { it.id == clubId } ?: return emptyList()
+        val me = _uiState.value.userProfile.id
+        return club.members
+            .filter { it.userId != me && it.userName.isNotBlank() }
+            .filter { member ->
+                text.contains("@${member.userName}", ignoreCase = true)
+            }
+            .map { it.userId }
+            .distinct()
+    }
+
+    /**
+     * Toggles the signed-in user's emoji reaction on a club message
+     * (v3.3.4). Optimistic local state + server write; the server write
+     * is idempotent per (message, user, emoji).
+     */
+    fun toggleClubMessageReaction(clubId: String, messageId: String, emoji: String) {
+        val me = _uiState.value.userProfile
+        val list = _uiState.value.clubMessages[clubId] ?: return
+        val msg = list.find { it.id == messageId } ?: return
+        val mine = msg.reactions.find { it.userId == me.id && it.emoji == emoji }
+
+        val patched = if (mine != null) {
+            msg.copy(reactions = msg.reactions.filter { it !== mine })
+        } else {
+            msg.copy(
+                reactions = msg.reactions + ClubMessageReaction(
+                    id = "local_${System.currentTimeMillis()}",
+                    messageId = messageId,
+                    userId = me.id,
+                    userName = me.name,
+                    emoji = emoji
+                )
+            )
+        }
+        val before = msg.reactions
+        _uiState.update { s ->
+            s.copy(clubMessages = s.clubMessages.toMutableMap().apply {
+                put(clubId, list.map { if (it.id == messageId) patched else it })
+            })
+        }
+
+        if (!SupabaseRepository.isConfigured()) return
+        viewModelScope.launch {
+            val token = _uiState.value.authSession?.accessToken
+            val ok = if (mine != null) {
+                SupabaseRepository.removeClubReaction(messageId, me.id, emoji, token)
+            } else {
+                SupabaseRepository.addClubReaction(clubId, messageId, me.id, me.name, emoji, token)
+            }
+            if (!ok) {
+                // Roll the bubble back — offline toggles shouldn't stick.
+                _uiState.update { s ->
+                    val l = s.clubMessages[clubId] ?: return@update s
+                    s.copy(clubMessages = s.clubMessages.toMutableMap().apply {
+                        put(clubId, l.map { if (it.id == messageId) it.copy(reactions = before) else it })
+                    })
+                }
+            }
+        }
+    }
+
+    /**
+     * Reports a club member to the owner (v3.3.4 — toxic language etc.).
+     * The DB trigger drops a notification on the owner's account.
+     */
+    fun reportClubMember(
+        clubId: String,
+        memberUserId: String,
+        reason: String,
+        details: String = ""
+    ) {
+        val me = _uiState.value.userProfile
+        val club = _uiState.value.clubs.find { it.id == clubId }
+        val target = club?.members?.find { it.userId == memberUserId }
+        viewModelScope.launch {
+            val ok = SupabaseRepository.insertClubReport(
+                clubId = clubId,
+                reporterId = me.id,
+                reporterName = me.name,
+                reportedUserId = memberUserId,
+                reportedUserName = target?.userName ?: "Member",
+                reason = reason,
+                details = details,
+                accessToken = _uiState.value.authSession?.accessToken
+            )
+            showToast(
+                if (ok) "🚩 Report submitted — the club Owner has been notified."
+                else "Report could not be sent. Check your connection."
+            )
+        }
+    }
+
+    /**
+     * OWNER action (v3.3.4): suspends / restores a member's right to post
+     * in this club. Enforced server-side by the insert trigger; only the
+     * owner can flip member rows (RLS).
+     */
+    fun setClubMemberSuspended(clubId: String, memberUserId: String, suspendMember: Boolean) {
+        val club = _uiState.value.clubs.find { it.id == clubId } ?: return
+        val target = club.members.find { it.userId == memberUserId } ?: return
+        val updatedMembers = club.members.map {
+            if (it.userId == memberUserId) it.copy(status = if (suspendMember) "SUSPENDED" else "ACTIVE") else it
+        }
+        val updatedClubs = _uiState.value.clubs.map {
+            if (it.id == clubId) it.copy(members = updatedMembers) else it
+        }
+        _uiState.update {
+            it.copy(
+                clubs = updatedClubs,
+                selectedClubForDetail = updatedClubs.find { c -> c.id == clubId },
+                toastMessage = if (suspendMember)
+                    "${target.userName} is suspended from messaging in this club."
+                else "${target.userName} can message in this club again."
+            )
+        }
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                val ok = SupabaseRepository.updateClubMemberStatus(
+                    clubId = clubId,
+                    userId = memberUserId,
+                    status = if (suspendMember) "SUSPENDED" else "ACTIVE",
+                    accessToken = _uiState.value.authSession?.accessToken
+                )
+                if (!ok) Log.w(
+                    "QuickyClubs",
+                    "Member status update failed (club=$clubId user=$memberUserId)"
                 )
             }
         }
@@ -2761,13 +3362,24 @@ class SparkViewModel : ViewModel() {
                 toastMessage = "$memberName has been removed from the club."
             )
         }
-        // v3.2.2: mirror the owner's removal on the server.
+        // v3.2.2: mirror the owner's removal on the server, and post the
+        // SYSTEM notice as a REAL club message (v3.3.4) so every member —
+        // including on their next sign-in — sees who was removed.
         if (SupabaseRepository.isConfigured()) {
             viewModelScope.launch {
+                val token = _uiState.value.authSession?.accessToken
                 SupabaseRepository.removeClubMembership(
                     clubId = clubId,
                     userId = memberUserId,
-                    accessToken = _uiState.value.authSession?.accessToken
+                    accessToken = token
+                )
+                SupabaseRepository.insertClubMessage(
+                    clubId = clubId,
+                    senderId = "system",
+                    senderName = "SYSTEM",
+                    messageType = "SYSTEM",
+                    text = systemMsg.text,
+                    accessToken = token
                 )
             }
         }

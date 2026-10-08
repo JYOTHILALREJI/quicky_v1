@@ -137,6 +137,31 @@ object SupabaseClient {
     fun storagePublicUrl(bucket: String, objectPath: String): String =
         "${SupabaseConfig.SUPABASE_URL}/storage/v1/object/public/$bucket/$objectPath"
 
+    /**
+     * Downloads an object from a PRIVATE bucket (v3.3.4 club voice notes).
+     * The request rides the Supabase Auth user JWT so the bucket's
+     * `authenticated` read policy applies; the anon key alone is rejected.
+     *
+     * @return the raw bytes, or null on any failure (caller keeps the UI).
+     */
+    suspend fun storageDownload(
+        bucket: String,
+        objectPath: String,
+        accessToken: String? = null
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$objectPath")
+                .apply { authHeaders(accessToken).forEach { (k, v) -> header(k, v) } }
+                .get()
+                .build()
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@runCatching null
+                response.body?.bytes()
+            }
+        }.getOrNull()
+    }
+
     /** Convenience: parse a REST response as a JSON array. */
     fun parseArray(raw: String): JSONArray = JSONArray(raw.ifEmpty { "[]" })
 
