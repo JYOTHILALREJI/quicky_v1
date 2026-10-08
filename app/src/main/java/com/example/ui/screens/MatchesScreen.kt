@@ -54,24 +54,27 @@ fun MatchesScreen(
     // PremiumGate.isAdsEnabled, same contract as the chat-header banner.
     showBannerAd: Boolean = false
 ) {
-    LazyColumn(
+    // v3.3.6 (user request): the New Matches tray + banner ad are FIXED
+    // at the top of the page — the ad is always on screen — while the
+    // "Your Connections" section below scrolls independently in its own
+    // bounded list. Previously everything lived in one LazyColumn, so the
+    // ad scrolled away with the cards.
+    Column(
         modifier = modifier
             .fillMaxSize()
             .testTag("matches_screen")
             // v2.1 §3.5 — tap anywhere dismisses the keyboard.
-            .dismissKeyboardOnTap(),
-        // Extra bottom padding so the last card can scroll clear above
-        // the floating liquid-glass navigation bar.
-        contentPadding = PaddingValues(
-            start = 16.dp,
-            top = 16.dp,
-            end = 16.dp,
-            bottom = 16.dp + glassNavBarOverlayHeight()
-        ),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .dismissKeyboardOnTap()
     ) {
-        // Section 1: New Matches Stories Tray
-        item {
+        // -------------------------------------------------------------
+        // FIXED PORTION (never scrolls): New Matches tray + the ad banner.
+        // -------------------------------------------------------------
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, top = 16.dp, end = 16.dp)
+        ) {
+            // Section 1: New Matches Stories Tray
             Text(
                 text = "New Matches",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -177,245 +180,267 @@ fun MatchesScreen(
         }
 
         // Section 1b (v3.2.1, user request): inline adaptive banner row
-        // directly AFTER the New Matches tray, BEFORE "Your Connections".
-        // Renders nothing until a real ad is loaded — no blank row on
-        // failure, and Quicky Gold accounts never get it at all.
+        // directly AFTER the New Matches tray. v3.3.6: pinned inside the
+        // FIXED portion so the ad is ALWAYS displayed while the
+        // connections list scrolls underneath. Renders nothing until a real
+        // ad is loaded — no blank row on failure, and Quicky Gold accounts
+        // never get it at all.
         if (showBannerAd) {
-            item { MatchesListBannerAd() }
+            MatchesListBannerAd(modifier = Modifier.padding(top = 12.dp))
         }
 
-        // Section 2: Matches Relationship Cards (PRD Section 51 & 52)
-        item {
-            Text(
-                text = "Your Connections (${matches.size})",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                modifier = Modifier.padding(top = 6.dp)
-            )
-        }
-
-        if (matches.isEmpty()) {
+        // -------------------------------------------------------------
+        // SCROLLABLE PORTION: "Your Connections" — an independent bounded
+        // list (weight 1f) that takes all remaining height below the fixed
+        // tray + ad; the connection cards scroll inside it.
+        // -------------------------------------------------------------
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            // Extra bottom padding so the last card can scroll clear above
+            // the floating liquid-glass navigation bar.
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = 16.dp,
+                end = 16.dp,
+                bottom = 16.dp + glassNavBarOverlayHeight()
+            ),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Section 2: Matches Relationship Cards (PRD Section 51 & 52)
             item {
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(32.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(text = "💫", fontSize = 36.sp)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "No matches yet",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-                        Text(
-                            text = "Discover and like people to spark mutual matches and play Truth or Dare together.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+                Text(
+                    text = "Your Connections (${matches.size})",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.padding(top = 6.dp)
+                )
             }
-        } else {
-            items(matches) { match ->
-                var showOptions by remember { mutableStateOf(false) }
 
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("match_card_${match.id}")
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            if (matches.isEmpty()) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            val photo = match.user.photoResIds.firstOrNull() ?: R.drawable.img_profile_sarah
-                            Box(modifier = Modifier.size(68.dp)) {
-                                Image(
-                                    painter = painterResource(id = photo),
-                                    contentDescription = match.user.name,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .clip(CircleShape)
-                                        .clickable { onViewProfile(match.user) },
-                                    contentScale = ContentScale.Crop
-                                )
-                                if (match.user.isOnline) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(14.dp)
-                                            .align(Alignment.BottomEnd)
-                                            .clip(CircleShape)
-                                            .background(ActionLike)
-                                            .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
-                                    )
-                                }
-                            }
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Text(
-                                            text = "${match.user.name}, ${match.user.age}",
-                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                                        )
-                                        if (match.user.isVerified) {
-                                            Icon(
-                                                imageVector = Icons.Filled.CheckCircle,
-                                                contentDescription = "Verified",
-                                                tint = ActionVerified,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    }
-
-                                    Box {
-                                        IconButton(onClick = { showOptions = true }) {
-                                            Icon(imageVector = Icons.Outlined.MoreVert, contentDescription = "Options")
-                                        }
-                                        DropdownMenu(
-                                            expanded = showOptions,
-                                            onDismissRequest = { showOptions = false }
-                                        ) {
-                                            DropdownMenuItem(
-                                                text = { Text("View Profile") },
-                                                onClick = {
-                                                    showOptions = false
-                                                    onViewProfile(match.user)
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text("Unmatch") },
-                                                onClick = {
-                                                    showOptions = false
-                                                    onUnmatch(match.id)
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text("Block User") },
-                                                onClick = {
-                                                    showOptions = false
-                                                    onBlockUser(match.user.id)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = "${match.user.city.toDisplayLocation()} • Matched ${match.matchedAt}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-
-                                if (match.user.showCharacterBadge) {
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = QuickyPurple.copy(alpha = 0.1f),
-                                        modifier = Modifier.padding(top = 4.dp)
-                                    ) {
-                                        Text(
-                                            text = "✦ ${match.user.characterBadge}",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = QuickyPurple,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        if (match.user.compatibilityHighlights.isNotEmpty()) {
+                            Text(text = "💫", fontSize = 36.sp)
+                            Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "💡 ${match.user.compatibilityHighlights.first()}",
+                                text = "No matches yet",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Discover and like people to spark mutual matches and play Truth or Dare together.",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 10.dp)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                    }
+                }
+            } else {
+                items(matches) { match ->
+                    var showOptions by remember { mutableStateOf(false) }
 
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Action Buttons: Chat Now & Play Truth or Dare (Free)
-                        // v3.2 (PRD §3): EQUIVALENT ACTIONS → EQUIVALENT
-                        // VISUAL WEIGHT. Both buttons share weight(1f) (equal
-                        // width), a shared 48dp min height, the same corner
-                        // radius, the same internal padding and single-line
-                        // labels — neither can grow through text wrapping, so
-                        // every Match card renders the identical button pair on
-                        // every screen size.
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    Analytics.log(Analytics.MATCH_CHAT_CLICKED, "match_id" to match.id)
-                                    onStartChat(match)
-                                },
-                                shape = RoundedCornerShape(20.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = QuickyPink),
-                                contentPadding = PaddingValues(horizontal = 8.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .heightIn(min = 48.dp)
+                    Card(
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("match_card_${match.id}")
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
-                                Icon(Icons.Filled.ChatBubble, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
+                                val photo = match.user.photoResIds.firstOrNull() ?: R.drawable.img_profile_sarah
+                                Box(modifier = Modifier.size(68.dp)) {
+                                    Image(
+                                        painter = painterResource(id = photo),
+                                        contentDescription = match.user.name,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(CircleShape)
+                                            .clickable { onViewProfile(match.user) },
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    if (match.user.isOnline) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .align(Alignment.BottomEnd)
+                                                .clip(CircleShape)
+                                                .background(ActionLike)
+                                                .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
+                                        )
+                                    }
+                                }
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "${match.user.name}, ${match.user.age}",
+                                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                            )
+                                            if (match.user.isVerified) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.CheckCircle,
+                                                    contentDescription = "Verified",
+                                                    tint = ActionVerified,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+
+                                        Box {
+                                            IconButton(onClick = { showOptions = true }) {
+                                                Icon(imageVector = Icons.Outlined.MoreVert, contentDescription = "Options")
+                                            }
+                                            DropdownMenu(
+                                                expanded = showOptions,
+                                                onDismissRequest = { showOptions = false }
+                                            ) {
+                                                DropdownMenuItem(
+                                                    text = { Text("View Profile") },
+                                                    onClick = {
+                                                        showOptions = false
+                                                        onViewProfile(match.user)
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Unmatch") },
+                                                    onClick = {
+                                                        showOptions = false
+                                                        onUnmatch(match.id)
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Block User") },
+                                                    onClick = {
+                                                        showOptions = false
+                                                        onBlockUser(match.user.id)
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "${match.user.city.toDisplayLocation()} • Matched ${match.matchedAt}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+
+                                    if (match.user.showCharacterBadge) {
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = QuickyPurple.copy(alpha = 0.1f),
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = "✦ ${match.user.characterBadge}",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = QuickyPurple,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (match.user.compatibilityHighlights.isNotEmpty()) {
                                 Text(
-                                    "Chat Now",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    maxLines = 1,
-                                    softWrap = false
+                                    text = "💡 ${match.user.compatibilityHighlights.first()}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 10.dp)
                                 )
                             }
 
-                            OutlinedButton(
-                                onClick = {
-                                    Analytics.log(Analytics.MATCH_TRUTH_OR_DARE_CLICKED, "match_id" to match.id)
-                                    onPlayTruthOrDare(match)
-                                },
-                                shape = RoundedCornerShape(20.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickyPurple),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, QuickyPurple),
-                                contentPadding = PaddingValues(horizontal = 8.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .heightIn(min = 48.dp)
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Action Buttons: Chat Now & Play Truth or Dare (Free)
+                            // v3.2 (PRD §3): EQUIVALENT ACTIONS → EQUIVALENT
+                            // VISUAL WEIGHT. Both buttons share weight(1f) (equal
+                            // width), a shared 48dp min height, the same corner
+                            // radius, the same internal padding and single-line
+                            // labels — neither can grow through text wrapping, so
+                            // every Match card renders the identical button pair on
+                            // every screen size.
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Icon(Icons.Filled.SportsEsports, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    "Truth or Dare",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
+                                Button(
+                                    onClick = {
+                                        Analytics.log(Analytics.MATCH_CHAT_CLICKED, "match_id" to match.id)
+                                        onStartChat(match)
+                                    },
+                                    shape = RoundedCornerShape(20.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = QuickyPink),
+                                    contentPadding = PaddingValues(horizontal = 8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                ) {
+                                    Icon(Icons.Filled.ChatBubble, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        "Chat Now",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        Analytics.log(Analytics.MATCH_TRUTH_OR_DARE_CLICKED, "match_id" to match.id)
+                                        onPlayTruthOrDare(match)
+                                    },
+                                    shape = RoundedCornerShape(20.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickyPurple),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, QuickyPurple),
+                                    contentPadding = PaddingValues(horizontal = 8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                ) {
+                                    Icon(Icons.Filled.SportsEsports, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        "Truth or Dare",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-    }
+        } // end scrollable "Your Connections" LazyColumn
+    } // end fixed-top + scrollable structure
 }
