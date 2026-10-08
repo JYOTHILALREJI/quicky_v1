@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.Location
 import android.net.Uri
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -471,6 +472,25 @@ class SparkViewModel : ViewModel() {
                     isLocating = false,
                     userProfile = AppContent.currentUser,
                     currentTab = SparkTab.DISCOVER,
+                    // v3.3.1 fix: every overlay/dialog/sheet flag closes on
+                    // sign-out. SettingsScreen (and the sheets it opens)
+                    // render OUTSIDE the authGate when-block in SparkApp, so
+                    // a stale showSettingsScreen=true kept the Settings page
+                    // stacked on top of the login screen after logging out.
+                    showSettingsScreen = false,
+                    showSettings = false,
+                    showFilterSheet = false,
+                    showPremiumStore = false,
+                    showSafetyCenter = false,
+                    showPrivacyCenter = false,
+                    showPersonalInformationSheet = false,
+                    showVerificationDialog = false,
+                    showNotificationsSheet = false,
+                    showCreateClubDialog = false,
+                    showStickerStore = false,
+                    showStickerPicker = false,
+                    showEditLocationSheet = false,
+                    replyToMessage = null,
                     // v2.3 §13/§46 — every account-scoped value resets on
                     // sign-out: the NEXT account starts from its own
                     // server-side state, never from what this device cached.
@@ -2638,10 +2658,20 @@ class SparkViewModel : ViewModel() {
         if (SupabaseRepository.isConfigured()) {
             val clubToSync = newClub
             viewModelScope.launch {
-                SupabaseRepository.createClub(
+                val synced = SupabaseRepository.createClub(
                     club = clubToSync,
                     accessToken = _uiState.value.authSession?.accessToken
                 )
+                // v3.3.1: this write is silent by design (local-first UX),
+                // but a silent FAILURE is how the "club vanished after
+                // logout" bug hid — always leave a logcat breadcrumb.
+                if (!synced) {
+                    Log.w(
+                        "QuickyClubs",
+                        "Club '${clubToSync.name}' created locally but NOT saved to Supabase — " +
+                                "it will disappear on sign-out. Check network / RLS policies."
+                    )
+                }
             }
         }
     }

@@ -838,7 +838,11 @@ object SupabaseRepository {
                     .put("max_members", club.maxMembers)
                     .put("status", club.status)
                     .put("category", club.category)
-                    .toString()
+                    .toString(),
+                // v3.3.1 fix: WITHOUT the user JWT the insert runs as the
+                // anon role and RLS (auth.role() = 'authenticated') silently
+                // rejected it — clubs never reached the database.
+                accessToken = accessToken
             )
             val owner = club.members.firstOrNull()
             SupabaseClient.rest(
@@ -853,7 +857,8 @@ object SupabaseRepository {
                     .put("is_verified", owner?.isVerified ?: true)
                     .put("role", "OWNER")
                     .put("status", "ACTIVE")
-                    .toString()
+                    .toString(),
+                accessToken = accessToken
             )
             true
         }.getOrDefault(false)
@@ -875,7 +880,10 @@ object SupabaseRepository {
                     .put("is_verified", member.isVerified)
                     .put("role", member.role)
                     .put("status", member.status)
-                    .toString()
+                    .toString(),
+                // v3.3.1 fix: same RLS-anon trap as createClub — the user
+                // JWT must ride along or the member row is rejected.
+                accessToken = accessToken
             )
             true
         }.getOrDefault(false)
