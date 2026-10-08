@@ -13,7 +13,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import androidx.core.graphics.toArgb
+import androidx.compose.ui.graphics.toArgb
 import com.example.MainActivity
 import com.example.R
 import com.example.ui.theme.QuickyPink
