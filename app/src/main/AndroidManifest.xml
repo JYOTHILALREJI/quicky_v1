@@ -16,6 +16,9 @@
     <!-- Club voice messages (v3.3.4): real mic capture via MediaRecorder;
          requested at the mic button, only when the user records. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Snapchat-style View-Once Snaps: Camera capture with filters and editing -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:allowBackup="true"

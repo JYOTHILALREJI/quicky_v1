@@ -1,8 +1,18 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.*
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import com.example.ui.components.CameraPermissionRationaleDialog
+import com.example.ui.components.SnapCameraDialog
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -60,7 +70,7 @@ fun ChatDetailScreen(
     onBack: () -> Unit,
     onSendMessage: (text: String, replyToText: String?, replyToSender: String?) -> Unit,
     onSendPrompt: (TruthOrDarePrompt) -> Unit,
-    onAnswerGame: (String, String) -> Unit, // messageId, answerText
+    onAnswerGame: (messageId: String, answerText: String, responseType: String, voiceDurationSeconds: Int?) -> Unit,
     onAddReaction: (String, String) -> Unit, // messageId, emoji
     onViewProfile: (UserProfile) -> Unit,
     onUnmatch: () -> Unit,
@@ -91,31 +101,17 @@ fun ChatDetailScreen(
     // v2.1 §3.3 — tracked list state so new messages auto-scroll into view.
     val chatListState = rememberLazyListState()
 
-    // ---- v3.3.7 Snap camera: system camera via ActivityResultContracts ----
-    // .TakePicture into a FileProvider cache file (same pattern as the
-    // Get-Verified live selfie — no CAMERA permission or CameraX needed).
-    // The capture file is reused for every snap in this chat session and
-    // its bytes are read (then discarded) the moment the camera returns.
-    val snapCaptureFile = remember {
-        val dir = java.io.File(context.cacheDir, "snaps").apply { mkdirs() }
-        java.io.File(dir, "snap_capture.jpg")
-    }
-    val snapCaptureUri = remember {
-        FileProvider.getUriForFile(
-            context,
-            "${BuildConfig.APPLICATION_ID}.fileprovider",
-            snapCaptureFile
-        )
-    }
-    val snapCameraLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.TakePicture()
-    ) { captured ->
-        if (captured) {
-            val bytes = runCatching { snapCaptureFile.readBytes() }.getOrNull()
-            if (bytes != null && bytes.isNotEmpty()) {
-                onSendSnap(bytes)
-            }
-            runCatching { snapCaptureFile.delete() }
+    // ---- Snapchat-style Snap camera with filters & editing ----
+    var showSnapCameraDialog by remember { mutableStateOf(false) }
+    var showCameraRationaleDialog by remember { mutableStateOf(false) }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            showSnapCameraDialog = true
+        } else {
+            showCameraRationaleDialog = true
         }
     }
 
@@ -410,9 +406,9 @@ fun ChatDetailScreen(
                         val sameSenderAsPrevious = previous != null && previous.isMine == msg.isMine
                         ChatBubble(
                             message = msg,
-                            modifier = if (sameSenderAsPrevious) Modifier.padding(top = (-2).dp) else Modifier,
+                            modifier = if (sameSenderAsPrevious) Modifier.padding(top = 2.dp) else Modifier.padding(top = 8.dp),
                             onReactionClick = { emoji -> onAddReaction(msg.id, emoji) },
-                            onAnswerGame = { answer -> onAnswerGame(msg.id, answer) },
+                            onAnswerGame = { answer, responseType, voiceDuration -> onAnswerGame(msg.id, answer, responseType, voiceDuration) },
                             onSwipeToReply = { replyingToMessage = msg },
                             onOpenSnap = onOpenSnap
                         )
@@ -602,11 +598,19 @@ fun ChatDetailScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
-                                    // v3.3.7 — Camera: capture a photo snap
-                                    // (view-once, deleted after the receiver
-                                    // opens it).
+                                    // Snapchat-style Camera: opens live viewfinder with filters & editing
                                     IconButton(
-                                        onClick = { snapCameraLauncher.launch(snapCaptureUri) },
+                                        onClick = {
+                                            val hasPermission = ContextCompat.checkSelfPermission(
+                                                context,
+                                                Manifest.permission.CAMERA
+                                            ) == PackageManager.PERMISSION_GRANTED
+                                            if (hasPermission) {
+                                                showSnapCameraDialog = true
+                                            } else {
+                                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                            }
+                                        },
                                         modifier = Modifier
                                             .size(28.dp)
                                             .testTag("chat_snap_camera_button")
@@ -1196,6 +1200,39 @@ fun ChatDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showReportDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // Snapchat-style Fullscreen In-App Camera Dialog
+    if (showSnapCameraDialog) {
+        SnapCameraDialog(
+            recipientName = match.user.name,
+            onDismiss = { showSnapCameraDialog = false },
+            onSendSnap = { bytes ->
+                onSendSnap(bytes)
+                showSnapCameraDialog = false
+            }
+        )
+    }
+
+    // Camera Permission Rationale Dialog
+    if (showCameraRationaleDialog) {
+        CameraPermissionRationaleDialog(
+            onDismiss = { showCameraRationaleDialog = false },
+            onRequestPermission = {
+                showCameraRationaleDialog = false
+                val activity = context as? Activity
+                val permanentlyDenied = activity != null &&
+                    !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA)
+                if (permanentlyDenied) {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", context.packageName, null)
+                    }
+                    context.startActivity(intent)
+                } else {
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                }
             }
         )
     }

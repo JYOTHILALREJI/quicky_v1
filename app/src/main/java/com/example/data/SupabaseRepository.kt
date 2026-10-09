@@ -11,6 +11,7 @@ import com.example.model.OnboardingDraft
 import com.example.model.TruthOrDarePrompt
 import com.example.model.UserProfile
 import com.example.model.VisibilityLevel
+import com.example.model.formatLastMessagePreview
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -521,8 +522,22 @@ object SupabaseRepository {
                     val profile = profileById[other] ?: continue
                     val convId = conversationIdByMatch[matchRowId] ?: "match_$other"
                     val messages = messagesByConversation[convId].orEmpty()
-                    val unread = messages.count {
-                        it.senderId != "user_me" && it.senderId != userId && !it.isRead
+                    val unread = messages.count { msg ->
+                        val isFromOther = msg.senderId != "user_me" && msg.senderId != userId
+                        val isTruthOrDare = msg.messageType == "TRUTH_OR_DARE" ||
+                            (msg.text.trim().startsWith("{") && (msg.text.contains("\"gameType\"") || msg.text.contains("Truth or Dare"))) ||
+                            msg.text.contains("Truth:") || msg.text.contains("Dare:") || msg.text.contains("🎲")
+                        val isUncompleted = isTruthOrDare && !msg.text.contains("\"isCompleted\":true")
+                        isFromOther && (!msg.isRead || isUncompleted)
+                    }.let { count ->
+                        if (count == 0 && row.optBoolean("has_active_game", false)) 1 else count
+                    }
+                    val lastMsg = messages.lastOrNull()
+                    val resolvedLastMessageText = when {
+                        lastMsg?.messageType == "TRUTH_OR_DARE" -> "Truth or Dare"
+                        lastMsg?.messageType == "SNAP" -> "📸 Quicky Image"
+                        lastMsg?.text != null -> formatLastMessagePreview(lastMsg.text)
+                        else -> row.optString("last_message").takeIf { it.isNotBlank() }?.let { formatLastMessagePreview(it) }
                     }
                     add(
                         RemoteConversation(
@@ -531,8 +546,7 @@ object SupabaseRepository {
                             matchedAtIso = row.optString("matched_at").takeIf { it.isNotBlank() },
                             isNewMatch = row.optBoolean("is_new", false),
                             hasActiveGame = row.optBoolean("has_active_game", false),
-                            lastMessageText = messages.lastOrNull()?.text
-                                ?: row.optString("last_message").takeIf { it.isNotBlank() },
+                            lastMessageText = resolvedLastMessageText,
                             unreadCount = unread,
                             messages = messages
                         )
@@ -543,8 +557,20 @@ object SupabaseRepository {
                 for ((convId, otherId) in dmOtherByConversation) {
                     val profile = profileById[otherId] ?: continue
                     val messages = messagesByConversation[convId].orEmpty()
-                    val unread = messages.count {
-                        it.senderId != "user_me" && it.senderId != userId && !it.isRead
+                    val unread = messages.count { msg ->
+                        val isFromOther = msg.senderId != "user_me" && msg.senderId != userId
+                        val isTruthOrDare = msg.messageType == "TRUTH_OR_DARE" ||
+                            (msg.text.trim().startsWith("{") && (msg.text.contains("\"gameType\"") || msg.text.contains("Truth or Dare"))) ||
+                            msg.text.contains("Truth:") || msg.text.contains("Dare:") || msg.text.contains("🎲")
+                        val isUncompleted = isTruthOrDare && !msg.text.contains("\"isCompleted\":true")
+                        isFromOther && (!msg.isRead || isUncompleted)
+                    }
+                    val dmLastMsg = messages.lastOrNull()
+                    val resolvedDmLastMessageText = when {
+                        dmLastMsg?.messageType == "TRUTH_OR_DARE" -> "Truth or Dare"
+                        dmLastMsg?.messageType == "SNAP" -> "📸 Quicky Image"
+                        dmLastMsg?.text != null -> formatLastMessagePreview(dmLastMsg.text)
+                        else -> null
                     }
                     add(
                         RemoteConversation(
@@ -553,7 +579,7 @@ object SupabaseRepository {
                             matchedAtIso = dmCreatedAtByConversation[convId],
                             isNewMatch = false,
                             hasActiveGame = false,
-                            lastMessageText = messages.lastOrNull()?.text,
+                            lastMessageText = resolvedDmLastMessageText,
                             unreadCount = unread,
                             messages = messages
                         )
@@ -761,6 +787,38 @@ object SupabaseRepository {
     }
 
     // ==============================================================
+    // v3.3.8 — TRUTH OR DARE (in-chat game cards, persisted to Supabase)
+    // ==============================================================
+
+    /**
+     * Updates an existing TRUTH_OR_DARE message row with the receiver's answer.
+     * Stores the updated JSON (answerText, responseType, voiceDurationSeconds,
+     * isCompleted=true) back into the `text` column of the message row.
+     *
+     * Fire-and-forget: returns false instead of throwing.
+     */
+    suspend fun updateGameMessageAnswer(
+        messageId: String,
+        updatedJsonText: String,
+        accessToken: String?
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            val body = JSONObject()
+                .put("text", updatedJsonText)
+            SupabaseClient.rest(
+                method = "PATCH",
+                path = "/rest/v1/${SupabaseConfig.TABLE_MESSAGES}",
+                query = mapOf("id" to "eq.$messageId"),
+                prefer = "return=minimal",
+                body = body.toString(),
+                accessToken = accessToken
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    // ==============================================================
     // v3.3.7 — SNAP PHOTOS (view-once, Snapchat-style)
     // ==============================================================
 
@@ -825,7 +883,7 @@ object SupabaseRepository {
         accessToken: String?
     ): Boolean {
         if (!isConfigured()) return false
-        return runCatching {
+        val rpcSuccess = runCatching {
             SupabaseClient.rest(
                 method = "POST",
                 path = "/rest/v1/rpc/${SupabaseConfig.RPC_MARK_SNAP_VIEWED}",
@@ -835,8 +893,19 @@ object SupabaseRepository {
             true
         }.onFailure { e ->
             android.util.Log.w("QuickySnaps", "mark_snap_viewed RPC failed: ${e.message}")
-        }.getOrElse {
-            // Fallback: PATCH the row + delete the object directly.
+        }.getOrDefault(false)
+
+        // Guarantee permanent destruction: explicitly remove object from the snap-images bucket
+        val deletedFromBucket = if (objectPath != null) {
+            SupabaseClient.storageDelete(
+                bucket = SupabaseConfig.BUCKET_SNAP_IMAGES,
+                objectPath = objectPath,
+                accessToken = accessToken
+            )
+        } else true
+
+        if (!rpcSuccess) {
+            // Fallback: PATCH the row directly
             val patched = runCatching {
                 SupabaseClient.rest(
                     method = "PATCH",
@@ -851,13 +920,61 @@ object SupabaseRepository {
                 )
                 true
             }.getOrDefault(false)
-            val deleted = objectPath != null && SupabaseClient.storageDelete(
-                bucket = SupabaseConfig.BUCKET_SNAP_IMAGES,
-                objectPath = objectPath,
+            return patched && deletedFromBucket
+        }
+        return true
+    }
+
+    /**
+     * v3.3.8 — Sends a Quicky Image push notification to the receiver.
+     *
+     * Calls the Supabase Edge Function `send-push` which uses the Firebase
+     * Admin SDK (with the project's service-role key) to deliver an FCM DATA
+     * message to every registered device belonging to [recipientUserId].
+     *
+     * Payload delivered to the receiver's [QuickyPushService]:
+     * ```json
+     * {
+     *   "type":        "quicky",
+     *   "title":       "📸 Alice sent a Quicky!",
+     *   "body":        "Tap to open before it disappears!",
+     *   "chat_id":     "<conversationId>",
+     *   "sender_name": "<senderDisplayName>"
+     * }
+     * ```
+     *
+     * Fire-and-forget: returns false on any failure without throwing so that
+     * the snap send flow never blocks on the notification delivery.
+     *
+     * @param conversationId The chat / conversation id used for the deep-link.
+     * @param recipientUserId The Supabase user id of the receiver.
+     * @param senderName      Display name shown in the notification title.
+     * @param accessToken     Caller's JWT (identifies the sender server-side).
+     */
+    suspend fun sendSnapPushNotification(
+        conversationId: String,
+        recipientUserId: String,
+        senderName: String,
+        accessToken: String?
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.functions(
+                name = "send-push",
+                payload = mapOf(
+                    "recipient_user_id" to recipientUserId,
+                    "type"              to "quicky",
+                    "title"             to "\ud83d\udcf8 $senderName sent a Quicky!",
+                    "body"              to "Tap to open before it disappears!",
+                    "chat_id"           to conversationId,
+                    "sender_name"       to senderName
+                ),
                 accessToken = accessToken
             )
-            patched && (objectPath == null || deleted)
-        }
+            true
+        }.onFailure { e ->
+            android.util.Log.w("QuickySnaps", "sendSnapPushNotification failed: ${e.message}")
+        }.getOrDefault(false)
     }
 
     // ==============================================================

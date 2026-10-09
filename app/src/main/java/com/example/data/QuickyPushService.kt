@@ -73,6 +73,10 @@ class QuickyPushService : FirebaseMessagingService() {
             PushNotifications.TYPE_PROMO ->
                 PushNotifications.showPromotion(this, title, body)
 
+            // v3.3.8 — view-once Quicky Image snap
+            PushNotifications.TYPE_SNAP ->
+                PushNotifications.showQuicky(this, title, body, chatId, senderName)
+
             // Default: personal message (TYPE_MESSAGE or unknown)
             else ->
                 PushNotifications.showMessage(this, title, body, chatId, senderName)

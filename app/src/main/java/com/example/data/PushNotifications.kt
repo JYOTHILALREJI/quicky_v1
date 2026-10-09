@@ -59,12 +59,14 @@ object PushNotifications {
     private const val TAG = "QuickyPush"
 
     // ---- Stable channel ids (never rename — users may have customised them) ----
-    const val CHANNEL_MESSAGES   = "messages"
-    const val CHANNEL_MATCHES    = "matches"
-    const val CHANNEL_LIKES      = "likes"
-    const val CHANNEL_SUPER_LIKES = "super_likes"
-    const val CHANNEL_CLUBS      = "clubs"
-    const val CHANNEL_PROMOTIONS = "promotions"
+    const val CHANNEL_MESSAGES      = "messages"
+    const val CHANNEL_MATCHES       = "matches"
+    const val CHANNEL_LIKES         = "likes"
+    const val CHANNEL_SUPER_LIKES   = "super_likes"
+    const val CHANNEL_CLUBS         = "clubs"
+    const val CHANNEL_PROMOTIONS    = "promotions"
+    /** v3.3.8 — dedicated channel for view-once Quicky Image snaps. */
+    const val CHANNEL_QUICKY_SNAPS  = "quicky_snaps"
 
     // ---- Payload `type` discriminators (mirror the server constants) -----------
     const val TYPE_MESSAGE     = "message"
@@ -75,6 +77,8 @@ object PushNotifications {
     const val TYPE_CLUB_MENTION = "club_mention"
     const val TYPE_TRUTH_DARE  = "truth_dare"   // in-app only — never posts a notif
     const val TYPE_PROMO       = "promo"
+    /** v3.3.8 — view-once Quicky Image (Snapchat-style snap). */
+    const val TYPE_SNAP        = "quicky"
 
     // ---- RemoteInput key (inline reply for message notifications) --------------
     const val KEY_REPLY_TEXT = "quicky_reply_text"
@@ -127,7 +131,7 @@ object PushNotifications {
                 ),
                 channel(
                     CHANNEL_SUPER_LIKES, "Super Likes",
-                    "When someone Super Likes you",
+                    "When someone Super Liked you",
                     NotificationManager.IMPORTANCE_HIGH
                 ),
                 channel(
@@ -140,6 +144,14 @@ object PushNotifications {
                     "Quicky Gold deals and feature announcements",
                     NotificationManager.IMPORTANCE_LOW,
                     vibrate = false
+                ),
+                // v3.3.8 — Quicky Image snaps — always high-priority so the
+                // banner fires even when the phone is idle; vibrate draws the
+                // user's attention to the ephemeral nature of the photo.
+                channel(
+                    CHANNEL_QUICKY_SNAPS, "Quicky Images",
+                    "View-once photos from your matches — tap to open before they disappear!",
+                    NotificationManager.IMPORTANCE_HIGH
                 )
             )
         )
@@ -201,6 +213,13 @@ object PushNotifications {
             TYPE_CLUB, TYPE_CLUB_MENTION -> {
                 b.appendQueryParameter("target", "club")
                 clubId?.let { b.appendQueryParameter("club_id", it) }
+            }
+            // v3.3.8 — snap deep-link: opens the conversation so the receiver
+            // can immediately tap the Quicky Image chip and view the photo.
+            TYPE_SNAP -> {
+                b.appendQueryParameter("target", "chat")
+                chatId?.let { b.appendQueryParameter("chat_id", it) }
+                b.appendQueryParameter("open_snap", "true")
             }
             else -> {
                 b.appendQueryParameter("target", "chat")
@@ -388,6 +407,55 @@ object PushNotifications {
     }
 
     /**
+     * Posts a Quicky Image (view-once snap) notification.
+     *
+     * Uses [CHANNEL_QUICKY_SNAPS] so the user can independently mute snaps
+     * without silencing normal messages. The body emphasises the ephemeral
+     * nature: "Tap before it disappears!".
+     *
+     * @param senderName Display name of the sender (shown as the notification title).
+     * @param chatId     Conversation id for the tap deep-link (opens the chat directly).
+     * @param enabled    Respect the per-user notification preference toggle.
+     */
+    fun showQuicky(
+        context: Context,
+        title: String?,
+        body: String?,
+        chatId: String?,
+        senderName: String?,
+        enabled: Boolean = true
+    ) {
+        if (!enabled) return
+        ensureChannels(context)
+        if (!canPostNotifications(context)) return
+        val contentIntent = tapIntent(context, TYPE_SNAP, chatId, null)
+        val displayTitle  = title ?: "📸 ${senderName ?: "Someone"} sent a Quicky!"
+        val displayBody   = body  ?: "Tap to open before it disappears!"
+
+        val notif = NotificationCompat.Builder(context, CHANNEL_QUICKY_SNAPS)
+            .setSmallIcon(R.drawable.ic_stat_quicky)
+            .setColor(QuickyPink.toArgb())
+            .setContentTitle(displayTitle)
+            .setContentText(displayBody)
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(displayBody)
+                    .setBigContentTitle(displayTitle)
+            )
+            .setPriority(NotificationCompat.PRIORITY_MAX)  // heads-up always
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setContentIntent(contentIntent)
+            // Vibration pattern: short double-buzz to feel distinct from text messages
+            .setVibrate(longArrayOf(0, 150, 80, 150))
+            .build()
+
+        postSafely(context, "snap|${chatId ?: ""}", notif)
+        Log.d(TAG, "showQuicky posted for chat=$chatId sender=$senderName")
+    }
+
+    /**
      * Truth-or-Dare is delivered as an in-app overlay only (no system notification).
      * This stub is intentionally a no-op — the ViewModel drives the in-app overlay
      * via the real-time subscription that arrives on the `truth_dare` type.
@@ -425,6 +493,8 @@ object PushNotifications {
             TYPE_CLUB_MENTION -> showClub(context, title, body, clubId, isMention = true)
             TYPE_TRUTH_DARE  -> { /* in-app only — no system notification */ }
             TYPE_PROMO       -> showPromotion(context, title, body)
+            // v3.3.8 — Quicky Image view-once snap
+            TYPE_SNAP        -> showQuicky(context, title, body, chatId, senderName)
             else             -> showMessage(context, title, body, chatId, senderName)
         }
     }

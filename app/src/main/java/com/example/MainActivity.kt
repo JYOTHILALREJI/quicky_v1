@@ -393,7 +393,9 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                             viewModel.sendMessage(selectedChat.id, text, replyToText = replyText, replyToSender = replySender)
                         },
                         onSendPrompt = { prompt -> viewModel.sendTruthOrDareInChat(selectedChat.id, prompt, selectedChat.user.id) },
-                        onAnswerGame = { messageId, answer -> viewModel.answerTruthOrDare(selectedChat.id, messageId, answer) },
+                        onAnswerGame = { messageId, answer, responseType, voiceDuration ->
+                            viewModel.answerTruthOrDare(selectedChat.id, messageId, answer, responseType, null, voiceDuration)
+                        },
                         onAddReaction = { messageId, emoji -> viewModel.addReaction(selectedChat.id, messageId, emoji) },
                         onViewProfile = { profile -> viewModel.openProfileDetail(profile) },
                         onUnmatch = { viewModel.unmatchUser(selectedChat.id) },

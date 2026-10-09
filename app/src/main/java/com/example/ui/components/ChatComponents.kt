@@ -171,7 +171,7 @@ fun ReplyPreviewBanner(
 fun ChatBubble(
     message: ChatMessage,
     onReactionClick: (String) -> Unit,
-    onAnswerGame: (String) -> Unit,
+    onAnswerGame: (answerText: String, responseType: String, voiceDurationSeconds: Int?) -> Unit,
     onSwipeToReply: (() -> Unit)? = null,
     /** v3.3.7: invoked when the receiver taps an unviewed snap chip. */
     onOpenSnap: ((ChatMessage) -> Unit)? = null,
@@ -400,25 +400,23 @@ private fun SnapChip(
 ) {
     val openable = !message.isMine && !message.snapViewed
     val title = when {
-        message.isMine && message.snapViewed -> "Opened"
-        message.isMine -> "Photo snap sent"
-        message.snapViewed -> "Viewed photo"
-        else -> "Photo snap"
+        message.snapViewed -> "Opened"
+        message.isMine -> "Delivered"
+        else -> "New Quicky"
     }
     val caption = when {
-        message.isMine && message.snapViewed -> "The receiver viewed it"
-        message.isMine -> "View once · not opened yet"
-        message.snapViewed -> "Expired · deleted after viewing"
-        else -> "Tap to view · disappears after"
+        message.snapViewed -> "Quicky Image · Expired"
+        message.isMine -> "Quicky Image · Delivered"
+        else -> "Quicky Image · Tap to view"
     }
 
     // The chip lives inside the sender's gradient bubble (white on rose)
     // or the receiver's surfaceVariant bubble (onSurface).
     val primaryColor = if (message.isMine) Color.White else MaterialTheme.colorScheme.onSurface
     val fadedColor = if (message.isMine) {
-        Color.White.copy(alpha = 0.62f)
+        Color.White.copy(alpha = 0.55f)
     } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
     }
 
     Row(
@@ -441,15 +439,15 @@ private fun SnapChip(
                 .clip(CircleShape)
                 .background(
                     when {
-                        message.snapViewed -> Color.Black.copy(alpha = 0.18f)
+                        message.snapViewed -> Color.Black.copy(alpha = 0.12f)
                         message.isMine -> Color.White.copy(alpha = 0.18f)
                         else -> SparkRose.copy(alpha = 0.28f)
                     }
                 )
         ) {
             Icon(
-                imageVector = Icons.Filled.PhotoCamera,
-                contentDescription = "Photo snap",
+                imageVector = if (message.snapViewed) Icons.Outlined.PhotoCamera else Icons.Filled.PhotoCamera,
+                contentDescription = if (message.snapViewed) "Opened snap" else "Photo snap",
                 tint = when {
                     message.snapViewed -> fadedColor
                     message.isMine -> Color.White
@@ -468,8 +466,8 @@ private fun SnapChip(
                 text = caption,
                 style = MaterialTheme.typography.labelSmall,
                 color = when {
-                    message.isMine -> Color.White.copy(alpha = 0.7f)
                     message.snapViewed -> fadedColor
+                    message.isMine -> Color.White.copy(alpha = 0.7f)
                     else -> SparkRose
                 }
             )
@@ -503,6 +501,25 @@ fun SnapViewerDialog(
         onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
     }
 
+    // Snapchat 10-second viewing countdown timer
+    var remainingMillis by remember { mutableLongStateOf(10_000L) }
+    LaunchedEffect(snapBytes) {
+        if (snapBytes != null) {
+            val startTime = System.currentTimeMillis()
+            val totalDuration = 10_000L
+            while (remainingMillis > 0) {
+                kotlinx.coroutines.delay(100)
+                val elapsed = System.currentTimeMillis() - startTime
+                val left = (totalDuration - elapsed).coerceAtLeast(0L)
+                remainingMillis = left
+                if (left <= 0L) {
+                    onDismiss()
+                    break
+                }
+            }
+        }
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -521,13 +538,13 @@ fun SnapViewerDialog(
                 if (bitmap != null) {
                     Image(
                         bitmap = bitmap.asImageBitmap(),
-                        contentDescription = "Photo snap",
+                        contentDescription = "Quicky Image",
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
                     Text(
-                        text = "This snap can't be displayed.",
+                        text = "This Quicky Image can't be displayed.",
                         color = Color.White.copy(alpha = 0.8f)
                     )
                 }
@@ -535,44 +552,81 @@ fun SnapViewerDialog(
                 CircularProgressIndicator(color = Color.White)
             }
 
-            // Header hint — screenshot notice + how to close.
+            // Top Snapchat-style Countdown Bar & Header
             Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 48.dp)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .fillMaxWidth()
             ) {
-                Text(
-                    text = "📸 Photo Snap",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White
+                // Progress bar
+                LinearProgressIndicator(
+                    progress = { remainingMillis / 10_000f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = SparkRose,
+                    trackColor = Color.White.copy(alpha = 0.25f)
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Screenshots are disabled · tap anywhere to close",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White.copy(alpha = 0.75f)
-                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "📸 Quicky Image",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Screenshots disabled · disappears after viewing",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.75f)
+                        )
+                    }
+
+                    // Countdown seconds badge
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.5f),
+                        shape = CircleShape,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.3f))
+                    ) {
+                        Text(
+                            text = "${(remainingMillis / 1000) + 1}s",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
             }
 
-            // Footer hint.
+            // Footer hint
             Text(
-                text = "This photo disappears after viewing",
+                text = "Tap anywhere to close",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White.copy(alpha = 0.6f),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 42.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             )
         }
     }
 }
 
+
 @Composable
 fun ChatGameCard(
     gameCard: GameCardData,
     isMine: Boolean,
-    onAnswer: (String) -> Unit,
+    onAnswer: (answerText: String, responseType: String, voiceDurationSeconds: Int?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -873,7 +927,7 @@ fun ChatGameCard(
                             Button(
                                 onClick = {
                                     if (answerInput.isNotBlank()) {
-                                        onAnswer(answerInput)
+                                        onAnswer(answerInput, "TEXT", null)
                                         answerInput = ""
                                     }
                                 },
@@ -968,7 +1022,7 @@ fun ChatGameCard(
                                         Spacer(modifier = Modifier.height(8.dp))
                                         Button(
                                             onClick = {
-                                                onAnswer("🎤 Voice answer submitted (0:05)")
+                                                onAnswer("🎤 Voice answer submitted (0:0${voiceSeconds})", "VOICE", voiceSeconds)
                                             },
                                             modifier = Modifier.fillMaxWidth(),
                                             shape = RoundedCornerShape(12.dp),
@@ -1071,7 +1125,7 @@ fun ChatGameCard(
                                             }
                                             Button(
                                                 onClick = {
-                                                    onAnswer("📸 Photo Dare Proof completed!")
+                                                    onAnswer("📸 Photo Dare Proof completed!", "CAMERA", null)
                                                 },
                                                 shape = RoundedCornerShape(12.dp),
                                                 colors = ButtonDefaults.buttonColors(containerColor = SparkRose),

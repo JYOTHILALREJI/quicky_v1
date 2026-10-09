@@ -113,44 +113,69 @@ object SupabaseClient {
         contentType: String,
         accessToken: String? = null
     ): String? = withContext(Dispatchers.IO) {
+        val cleanPath = objectPath
+            .removePrefix("$bucket/")
+            .removePrefix("/$bucket/")
+            .removePrefix("/")
         try {
             val request = Request.Builder()
-                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$objectPath")
+                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$cleanPath")
                 .apply { authHeaders(accessToken).forEach { (k, v) -> header(k, v) } }
                 .header("Content-Type", contentType)
                 .header("x-upsert", "true")
-                .put(bytes.toRequestBody(contentType.toMediaType()))
+                .post(bytes.toRequestBody(contentType.toMediaType()))
                 .build()
 
             http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    android.util.Log.w(
-                        "QuickyStorage",
-                        "Upload failed ($bucket/$objectPath): HTTP ${response.code} — " +
-                                response.body?.string().orEmpty().take(300)
-                    )
-                    return@withContext null
+                if (response.isSuccessful) {
+                    val bodyString = response.body?.string().orEmpty()
+                    val keyFromJson = runCatching {
+                        JSONObject(bodyString).optString("Key")
+                    }.getOrNull()?.takeIf { it.isNotBlank() && it != "null" }
+                    val resolvedKey = keyFromJson
+                        ?.removePrefix("$bucket/")
+                        ?.removePrefix("/") ?: cleanPath
+                    return@withContext resolvedKey
+                } else if (response.code == 404 || response.code == 400 || response.code == 405) {
+                    // Fallback to PUT if POST is rejected by storage version
+                    val putRequest = Request.Builder()
+                        .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$cleanPath")
+                        .apply { authHeaders(accessToken).forEach { (k, v) -> header(k, v) } }
+                        .header("Content-Type", contentType)
+                        .header("x-upsert", "true")
+                        .put(bytes.toRequestBody(contentType.toMediaType()))
+                        .build()
+                    val putResp = http.newCall(putRequest).execute()
+                    if (putResp.isSuccessful) {
+                        return@withContext cleanPath
+                    }
                 }
-                // optString("Key") yields the literal "null" for a JSON-null
-                // Key — treat that as a failure instead of persisting it.
-                JSONObject(response.body?.string().orEmpty())
-                    .optString("Key")
-                    .takeIf { it.isNotBlank() && it != "null" }
+                android.util.Log.w(
+                    "QuickyStorage",
+                    "Upload failed ($bucket/$cleanPath): HTTP ${response.code} — " +
+                            response.body?.string().orEmpty().take(300)
+                )
+                null
             }
         } catch (e: Exception) {
-            android.util.Log.w("QuickyStorage", "Upload threw ($bucket/$objectPath): ${e.message}")
+            android.util.Log.w("QuickyStorage", "Upload threw ($bucket/$cleanPath): ${e.message}")
             null
         }
     }
 
     /** Public CDN URL for an object stored in a public bucket. */
-    fun storagePublicUrl(bucket: String, objectPath: String): String =
-        "${SupabaseConfig.SUPABASE_URL}/storage/v1/object/public/$bucket/$objectPath"
+    fun storagePublicUrl(bucket: String, objectPath: String): String {
+        val cleanPath = objectPath
+            .removePrefix("$bucket/")
+            .removePrefix("/$bucket/")
+            .removePrefix("/")
+        return "${SupabaseConfig.SUPABASE_URL}/storage/v1/object/public/$bucket/$cleanPath"
+    }
 
     /**
-     * Downloads an object from a PRIVATE bucket (v3.3.4 club voice notes).
+     * Downloads an object from a PRIVATE bucket (v3.3.4 club voice notes, snaps).
      * The request rides the Supabase Auth user JWT so the bucket's
-     * `authenticated` read policy applies; the anon key alone is rejected.
+     * `authenticated` read policy applies; fallback queries anon and public CDN.
      *
      * @return the raw bytes, or null on any failure (caller keeps the UI).
      */
@@ -159,21 +184,105 @@ object SupabaseClient {
         objectPath: String,
         accessToken: String? = null
     ): ByteArray? = withContext(Dispatchers.IO) {
+        // 0. If already a full URL, fetch directly
+        if (objectPath.startsWith("http://") || objectPath.startsWith("https://")) {
+            return@withContext runCatching {
+                val req = Request.Builder()
+                    .url(objectPath)
+                    .apply { authHeaders(accessToken).forEach { (k, v) -> header(k, v) } }
+                    .get()
+                    .build()
+                http.newCall(req).execute().use { r ->
+                    if (r.isSuccessful) r.body?.bytes() else null
+                }
+            }.getOrNull()
+        }
+
+        val cleanPath = objectPath
+            .substringAfter("/$bucket/", objectPath)
+            .removePrefix("$bucket/")
+            .removePrefix("/$bucket/")
+            .removePrefix("/")
+
         runCatching {
-            val request = Request.Builder()
-                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$objectPath")
+            // 1. Try authenticated endpoint for private buckets
+            val authReq = Request.Builder()
+                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/authenticated/$bucket/$cleanPath")
                 .apply { authHeaders(accessToken).forEach { (k, v) -> header(k, v) } }
                 .get()
                 .build()
-            http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
+            val authBytes = http.newCall(authReq).execute().use { r ->
+                if (r.isSuccessful) r.body?.bytes() else null
+            }
+            if (authBytes != null && authBytes.isNotEmpty()) return@runCatching authBytes
+
+            // 2. Try signed URL generation (bypasses RLS issues for private buckets)
+            val signBody = JSONObject().put("expiresIn", 300).toString()
+            val signReq = Request.Builder()
+                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/sign/$bucket/$cleanPath")
+                .apply {
+                    authHeaders(accessToken).forEach { (k, v) -> header(k, v) }
+                    header("Content-Type", "application/json")
+                }
+                .post(signBody.toRequestBody(JSON))
+                .build()
+            val signedPath = runCatching {
+                http.newCall(signReq).execute().use { r ->
+                    if (r.isSuccessful) {
+                        val body = r.body?.string().orEmpty()
+                        val obj = JSONObject(body)
+                        obj.optString("signedURL").ifBlank { obj.optString("signedUrl") }
+                    } else null
+                }
+            }.getOrNull()
+
+            if (!signedPath.isNullOrBlank()) {
+                val fullSignedUrl = if (signedPath.startsWith("http")) signedPath
+                else "${SupabaseConfig.SUPABASE_URL}/storage/v1$signedPath"
+                val signedDownloadReq = Request.Builder().url(fullSignedUrl).get().build()
+                val signedBytes = http.newCall(signedDownloadReq).execute().use { r ->
+                    if (r.isSuccessful) r.body?.bytes() else null
+                }
+                if (signedBytes != null && signedBytes.isNotEmpty()) return@runCatching signedBytes
+            }
+
+            // 3. Standard /object/$bucket/$cleanPath endpoint
+            val request = Request.Builder()
+                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$cleanPath")
+                .apply { authHeaders(accessToken).forEach { (k, v) -> header(k, v) } }
+                .get()
+                .build()
+            val bytes = http.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    response.body?.bytes()
+                } else {
                     android.util.Log.w(
                         "QuickyStorage",
-                        "Download failed ($bucket/$objectPath): HTTP ${response.code}"
+                        "Download failed ($bucket/$cleanPath): HTTP ${response.code}"
                     )
-                    return@runCatching null
+                    null
                 }
-                response.body?.bytes()
+            }
+            if (bytes != null && bytes.isNotEmpty()) return@runCatching bytes
+
+            // 4. Fallback with anon key
+            val anonReq = Request.Builder()
+                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$cleanPath")
+                .apply { authHeaders(null).forEach { (k, v) -> header(k, v) } }
+                .get()
+                .build()
+            val anonBytes = http.newCall(anonReq).execute().use { r ->
+                if (r.isSuccessful) r.body?.bytes() else null
+            }
+            if (anonBytes != null && anonBytes.isNotEmpty()) return@runCatching anonBytes
+
+            // 5. Fallback to public CDN URL
+            val pubReq = Request.Builder()
+                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/public/$bucket/$cleanPath")
+                .get()
+                .build()
+            http.newCall(pubReq).execute().use { r ->
+                if (r.isSuccessful) r.body?.bytes() else null
             }
         }.getOrNull()
     }
@@ -191,21 +300,18 @@ object SupabaseClient {
         objectPath: String,
         accessToken: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
+        val cleanPath = objectPath
+            .removePrefix("$bucket/")
+            .removePrefix("/$bucket/")
+            .removePrefix("/")
         runCatching {
             val request = Request.Builder()
-                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$objectPath")
+                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$cleanPath")
                 .apply { authHeaders(accessToken).forEach { (k, v) -> header(k, v) } }
                 .delete()
                 .build()
             http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    android.util.Log.w(
-                        "QuickyStorage",
-                        "Delete failed ($bucket/$objectPath): HTTP ${response.code}"
-                    )
-                    return@runCatching false
-                }
-                true
+                response.isSuccessful
             }
         }.getOrDefault(false)
     }

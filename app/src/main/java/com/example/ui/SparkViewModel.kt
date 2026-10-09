@@ -672,15 +672,35 @@ class SparkViewModel : ViewModel() {
 
             _uiState.update { state ->
                 val serverMatches = remote.map { conv ->
+                    val lastMsg = conv.messages.lastOrNull()
+                    val msgTimeMs = lastMsg?.createdAtIso?.let { LudoTime.parseIsoToEpochMs(it) }
+                    val matchTimeMs = conv.matchedAtIso?.let { LudoTime.parseIsoToEpochMs(it) }
+                    val lastTimeMs = msgTimeMs ?: matchTimeMs ?: 0L
+
+                    val unreadCount = conv.unreadCount.coerceAtLeast(
+                        conv.messages.count { msg ->
+                            val isFromOther = msg.senderId != "user_me" && msg.senderId != session.userId
+                            val isTruthOrDare = msg.messageType == "TRUTH_OR_DARE" ||
+                                (msg.text.trim().startsWith("{") && (msg.text.contains("\"gameType\"") || msg.text.contains("Truth or Dare"))) ||
+                                msg.text.contains("Truth:") || msg.text.contains("Dare:") || msg.text.contains("🎲")
+                            val isUncompleted = isTruthOrDare && !msg.text.contains("\"isCompleted\":true")
+                            isFromOther && (!msg.isRead || isUncompleted)
+                        }
+                    ).let { count ->
+                        if (count == 0 && conv.hasActiveGame) 1 else count
+                    }
+
                     MatchItem(
                         id = conv.conversationId,
                         user = conv.profile,
-                        matchedAt = LudoTime.parseIsoToEpochMs(conv.matchedAtIso)
-                            ?.let { matchedAtLabel(it) } ?: "Recently",
-                        lastMessage = conv.lastMessageText,
-                        unreadCount = conv.unreadCount,
+                        matchedAt = lastTimeMs.takeIf { it > 0 }?.let { matchedAtLabel(it) }
+                            ?: conv.matchedAtIso?.let { LudoTime.parseIsoToEpochMs(it) }?.let { matchedAtLabel(it) }
+                            ?: "Recently",
+                        lastMessage = conv.lastMessageText?.let { formatLastMessagePreview(it) },
+                        unreadCount = unreadCount,
                         hasActiveGame = conv.hasActiveGame,
-                        isNewMatch = conv.isNewMatch && conv.unreadCount > 0
+                        isNewMatch = conv.isNewMatch && unreadCount > 0,
+                        lastActivityTimestampMs = lastTimeMs
                     )
                 }
                 // Locally created conversations (this session) keep their
@@ -692,6 +712,11 @@ class SparkViewModel : ViewModel() {
                 remote.forEach { conv ->
                     if (!messageMap.containsKey(conv.conversationId)) {
                         messageMap[conv.conversationId] = conv.messages.map { msg ->
+                            // v3.3.8 — Truth or Dare game cards: the JSON stored
+                            // in `text` is decoded back into a GameCardData object
+                            // so both sender AND receiver see the live card UI.
+                            val restoredGameCard = if (msg.messageType == "TRUTH_OR_DARE")
+                                gameCardFromJson(msg.text) else null
                             ChatMessage(
                                 id = msg.id,
                                 conversationId = msg.conversationId,
@@ -701,6 +726,7 @@ class SparkViewModel : ViewModel() {
                                 isMine = msg.senderId == "user_me" ||
                                         msg.senderId == session.userId,
                                 isRead = msg.isRead,
+                                gameCard = restoredGameCard,
                                 // v3.3.7 — view-once photo snaps restore as
                                 // chips: unviewed ones keep their (private)
                                 // storage path for the fullscreen viewer;
@@ -713,8 +739,9 @@ class SparkViewModel : ViewModel() {
                         }
                     }
                 }
+                val combinedMatches = (localOnly + serverMatches).sortedByDescending { it.lastActivityTimestampMs }
                 state.copy(
-                    matches = localOnly + serverMatches,
+                    matches = combinedMatches,
                     messages = messageMap
                 )
             }
@@ -724,6 +751,11 @@ class SparkViewModel : ViewModel() {
     /** "Oct 5"-style label for a matched-at epoch (ChatsScreen right meta). */
     private fun matchedAtLabel(epochMs: Long): String =
         java.text.SimpleDateFormat("MMM d", Locale.US).format(java.util.Date(epochMs))
+
+    private fun reorderMatchesWithTop(conversationId: String, matches: List<MatchItem>): List<MatchItem> {
+        val target = matches.find { it.id == conversationId } ?: return matches
+        return listOf(target) + matches.filter { it.id != conversationId }
+    }
 
     /**
      * v3.2.2: loads ALL active clubs + member lists from Supabase into
@@ -1497,11 +1529,18 @@ class SparkViewModel : ViewModel() {
         val updatedMatches = _uiState.value.matches.map {
             if (it.id == match.id) it.copy(unreadCount = 0, isNewMatch = false) else it
         }
+        val currentMessages = _uiState.value.messages[match.id]
+        val updatedMessages = if (currentMessages != null && currentMessages.any { !it.isRead }) {
+            _uiState.value.messages + (match.id to currentMessages.map { it.copy(isRead = true) })
+        } else {
+            _uiState.value.messages
+        }
 
         _uiState.update {
             it.copy(
-                selectedMatchForChat = match,
+                selectedMatchForChat = match.copy(unreadCount = 0),
                 matches = updatedMatches,
+                messages = updatedMessages,
                 currentTab = SparkTab.CHATS
             )
         }
@@ -1561,16 +1600,18 @@ class SparkViewModel : ViewModel() {
         val updatedMatches = _uiState.value.matches.map {
             if (it.id == conversationId) {
                 it.copy(
-                    lastMessage = if (gameCard != null) "Sent a ${gameCard.gameType} challenge 🎲" else text,
-                    hasActiveGame = gameCard != null || it.hasActiveGame
+                    lastMessage = if (gameCard != null) "Truth or Dare" else formatLastMessagePreview(text),
+                    hasActiveGame = gameCard != null || it.hasActiveGame,
+                    lastActivityTimestampMs = System.currentTimeMillis()
                 )
             } else it
         }
+        val reorderedMatches = reorderMatchesWithTop(conversationId, updatedMatches)
 
         _uiState.update {
             it.copy(
                 messages = updatedMap,
-                matches = updatedMatches,
+                matches = reorderedMatches,
                 replyToMessage = null
             )
         }
@@ -1631,15 +1672,17 @@ class SparkViewModel : ViewModel() {
         val updatedMatches = _uiState.value.matches.map {
             if (it.id == conversationId) {
                 it.copy(
-                    lastMessage = "🎙️ Voice message (0:0${durationSeconds})"
+                    lastMessage = "🎙️ Voice message (0:0${durationSeconds})",
+                    lastActivityTimestampMs = System.currentTimeMillis()
                 )
             } else it
         }
+        val reorderedMatches = reorderMatchesWithTop(conversationId, updatedMatches)
 
         _uiState.update {
             it.copy(
                 messages = updatedMap,
-                matches = updatedMatches,
+                matches = reorderedMatches,
                 replyToMessage = null
             )
         }
@@ -1696,7 +1739,7 @@ class SparkViewModel : ViewModel() {
             id = optimisticId,
             conversationId = conversationId,
             senderId = "user_me",
-            text = "Sent a snap 📸",
+            text = "📸 Quicky Image",
             timestamp = "Just now",
             isMine = true,
             isRead = false,
@@ -1710,14 +1753,17 @@ class SparkViewModel : ViewModel() {
         }
 
         val updatedMatches = _uiState.value.matches.map {
-            if (it.id == conversationId) it.copy(lastMessage = "📸 Photo snap")
-            else it
+            if (it.id == conversationId) it.copy(
+                lastMessage = "📸 Quicky Image",
+                lastActivityTimestampMs = System.currentTimeMillis()
+            ) else it
         }
+        val reorderedMatches = reorderMatchesWithTop(conversationId, updatedMatches)
 
         _uiState.update {
             it.copy(
                 messages = updatedMap,
-                matches = updatedMatches
+                matches = reorderedMatches
             )
         }
 
@@ -1742,7 +1788,7 @@ class SparkViewModel : ViewModel() {
                 // Real auth user id — received snaps must attribute to the
                 // sender so the receiver's chip is tappable (see sendMessage).
                 senderId = session?.userId ?: "user_me",
-                text = "Sent a snap 📸",
+                text = "📸 Quicky Image",
                 accessToken = session?.accessToken,
                 messageType = "SNAP",
                 snapPath = path
@@ -1758,11 +1804,11 @@ class SparkViewModel : ViewModel() {
                             put(conversationId, remaining)
                         },
                         matches = state.matches.map {
-                            if (it.id == conversationId && it.lastMessage == "📸 Photo snap")
-                                it.copy(lastMessage = remaining.lastOrNull()?.text)
+                            if (it.id == conversationId && it.lastMessage == "📸 Quicky Image")
+                                it.copy(lastMessage = remaining.lastOrNull()?.let { formatLastMessagePreview(it.text) })
                             else it
                         },
-                        toastMessage = "Snap failed to send — check your connection and try again."
+                        toastMessage = "Quicky Image failed to send — check your connection and try again."
                     )
                 }
             } else {
@@ -1779,6 +1825,28 @@ class SparkViewModel : ViewModel() {
                             )
                         }
                     )
+                }
+
+                // v3.3.8 — Notify the receiver with a dedicated "Quicky Image" push.
+                // Look up the receiver's user id from the current matches list.
+                val myState     = _uiState.value
+                val matchItem   = myState.matches.firstOrNull { it.id == conversationId }
+                val recipientId = matchItem?.user?.id
+                val senderName  = myState.userProfile.name.ifBlank { "Someone" }
+                if (recipientId != null && recipientId != session?.userId) {
+                    runCatching {
+                        SupabaseRepository.sendSnapPushNotification(
+                            conversationId    = conversationId,
+                            recipientUserId   = recipientId,
+                            senderName        = senderName,
+                            accessToken       = session?.accessToken
+                        )
+                    }.onFailure { e ->
+                        android.util.Log.w(
+                            "QuickySnaps",
+                            "Snap push notification failed (non-fatal): ${e.message}"
+                        )
+                    }
                 }
             }
         }
@@ -1808,7 +1876,7 @@ class SparkViewModel : ViewModel() {
                         viewingSnap = null,
                         viewingSnapBytes = null,
                         isLoadingSnap = false,
-                        toastMessage = "Snap unavailable — it may have expired."
+                        toastMessage = "Quicky Image unavailable — it may have expired."
                     )
                 }
             } else {
@@ -1998,11 +2066,46 @@ class SparkViewModel : ViewModel() {
             isPremiumOnly = false
         )
 
-        sendMessage(
+        // Serialize GameCardData to JSON — stored in `text` with messageType=TRUTH_OR_DARE
+        val jsonPayload = gameCardToJson(gameCard)
+
+        // Update local state immediately (optimistic)
+        val newMessage = ChatMessage(
+            id = "msg_tod_${System.currentTimeMillis()}",
             conversationId = conversationId,
-            text = "I challenge you to a round of Truth or Dare! 🎭",
+            senderId = "user_me",
+            text = jsonPayload,
+            timestamp = "Just now",
+            isMine = true,
+            isRead = false,
             gameCard = gameCard
         )
+        val currentList = _uiState.value.messages[conversationId] ?: emptyList()
+        val updatedMap = _uiState.value.messages.toMutableMap().apply {
+            put(conversationId, currentList + newMessage)
+        }
+        val updatedMatches = _uiState.value.matches.map {
+            if (it.id == conversationId) it.copy(
+                lastMessage = "Truth or Dare",
+                hasActiveGame = true,
+                lastActivityTimestampMs = System.currentTimeMillis()
+            ) else it
+        }
+        val reorderedMatches = reorderMatchesWithTop(conversationId, updatedMatches)
+        _uiState.update { it.copy(messages = updatedMap, matches = reorderedMatches) }
+
+        // Persist to Supabase (fire-and-forget)
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                SupabaseRepository.insertChatMessage(
+                    conversationId = conversationId,
+                    senderId = _uiState.value.authSession?.userId ?: "user_me",
+                    text = jsonPayload,
+                    accessToken = _uiState.value.authSession?.accessToken,
+                    messageType = "TRUTH_OR_DARE"
+                )
+            }
+        }
     }
 
     fun answerTruthOrDare(
@@ -2014,17 +2117,18 @@ class SparkViewModel : ViewModel() {
         voiceDurationSeconds: Int? = null
     ) {
         val currentList = _uiState.value.messages[conversationId] ?: return
+        var updatedGameCard: GameCardData? = null
         val updatedList = currentList.map { msg ->
             if (msg.id == messageId && msg.gameCard != null) {
-                msg.copy(
-                    gameCard = msg.gameCard.copy(
-                        answerText = answer,
-                        isCompleted = true,
-                        responseType = responseType,
-                        cameraPhotoResId = photoResId,
-                        voiceDurationSeconds = voiceDurationSeconds
-                    )
+                val newCard = msg.gameCard.copy(
+                    answerText = answer,
+                    isCompleted = true,
+                    responseType = responseType,
+                    cameraPhotoResId = photoResId,
+                    voiceDurationSeconds = voiceDurationSeconds
                 )
+                updatedGameCard = newCard
+                msg.copy(gameCard = newCard, text = gameCardToJson(newCard))
             } else msg
         }
 
@@ -2032,11 +2136,34 @@ class SparkViewModel : ViewModel() {
             put(conversationId, updatedList)
         }
 
+        val updatedMatches = _uiState.value.matches.map {
+            if (it.id == conversationId) it.copy(
+                lastMessage = "Truth or Dare",
+                hasActiveGame = false,
+                lastActivityTimestampMs = System.currentTimeMillis()
+            ) else it
+        }
+        val reorderedMatches = reorderMatchesWithTop(conversationId, updatedMatches)
+
         _uiState.update {
             it.copy(
                 messages = updatedMap,
+                matches = reorderedMatches,
                 toastMessage = "Truth or Dare answer submitted! 🎯"
             )
+        }
+
+        // Persist the completed answer back to Supabase (fire-and-forget)
+        val card = updatedGameCard ?: return
+        val updatedJson = gameCardToJson(card)
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                SupabaseRepository.updateGameMessageAnswer(
+                    messageId = messageId,
+                    updatedJsonText = updatedJson,
+                    accessToken = _uiState.value.authSession?.accessToken
+                )
+            }
         }
     }
 
@@ -2877,6 +3004,8 @@ class SparkViewModel : ViewModel() {
                         st.copy(notifications = mergeNotifications(st.notifications, fresh))
                     }
                 }
+                // Also refresh server conversations to pick up new incoming messages
+                loadServerConversations(session)
                 delay(NOTIFICATION_POLL_MS)
             }
         }
@@ -4670,4 +4799,42 @@ class SparkViewModel : ViewModel() {
             )
         }
     }
+
+    // ==============================================================
+    // v3.3.8 — TRUTH OR DARE helpers (GameCardData ↔ JSON)
+    // Stored in `messages.text` when message_type = 'TRUTH_OR_DARE'
+    // ==============================================================
+
+    /** Serialize a [GameCardData] to a compact JSON string for Supabase storage. */
+    private fun gameCardToJson(card: GameCardData): String = JSONObject().apply {
+        put("sessionId", card.sessionId)
+        put("gameType", card.gameType)
+        put("category", card.category)
+        put("promptType", card.promptType)
+        put("promptText", card.promptText)
+        put("targetPlayerId", card.targetPlayerId)
+        card.answerText?.let { put("answerText", it) }
+        put("isCompleted", card.isCompleted)
+        put("isPremiumOnly", card.isPremiumOnly)
+        put("responseType", card.responseType)
+        card.voiceDurationSeconds?.let { put("voiceDurationSeconds", it) }
+    }.toString()
+
+    /** Deserialize a [GameCardData] from a JSON string (tolerates missing fields). */
+    private fun gameCardFromJson(json: String): GameCardData? = runCatching {
+        val obj = JSONObject(json)
+        GameCardData(
+            sessionId = obj.optString("sessionId", "session_0"),
+            gameType = obj.optString("gameType", "Truth or Dare"),
+            category = obj.optString("category", "Flirty"),
+            promptType = obj.optString("promptType", "TRUTH"),
+            promptText = obj.optString("promptText", ""),
+            targetPlayerId = obj.optString("targetPlayerId", ""),
+            answerText = obj.optString("answerText").takeIf { it.isNotBlank() },
+            isCompleted = obj.optBoolean("isCompleted", false),
+            isPremiumOnly = obj.optBoolean("isPremiumOnly", false),
+            responseType = obj.optString("responseType", "TEXT"),
+            voiceDurationSeconds = if (obj.has("voiceDurationSeconds")) obj.getInt("voiceDurationSeconds") else null
+        )
+    }.getOrNull()
 }

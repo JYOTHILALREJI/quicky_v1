@@ -237,6 +237,24 @@ enum class DiscoveryAction {
     SUPER_LIKE
 }
 
+fun formatLastMessagePreview(raw: String?): String {
+    if (raw.isNullOrBlank()) return "Tap to start conversation..."
+    val trimmed = raw.trim()
+    if (trimmed.startsWith("{") && (
+        trimmed.contains("\"gameType\"") ||
+        trimmed.contains("\"sessionId\"") ||
+        trimmed.contains("\"promptText\"") ||
+        trimmed.contains("\"promptType\"") ||
+        trimmed.contains("\"answerText\"") ||
+        trimmed.contains("Truth or Dare") ||
+        trimmed.contains("TRUTH") ||
+        trimmed.contains("DARE")
+    )) {
+        return "Truth or Dare"
+    }
+    return raw
+}
+
 data class MatchItem(
     val id: String,
     val user: UserProfile,
@@ -244,8 +262,12 @@ data class MatchItem(
     val lastMessage: String? = null,
     val unreadCount: Int = 0,
     val hasActiveGame: Boolean = false,
-    val isNewMatch: Boolean = false
-)
+    val isNewMatch: Boolean = false,
+    val lastActivityTimestampMs: Long = 0L
+) {
+    val displayLastMessage: String
+        get() = formatLastMessagePreview(lastMessage)
+}
 
 data class ChatMessage(
     val id: String,

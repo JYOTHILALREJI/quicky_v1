@@ -38,9 +38,12 @@ fun ChatsScreen(
     modifier: Modifier = Modifier
 ) {
     var searchQuery by remember { mutableStateOf("") }
-    val filteredMatches = remember(searchQuery, matches) {
-        if (searchQuery.isBlank()) matches
-        else matches.filter { it.user.name.contains(searchQuery, ignoreCase = true) }
+    val sortedMatches = remember(matches) {
+        matches.sortedByDescending { it.lastActivityTimestampMs }
+    }
+    val filteredMatches = remember(searchQuery, sortedMatches) {
+        if (searchQuery.isBlank()) sortedMatches
+        else sortedMatches.filter { it.user.name.contains(searchQuery, ignoreCase = true) }
     }
 
     LazyColumn(
@@ -199,7 +202,7 @@ fun ChatsScreen(
                                 }
 
                                 Text(
-                                    text = match.lastMessage ?: "Tap to start conversation...",
+                                    text = match.displayLastMessage,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (match.unreadCount > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontWeight = if (match.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
@@ -210,11 +213,27 @@ fun ChatsScreen(
                         }
 
                         if (match.unreadCount > 0) {
-                            Badge(
-                                containerColor = QuickyPink,
-                                contentColor = Color.White
+                            Surface(
+                                shape = CircleShape,
+                                color = QuickyPink,
+                                shadowElevation = 2.dp,
+                                modifier = Modifier.padding(start = 4.dp)
                             ) {
-                                Text(match.unreadCount.toString())
+                                Box(
+                                    modifier = Modifier
+                                        .defaultMinSize(minWidth = 22.dp, minHeight = 22.dp)
+                                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (match.unreadCount > 99) "99+" else match.unreadCount.toString(),
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
