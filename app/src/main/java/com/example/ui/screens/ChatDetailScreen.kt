@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.core.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -31,7 +34,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
+import com.example.BuildConfig
 import com.example.R
 import com.example.data.AppContent
 import com.example.data.Analytics
@@ -66,11 +71,16 @@ fun ChatDetailScreen(
     onOpenLudo: () -> Unit = {},
     onOpenStickerPicker: () -> Unit = {},
     onSendVoiceMessage: (Int) -> Unit = {},
+    /** v3.3.7: send a captured camera photo as a view-once snap. */
+    onSendSnap: (ByteArray) -> Unit = {},
+    /** v3.3.7: open a received unviewed snap in the fullscreen viewer. */
+    onOpenSnap: (ChatMessage) -> Unit = {},
     /** PRD v2.3 §26/§27 — free users see the fixed banner under the header. */
     showBannerAd: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
     var replyingToMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var showMenu by remember { mutableStateOf(false) }
@@ -80,6 +90,34 @@ fun ChatDetailScreen(
     var voiceRecordSeconds by remember { mutableIntStateOf(0) }
     // v2.1 §3.3 — tracked list state so new messages auto-scroll into view.
     val chatListState = rememberLazyListState()
+
+    // ---- v3.3.7 Snap camera: system camera via ActivityResultContracts ----
+    // .TakePicture into a FileProvider cache file (same pattern as the
+    // Get-Verified live selfie — no CAMERA permission or CameraX needed).
+    // The capture file is reused for every snap in this chat session and
+    // its bytes are read (then discarded) the moment the camera returns.
+    val snapCaptureFile = remember {
+        val dir = java.io.File(context.cacheDir, "snaps").apply { mkdirs() }
+        java.io.File(dir, "snap_capture.jpg")
+    }
+    val snapCaptureUri = remember {
+        FileProvider.getUriForFile(
+            context,
+            "${BuildConfig.APPLICATION_ID}.fileprovider",
+            snapCaptureFile
+        )
+    }
+    val snapCameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { captured ->
+        if (captured) {
+            val bytes = runCatching { snapCaptureFile.readBytes() }.getOrNull()
+            if (bytes != null && bytes.isNotEmpty()) {
+                onSendSnap(bytes)
+            }
+            runCatching { snapCaptureFile.delete() }
+        }
+    }
 
     LaunchedEffect(isRecordingVoiceNote) {
         if (isRecordingVoiceNote) {
@@ -375,7 +413,8 @@ fun ChatDetailScreen(
                             modifier = if (sameSenderAsPrevious) Modifier.padding(top = (-2).dp) else Modifier,
                             onReactionClick = { emoji -> onAddReaction(msg.id, emoji) },
                             onAnswerGame = { answer -> onAnswerGame(msg.id, answer) },
-                            onSwipeToReply = { replyingToMessage = msg }
+                            onSwipeToReply = { replyingToMessage = msg },
+                            onOpenSnap = onOpenSnap
                         )
                     }
                 }
@@ -552,24 +591,46 @@ fun ChatDetailScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Message text input (Sticker picker INSIDE the composer, right end)
+                        // Message text input — camera (v3.3.7 snap capture)
+                        // + sticker picker both INSIDE the composer, right end.
                         TextField(
                             value = inputText,
                             onValueChange = { inputText = it },
                             placeholder = { Text("Message ${match.user.name}...", style = MaterialTheme.typography.bodyMedium) },
                             trailingIcon = {
-                                IconButton(
-                                    onClick = onOpenStickerPicker,
-                                    modifier = Modifier
-                                        .size(28.dp)
-                                        .testTag("chat_sticker_button")
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = QuickyStickerIcon,
-                                        contentDescription = "Stickers",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                                    // v3.3.7 — Camera: capture a photo snap
+                                    // (view-once, deleted after the receiver
+                                    // opens it).
+                                    IconButton(
+                                        onClick = { snapCameraLauncher.launch(snapCaptureUri) },
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .testTag("chat_snap_camera_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.PhotoCamera,
+                                            contentDescription = "Send photo snap",
+                                            tint = SparkRose,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = onOpenStickerPicker,
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .testTag("chat_sticker_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = QuickyStickerIcon,
+                                            contentDescription = "Stickers",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
                                 }
                             },
                             modifier = Modifier

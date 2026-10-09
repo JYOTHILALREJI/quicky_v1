@@ -141,6 +141,14 @@ data class SparkUiState(
     val isClubVoiceChatActive: Boolean = false,
     val replyToMessage: ChatMessage? = null,
 
+    // ---- v3.3.7 Snap photos (view-once) ----
+    /** The snap currently open in the fullscreen viewer (null = closed). */
+    val viewingSnap: ChatMessage? = null,
+    /** Decoded image bytes of the snap being viewed — downloaded on open. */
+    val viewingSnapBytes: ByteArray? = null,
+    /** True while the snap bytes download for the viewer. */
+    val isLoadingSnap: Boolean = false,
+
     // Clubs & Social Communities state
     val clubs: List<Club> = emptyList(),
     val activeClubId: String? = null,
@@ -692,7 +700,15 @@ class SparkViewModel : ViewModel() {
                                 timestamp = LudoTime.isoToClock(msg.createdAtIso) ?: "",
                                 isMine = msg.senderId == "user_me" ||
                                         msg.senderId == session.userId,
-                                isRead = msg.isRead
+                                isRead = msg.isRead,
+                                // v3.3.7 — view-once photo snaps restore as
+                                // chips: unviewed ones keep their (private)
+                                // storage path for the fullscreen viewer;
+                                // viewed ones render as the "viewed photo"
+                                // chip and carry no path at all.
+                                isSnap = msg.messageType == "SNAP",
+                                snapUrl = msg.snapPath,
+                                snapViewed = msg.snapViewed
                             )
                         }
                     }
@@ -1564,7 +1580,12 @@ class SparkViewModel : ViewModel() {
             viewModelScope.launch {
                 SupabaseRepository.insertChatMessage(
                     conversationId = conversationId,
-                    senderId = newMessage.senderId,
+                    // v3.3.7: store the REAL auth user id (was the literal
+                    // "user_me", which made BOTH sides render a message as
+                    // their own after a reload — fatal for received snaps).
+                    // Legacy "user_me" rows still map to isMine on the
+                    // writer's own device for backward compatibility.
+                    senderId = _uiState.value.authSession?.userId ?: newMessage.senderId,
                     text = text,
                     accessToken = _uiState.value.authSession?.accessToken
                 )
@@ -1621,6 +1642,326 @@ class SparkViewModel : ViewModel() {
                 matches = updatedMatches,
                 replyToMessage = null
             )
+        }
+    }
+
+    // ==============================================================
+    // v3.3.7 — SNAP PHOTOS (view-once, Snapchat-style)
+    // ==============================================================
+
+    /**
+     * In-memory store of snap image bytes keyed by message id — the sender's
+     * just-captured snap plays back instantly on the same device (offline /
+     * pre-upload), mirroring the club-voice-note local-cache pattern.
+     */
+    private val snapBytesCache = mutableMapOf<String, ByteArray>()
+
+    /**
+     * Camera photos are downscaled to at most this many pixels on the long
+     * edge before upload — keeps snaps a few hundred KB instead of a full
+     * multi-megapixel camera dump.
+     */
+    private val SNAP_MAX_EDGE_PX = 1600
+
+    /** Downscales captured camera bytes for snap upload (null → unusable image). */
+    private suspend fun downscaleForSnap(bytes: ByteArray): ByteArray? =
+        withContext(Dispatchers.Default) {
+            runCatching {
+                val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    ?: return@runCatching null
+                val maxEdge = maxOf(bitmap.width, bitmap.height)
+                val scaled = if (maxEdge > SNAP_MAX_EDGE_PX) {
+                    val ratio = SNAP_MAX_EDGE_PX.toFloat() / maxEdge
+                    android.graphics.Bitmap.createScaledBitmap(
+                        bitmap,
+                        (bitmap.width * ratio).toInt().coerceAtLeast(1),
+                        (bitmap.height * ratio).toInt().coerceAtLeast(1),
+                        true
+                    )
+                } else bitmap
+                val out = java.io.ByteArrayOutputStream()
+                scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                out.toByteArray()
+            }.getOrNull()
+        }
+
+    /**
+     * Sends a view-once photo snap: downscale → optimistic chip → upload to
+     * the private `snap-images` bucket → persist the message row. The image
+     * is destroyed server-side the moment the receiver opens it.
+     */
+    fun sendSnapMessage(conversationId: String, imageBytes: ByteArray) {
+        val optimisticId = "msg_snap_${System.currentTimeMillis()}"
+        val newMessage = ChatMessage(
+            id = optimisticId,
+            conversationId = conversationId,
+            senderId = "user_me",
+            text = "Sent a snap 📸",
+            timestamp = "Just now",
+            isMine = true,
+            isRead = false,
+            isSnap = true,
+            snapViewed = false
+        )
+
+        val currentList = _uiState.value.messages[conversationId] ?: emptyList()
+        val updatedMap = _uiState.value.messages.toMutableMap().apply {
+            put(conversationId, currentList + newMessage)
+        }
+
+        val updatedMatches = _uiState.value.matches.map {
+            if (it.id == conversationId) it.copy(lastMessage = "📸 Photo snap")
+            else it
+        }
+
+        _uiState.update {
+            it.copy(
+                messages = updatedMap,
+                matches = updatedMatches
+            )
+        }
+
+        if (!SupabaseRepository.isConfigured()) {
+            // Offline / unconfigured demo: the snap lives only in this
+            // session's memory (keyed by the optimistic id).
+            snapBytesCache[optimisticId] = imageBytes
+            return
+        }
+
+        viewModelScope.launch {
+            val session = _uiState.value.authSession
+            val scaled = downscaleForSnap(imageBytes) ?: imageBytes
+            snapBytesCache[optimisticId] = scaled
+            val path = SupabaseRepository.uploadSnapImage(
+                senderId = session?.userId ?: "user_me",
+                bytes = scaled,
+                accessToken = session?.accessToken
+            )
+            val inserted = path != null && SupabaseRepository.insertChatMessage(
+                conversationId = conversationId,
+                // Real auth user id — received snaps must attribute to the
+                // sender so the receiver's chip is tappable (see sendMessage).
+                senderId = session?.userId ?: "user_me",
+                text = "Sent a snap 📸",
+                accessToken = session?.accessToken,
+                messageType = "SNAP",
+                snapPath = path
+            )
+            if (!inserted) {
+                // Dead optimistic bubble — remove it and say so.
+                snapBytesCache.remove(optimisticId)
+                _uiState.update { state ->
+                    val remaining = (state.messages[conversationId] ?: emptyList())
+                        .filterNot { it.id == optimisticId }
+                    state.copy(
+                        messages = state.messages.toMutableMap().apply {
+                            put(conversationId, remaining)
+                        },
+                        matches = state.matches.map {
+                            if (it.id == conversationId && it.lastMessage == "📸 Photo snap")
+                                it.copy(lastMessage = remaining.lastOrNull()?.text)
+                            else it
+                        },
+                        toastMessage = "Snap failed to send — check your connection and try again."
+                    )
+                }
+            } else {
+                // Reconcile: the local chip now points at the stored image
+                // (sender taps do nothing, but state stays truthful).
+                _uiState.update { state ->
+                    state.copy(
+                        messages = state.messages.toMutableMap().apply {
+                            put(
+                                conversationId,
+                                (state.messages[conversationId] ?: emptyList()).map {
+                                    if (it.id == optimisticId) it.copy(snapUrl = path) else it
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Opens a received, unviewed snap: downloads the image bytes and raises
+     * the fullscreen FLAG_SECURE viewer. Own / already-viewed snaps are
+     * ignored — a viewed photo can never be fetched again (it no longer
+     * exists server-side).
+     */
+    fun openSnapMessage(message: ChatMessage) {
+        if (message.isMine || message.snapViewed) return
+        _uiState.update {
+            it.copy(viewingSnap = message, viewingSnapBytes = null, isLoadingSnap = true)
+        }
+        viewModelScope.launch {
+            val bytes = snapBytesCache[message.id]
+                ?: message.snapUrl?.let { path ->
+                    SupabaseRepository.downloadSnapImage(
+                        path, _uiState.value.authSession?.accessToken
+                    )
+                }
+            if (bytes == null) {
+                _uiState.update {
+                    it.copy(
+                        viewingSnap = null,
+                        viewingSnapBytes = null,
+                        isLoadingSnap = false,
+                        toastMessage = "Snap unavailable — it may have expired."
+                    )
+                }
+            } else {
+                _uiState.update {
+                    it.copy(viewingSnapBytes = bytes, isLoadingSnap = false)
+                }
+            }
+        }
+    }
+
+    /**
+     * Closes the fullscreen snap viewer AND completes the view-once cycle:
+     * the local chip flips to "viewed", and the server atomically marks the
+     * row snap_viewed=true while PERMANENTLY DELETING the stored image
+     * (RPC `mark_snap_viewed` — row patch + storage delete in one call).
+     */
+    fun closeSnapViewer() {
+        val viewed = _uiState.value.viewingSnap ?: return
+        _uiState.update { state ->
+            val updatedList = state.messages[viewed.conversationId]?.map {
+                if (it.id == viewed.id) it.copy(snapViewed = true, snapUrl = null) else it
+            }
+            state.copy(
+                viewingSnap = null,
+                viewingSnapBytes = null,
+                isLoadingSnap = false,
+                messages = if (updatedList != null) {
+                    state.messages.toMutableMap().apply { put(viewed.conversationId, updatedList) }
+                } else state.messages
+            )
+        }
+        snapBytesCache.remove(viewed.id)
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                SupabaseRepository.markSnapViewed(
+                    messageId = viewed.id,
+                    objectPath = viewed.snapUrl,
+                    accessToken = _uiState.value.authSession?.accessToken
+                )
+            }
+        }
+    }
+
+    // ==============================================================
+    // v3.3.7 — CLUB PERSONAL CHATS (1:1 chat from a club member list)
+    // ==============================================================
+
+    /**
+     * Opens (or creates) a 1:1 personal chat with a club member. The
+     * receiver's Settings > Privacy toggle is honoured twice: the menu only
+     * offers the option when the loaded flag allows it, AND a fresh profile
+     * read re-checks it right before the chat opens (the flag may have
+     * changed since the club list loaded).
+     */
+    fun openClubMemberChat(clubId: String, member: ClubMember) {
+        val session = _uiState.value.authSession
+        val me = session?.userId ?: _uiState.value.userProfile.id
+        if (member.userId == me) return
+
+        if (_uiState.value.blockedUsers.any { it.id == member.userId }) {
+            showToast("Unblock ${member.userName} first to chat with them.")
+            return
+        }
+
+        // Deterministic conversation id both sides derive identically.
+        val conversationId = "dm_" + listOf(me, member.userId).sorted().joinToString("_")
+
+        viewModelScope.launch {
+            // Fresh allow-club-dm check (the member may have just toggled it).
+            val freshProfile = SupabaseRepository.fetchProfile(member.userId, session?.accessToken)
+            if (freshProfile != null && !freshProfile.profile.allowClubDm) {
+                showToast("${member.userName} has club chats turned off right now.")
+                return@launch
+            }
+
+            val existing = _uiState.value.matches.firstOrNull { it.id == conversationId }
+            if (existing != null) {
+                openChat(existing)
+                _uiState.update { it.copy(selectedClubForDetail = null) }
+                return@launch
+            }
+
+            val profile = freshProfile?.profile ?: UserProfile(
+                id = member.userId,
+                name = member.userName,
+                age = 21,
+                bio = "",
+                city = "",
+                distanceKm = 0,
+                relationshipIntent = "Open to see",
+                occupation = "",
+                isVerified = member.isVerified,
+                isOnline = false,
+                characterBadge = member.characterBadge
+            )
+            val match = MatchItem(
+                id = conversationId,
+                user = profile,
+                matchedAt = "Club chat",
+                lastMessage = null,
+                unreadCount = 0,
+                hasActiveGame = false,
+                isNewMatch = false
+            )
+
+            _uiState.update {
+                it.copy(
+                    matches = it.matches + match,
+                    // The club detail screen takes precedence in the nav
+                    // tree — clear it so the personal chat actually shows.
+                    selectedClubForDetail = null
+                )
+            }
+
+            if (SupabaseRepository.isConfigured()) {
+                SupabaseRepository.insertClubDmConversation(
+                    conversationId = conversationId,
+                    clubId = clubId,
+                    userAId = me,
+                    userBId = member.userId,
+                    accessToken = session?.accessToken
+                )
+            }
+
+            openChat(match)
+        }
+    }
+
+    /**
+     * v3.3.7 — Settings > Privacy toggle "Club members can chat with me".
+     * Mirrors profiles.allow_club_dm to the server so OTHER devices honour
+     * it immediately (it gates the "Chat personally" menu entry).
+     */
+    fun setAllowClubDm(allowed: Boolean) {
+        _uiState.update {
+            it.copy(
+                userProfile = it.userProfile.copy(allowClubDm = allowed),
+                toastMessage = if (allowed) {
+                    "Club members can now start a personal chat with you 💬"
+                } else {
+                    "Club members can no longer start a personal chat with you 🔒"
+                }
+            )
+        }
+        val session = _uiState.value.authSession
+        if (SupabaseRepository.isConfigured()) {
+            viewModelScope.launch {
+                SupabaseRepository.updateProfileFields(
+                    userId = session?.userId ?: _uiState.value.userProfile.id,
+                    fields = org.json.JSONObject().put("allow_club_dm", allowed),
+                    accessToken = session?.accessToken
+                )
+            }
         }
     }
 

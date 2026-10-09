@@ -6,4 +6,13 @@
     <cache-path
         name="verification_selfies"
         path="verification/" />
+
+    <!-- v3.3.7 Snap photos (personal chats): the composer camera button
+         hands the system camera a temp capture file here; its bytes are
+         read (and the file deleted) the moment the camera returns. The
+         image then lives only in the private snap-images bucket until
+         the receiver views it. -->
+    <cache-path
+        name="snap_captures"
+        path="snaps/" />
 </paths>

@@ -1,5 +1,8 @@
 package com.example.ui.components
 
+import android.app.Activity
+import android.graphics.BitmapFactory
+import android.view.WindowManager
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -31,12 +34,16 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.R
 import com.example.model.ChatMessage
 import com.example.model.GameCardData
@@ -166,6 +173,8 @@ fun ChatBubble(
     onReactionClick: (String) -> Unit,
     onAnswerGame: (String) -> Unit,
     onSwipeToReply: (() -> Unit)? = null,
+    /** v3.3.7: invoked when the receiver taps an unviewed snap chip. */
+    onOpenSnap: ((ChatMessage) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var showReactionPicker by remember { mutableStateOf(false) }
@@ -185,7 +194,7 @@ fun ChatBubble(
                 onAnswer = onAnswerGame,
                 modifier = Modifier.widthIn(max = 320.dp)
             )
-        } else if (message.text.isNotBlank()) {
+        } else if (message.text.isNotBlank() || message.isSnap) {
             Box {
                 // Cassy chat bubbles (PRD §5.4): asymmetric corners with a
                 // soft rosewood→blush gradient on outgoing messages and a
@@ -213,7 +222,7 @@ fun ChatBubble(
                             )
                             .clickable { showReactionPicker = !showReactionPicker }
                     ) {
-                        ChatBubbleContent(message = message)
+                        ChatBubbleContent(message = message, onOpenSnap = onOpenSnap)
                     }
                 } else {
                     Surface(
@@ -224,7 +233,7 @@ fun ChatBubble(
                             .widthIn(max = 280.dp)
                             .clickable { showReactionPicker = !showReactionPicker }
                     ) {
-                        ChatBubbleContent(message = message)
+                        ChatBubbleContent(message = message, onOpenSnap = onOpenSnap)
                     }
                 }
             }
@@ -300,12 +309,15 @@ fun ChatBubble(
 }
 
 /**
- * The inner payload of a chat bubble — reply quote, voice player, message
- * text and the timestamp/read-status row. Shared by the gradient
+ * The inner payload of a chat bubble — reply quote, voice player, snap chip,
+ * message text and the timestamp/read-status row. Shared by the gradient
  * (outgoing) and elevated (incoming) Cassy bubble surfaces.
  */
 @Composable
-private fun ChatBubbleContent(message: ChatMessage) {
+private fun ChatBubbleContent(
+    message: ChatMessage,
+    onOpenSnap: ((ChatMessage) -> Unit)? = null
+) {
     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
         if (message.replyToText != null) {
             Surface(
@@ -330,7 +342,12 @@ private fun ChatBubbleContent(message: ChatMessage) {
             }
         }
 
-        if (message.isVoiceMessage || message.voiceDurationSeconds != null) {
+        if (message.isSnap) {
+            // v3.3.7 — view-once photo snap: NEVER rendered inline. Unviewed
+            // incoming snaps are a tappable chip that opens the fullscreen
+            // FLAG_SECURE viewer; viewed/own ones become static chips forever.
+            SnapChip(message = message, onOpenSnap = onOpenSnap)
+        } else if (message.isVoiceMessage || message.voiceDurationSeconds != null) {
             VoiceMessagePlayer(
                 durationSeconds = message.voiceDurationSeconds ?: 5,
                 isMine = message.isMine
@@ -363,6 +380,190 @@ private fun ChatBubbleContent(message: ChatMessage) {
                     modifier = Modifier.size(14.dp)
                 )
             }
+        }
+    }
+}
+
+/**
+ * v3.3.7 — The bubble payload for a view-once photo snap. The image itself
+ * is NEVER rendered inline; the chip is the whole message surface:
+ *
+ *  · incoming + unviewed → prominent tappable chip ("Tap to view")
+ *  · incoming + viewed    → greyed "Viewed photo" chip — permanent state
+ *  · outgoing + unviewed  → "Sent a photo snap" chip
+ *  · outgoing + viewed   → "Opened" chip (Snapchat parity for the sender)
+ */
+@Composable
+private fun SnapChip(
+    message: ChatMessage,
+    onOpenSnap: ((ChatMessage) -> Unit)? = null
+) {
+    val openable = !message.isMine && !message.snapViewed
+    val title = when {
+        message.isMine && message.snapViewed -> "Opened"
+        message.isMine -> "Photo snap sent"
+        message.snapViewed -> "Viewed photo"
+        else -> "Photo snap"
+    }
+    val caption = when {
+        message.isMine && message.snapViewed -> "The receiver viewed it"
+        message.isMine -> "View once · not opened yet"
+        message.snapViewed -> "Expired · deleted after viewing"
+        else -> "Tap to view · disappears after"
+    }
+
+    // The chip lives inside the sender's gradient bubble (white on rose)
+    // or the receiver's surfaceVariant bubble (onSurface).
+    val primaryColor = if (message.isMine) Color.White else MaterialTheme.colorScheme.onSurface
+    val fadedColor = if (message.isMine) {
+        Color.White.copy(alpha = 0.62f)
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+            .then(
+                if (openable) Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onOpenSnap?.invoke(message) }
+                else Modifier
+            )
+            .padding(vertical = 4.dp, horizontal = 2.dp)
+            .testTag("chat_snap_chip_${message.id}")
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(
+                    when {
+                        message.snapViewed -> Color.Black.copy(alpha = 0.18f)
+                        message.isMine -> Color.White.copy(alpha = 0.18f)
+                        else -> SparkRose.copy(alpha = 0.28f)
+                    }
+                )
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PhotoCamera,
+                contentDescription = "Photo snap",
+                tint = when {
+                    message.snapViewed -> fadedColor
+                    message.isMine -> Color.White
+                    else -> SparkRose
+                },
+                modifier = Modifier.size(19.dp)
+            )
+        }
+        Column {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                color = if (message.snapViewed) fadedColor else primaryColor
+            )
+            Text(
+                text = caption,
+                style = MaterialTheme.typography.labelSmall,
+                color = when {
+                    message.isMine -> Color.White.copy(alpha = 0.7f)
+                    message.snapViewed -> fadedColor
+                    else -> SparkRose
+                }
+            )
+        }
+    }
+}
+
+/**
+ * v3.3.7 — Fullscreen, FLAG_SECURE photo-snap viewer (Snapchat-style).
+ *
+ * While this dialog is composed the host window carries FLAG_SECURE:
+ * the Android system blocks screenshots AND the recents-screen preview.
+ * Closing the viewer completes the view-once cycle — the caller marks the
+ * snap viewed and permanently deletes the stored image server-side, so this
+ * bytes payload is the last time the photo exists anywhere.
+ */
+@Composable
+fun SnapViewerDialog(
+    isLoading: Boolean,
+    snapBytes: ByteArray?,
+    onDismiss: () -> Unit
+) {
+    // Screenshot prevention: FLAG_SECURE for exactly as long as the snap is
+    // on screen. Cleared on dispose so the rest of the app is unaffected.
+    val window = (LocalContext.current as? Activity)?.window
+    DisposableEffect(Unit) {
+        window?.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE
+        )
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable { onDismiss() },
+            contentAlignment = Alignment.Center
+        ) {
+            if (snapBytes != null) {
+                val bitmap = remember(snapBytes) {
+                    BitmapFactory.decodeByteArray(snapBytes, 0, snapBytes.size)
+                }
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "Photo snap",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(
+                        text = "This snap can't be displayed.",
+                        color = Color.White.copy(alpha = 0.8f)
+                    )
+                }
+            } else {
+                CircularProgressIndicator(color = Color.White)
+            }
+
+            // Header hint — screenshot notice + how to close.
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 48.dp)
+            ) {
+                Text(
+                    text = "📸 Photo Snap",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Screenshots are disabled · tap anywhere to close",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.75f)
+                )
+            }
+
+            // Footer hint.
+            Text(
+                text = "This photo disappears after viewing",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.6f),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 42.dp)
+            )
         }
     }
 }

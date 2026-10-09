@@ -226,7 +226,8 @@ object SupabaseRepository {
                         }
                     },
                     compatibilityScore = row.optInt("compatibility_score", 85),
-                    profileCompletionScore = row.optInt("profile_completion_score", 85)
+                    profileCompletionScore = row.optInt("profile_completion_score", 85),
+                    allowClubDm = row.optBoolean("allow_club_dm", true)
                 ),
                 onboardingCompleted = row.optBoolean("onboarding_completed", false),
                 onboardingStep = row.optInt("onboarding_step", 1)
@@ -343,7 +344,13 @@ object SupabaseRepository {
         val senderId: String,
         val text: String,
         val isRead: Boolean,
-        val createdAtIso: String?
+        val createdAtIso: String?,
+        /** v3.3.7: "TEXT" (default) or "SNAP" (view-once photo). */
+        val messageType: String = "TEXT",
+        /** v3.3.7: storage object path while the snap is unviewed; null once viewed. */
+        val snapPath: String? = null,
+        /** v3.3.7: true once the receiver opened the snap. */
+        val snapViewed: Boolean = false
     )
 
     /**
@@ -397,6 +404,38 @@ object SupabaseRepository {
             val matchRows = SupabaseClient.parseArray(rawMatches)
             if (matchRows.length() == 0) return@runCatching emptyList()
 
+            // 1b) v3.3.7 — 1:1 conversations started from a club member list
+            //     (`club_dm_conversations`). Ids are deterministic:
+            //     "dm_<smallerUserId>_<largerUserId>", so both sides agree
+            //     without a server round-trip. Failures are non-fatal.
+            val dmOtherByConversation = linkedMapOf<String, String>() // dm id -> other profile id
+            val dmCreatedAtByConversation = mutableMapOf<String, String>()
+            runCatching {
+                val rawDms = SupabaseClient.rest(
+                    method = "GET",
+                    path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_DM_CONVERSATIONS}",
+                    query = mapOf(
+                        "select" to "id,user_a_id,user_b_id,created_at",
+                        "or" to "(user_a_id.eq.$userId,user_b_id.eq.$userId)",
+                        "order" to "created_at.desc",
+                        "limit" to "50"
+                    ),
+                    accessToken = accessToken
+                )
+                val dmRows = SupabaseClient.parseArray(rawDms)
+                for (i in 0 until dmRows.length()) {
+                    val row = dmRows.optJSONObject(i) ?: continue
+                    val convId = row.optString("id")
+                    val a = row.optString("user_a_id")
+                    val b = row.optString("user_b_id")
+                    val other = if (a == userId) b else a
+                    if (convId.isBlank() || other.isBlank()) continue
+                    dmOtherByConversation[convId] = other
+                    row.optString("created_at").takeIf { it.isNotBlank() }
+                        ?.let { dmCreatedAtByConversation[convId] = it }
+                }
+            } // club-DM failures are non-fatal — matches still load
+
             // 2) The other side's profile per match (one batched read).
             val otherIds = linkedSetOf<String>()
             val otherByMatch = mutableMapOf<String, String>() // match row id -> other profile id
@@ -410,6 +449,9 @@ object SupabaseRepository {
                 otherIds.add(other)
             }
             val profileById = mutableMapOf<String, UserProfile>()
+            // Club-DM counterparts ride the SAME batched profile read — their
+            // ids are simply added to the match-other set before it fires.
+            otherIds.addAll(dmOtherByConversation.values.filter { it !in otherByMatch.values })
             if (otherIds.isNotEmpty()) {
                 val idFilter = otherIds.joinToString(",") { "\"$it\"" }
                 val rawProfiles = SupabaseClient.rest(
@@ -431,9 +473,10 @@ object SupabaseRepository {
             }
 
             // 3) The message history for every conversation (one batched read).
-            //    conversation_id == "match_<otherProfileId>" (client convention).
+            //    conversation_id == "match_<otherProfileId>" (client convention)
+            //    or "dm_<a>_<b>" for club-started 1:1 chats (v3.3.7).
             val conversationIdByMatch = otherByMatch.mapValues { (_, other) -> "match_$other" }
-            val convFilter = conversationIdByMatch.values
+            val convFilter = (conversationIdByMatch.values + dmOtherByConversation.keys)
                 .distinct()
                 .joinToString(",") { "\"$it\"" }
             val messagesByConversation = mutableMapOf<String, List<RemoteChatMessage>>()
@@ -442,7 +485,8 @@ object SupabaseRepository {
                     method = "GET",
                     path = "/rest/v1/${SupabaseConfig.TABLE_MESSAGES}",
                     query = mapOf(
-                        "select" to "id,conversation_id,sender_id,text,is_read,created_at",
+                        "select" to "id,conversation_id,sender_id,text,is_read,created_at," +
+                                "message_type,snap_path,snap_viewed",
                         "conversation_id" to "in.($convFilter)",
                         "order" to "created_at.asc",
                         "limit" to "500"
@@ -461,7 +505,10 @@ object SupabaseRepository {
                             senderId = row.optString("sender_id"),
                             text = row.optString("text"),
                             isRead = row.optBoolean("is_read", false),
-                            createdAtIso = row.optString("created_at").takeIf { it.isNotBlank() }
+                            createdAtIso = row.optString("created_at").takeIf { it.isNotBlank() },
+                            messageType = row.optStringOrNull("message_type") ?: "TEXT",
+                            snapPath = row.optStringOrNull("snap_path"),
+                            snapViewed = row.optBoolean("snap_viewed", false)
                         )
                 }
             } // unread-history failures are non-fatal
@@ -491,6 +538,27 @@ object SupabaseRepository {
                         )
                     )
                 }
+                // v3.3.7 — club-started 1:1 conversations ride the same list
+                // (Chats tab + history), keyed by their deterministic dm_ id.
+                for ((convId, otherId) in dmOtherByConversation) {
+                    val profile = profileById[otherId] ?: continue
+                    val messages = messagesByConversation[convId].orEmpty()
+                    val unread = messages.count {
+                        it.senderId != "user_me" && it.senderId != userId && !it.isRead
+                    }
+                    add(
+                        RemoteConversation(
+                            conversationId = convId,
+                            profile = profile,
+                            matchedAtIso = dmCreatedAtByConversation[convId],
+                            isNewMatch = false,
+                            hasActiveGame = false,
+                            lastMessageText = messages.lastOrNull()?.text,
+                            unreadCount = unread,
+                            messages = messages
+                        )
+                    )
+                }
             }
         }.getOrNull()
     }
@@ -514,7 +582,8 @@ object SupabaseRepository {
         photoUris = row.optJSONArray("photo_urls").toStringList(),
         interests = row.optJSONArray("interests").toStringList(),
         hobbies = row.optJSONArray("hobbies").toStringList(),
-        compatibilityScore = row.optInt("compatibility_score", 85)
+        compatibilityScore = row.optInt("compatibility_score", 85),
+        allowClubDm = row.optBoolean("allow_club_dm", true)
     )
 
     /**
@@ -654,15 +723,27 @@ object SupabaseRepository {
     /**
      * Persists a personal-chat message to the `messages` table.
      * Fire-and-forget: returns false instead of throwing.
+     *
+     * v3.3.7: [messageType] "SNAP" + [snapPath] store a view-once photo snap
+     * (the image itself lives in the private `snap-images` bucket; the row
+     * keeps only its object path until the receiver views it).
      */
     suspend fun insertChatMessage(
         conversationId: String,
         senderId: String,
         text: String,
-        accessToken: String? = null
+        accessToken: String? = null,
+        messageType: String = "TEXT",
+        snapPath: String? = null
     ): Boolean {
         if (!isConfigured()) return false
         return runCatching {
+            val body = JSONObject()
+                .put("conversation_id", conversationId)
+                .put("sender_id", senderId)
+                .put("text", text)
+                .put("message_type", messageType)
+            snapPath?.let { body.put("snap_path", it) }
             SupabaseClient.rest(
                 method = "POST",
                 path = "/rest/v1/${SupabaseConfig.TABLE_MESSAGES}",
@@ -672,14 +753,149 @@ object SupabaseRepository {
                 // message ever reached the server. The JWT is also required
                 // by the messages_insert RLS policy (authenticated only).
                 prefer = "return=minimal",
+                body = body.toString(),
+                accessToken = accessToken
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    // ==============================================================
+    // v3.3.7 — SNAP PHOTOS (view-once, Snapchat-style)
+    // ==============================================================
+
+    /**
+     * Uploads a captured snap photo to the PRIVATE `snap-images` bucket.
+     *
+     * The object path embeds a random UUID so it can never be guessed; the
+     * image is destroyed by [markSnapViewed] the moment the receiver opens
+     * it — the row keeps only a "viewed" flag afterwards.
+     *
+     * @return the storage object path (the row's `snap_path`), or null on failure.
+     */
+    suspend fun uploadSnapImage(
+        senderId: String,
+        bytes: ByteArray,
+        accessToken: String?
+    ): String? {
+        if (!isConfigured()) return null
+        val objectPath = "snaps/$senderId/${java.util.UUID.randomUUID()}.jpg"
+        val key = SupabaseClient.storageUpload(
+            bucket = SupabaseConfig.BUCKET_SNAP_IMAGES,
+            objectPath = objectPath,
+            bytes = bytes,
+            contentType = "image/jpeg",
+            accessToken = accessToken
+        )
+        if (key == null) {
+            android.util.Log.w("QuickySnaps", "Snap upload failed (sender=$senderId)")
+        }
+        return key
+    }
+
+    /**
+     * Downloads an unviewed snap for the fullscreen viewer (private bucket,
+     * rides the user JWT). Returns null on any failure — the chip then toasts
+     * "snap unavailable".
+     */
+    suspend fun downloadSnapImage(
+        objectPath: String,
+        accessToken: String?
+    ): ByteArray? {
+        if (!isConfigured()) return null
+        return SupabaseClient.storageDownload(
+            bucket = SupabaseConfig.BUCKET_SNAP_IMAGES,
+            objectPath = objectPath,
+            accessToken = accessToken
+        )
+    }
+
+    /**
+     * Atomic "snap viewed" (v3.3.7): the security-definer RPC
+     * `mark_snap_viewed(p_message_id)` marks the row snap_viewed=true,
+     * nulls its snap_path AND deletes the stored image object — the photo
+     * is permanently gone from the database at the instant it is viewed.
+     *
+     * The direct storage delete is the belt-and-braces fallback when the
+     * RPC is unavailable (pre-migration database).
+     */
+    suspend fun markSnapViewed(
+        messageId: String,
+        objectPath: String?,
+        accessToken: String?
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/rpc/${SupabaseConfig.RPC_MARK_SNAP_VIEWED}",
+                body = JSONObject().put("p_message_id", messageId).toString(),
+                accessToken = accessToken
+            )
+            true
+        }.onFailure { e ->
+            android.util.Log.w("QuickySnaps", "mark_snap_viewed RPC failed: ${e.message}")
+        }.getOrElse {
+            // Fallback: PATCH the row + delete the object directly.
+            val patched = runCatching {
+                SupabaseClient.rest(
+                    method = "PATCH",
+                    path = "/rest/v1/${SupabaseConfig.TABLE_MESSAGES}",
+                    query = mapOf("id" to "eq.$messageId"),
+                    prefer = "return=minimal",
+                    body = JSONObject()
+                        .put("snap_viewed", true)
+                        .put("snap_path", JSONObject.NULL)
+                        .toString(),
+                    accessToken = accessToken
+                )
+                true
+            }.getOrDefault(false)
+            val deleted = objectPath != null && SupabaseClient.storageDelete(
+                bucket = SupabaseConfig.BUCKET_SNAP_IMAGES,
+                objectPath = objectPath,
+                accessToken = accessToken
+            )
+            patched && (objectPath == null || deleted)
+        }
+    }
+
+    // ==============================================================
+    // v3.3.7 — CLUB PERSONAL CHATS (1:1 chats from a club member list)
+    // ==============================================================
+
+    /**
+     * Registers a club-started 1:1 conversation (`club_dm_conversations`).
+     *
+     * Idempotent: the pair (user_a_id, user_b_id) is unique and duplicates
+     * are ignored via `Prefer: resolution=ignore-duplicates`, so re-opening
+     * a chat never errors. [conversationId] is the deterministic
+     * "dm_<smallerUserId>_<largerUserId>" both devices derive on their own.
+     */
+    suspend fun insertClubDmConversation(
+        conversationId: String,
+        clubId: String,
+        userAId: String,
+        userBId: String,
+        accessToken: String?
+    ): Boolean {
+        if (!isConfigured()) return false
+        return runCatching {
+            SupabaseClient.rest(
+                method = "POST",
+                path = "/rest/v1/${SupabaseConfig.TABLE_CLUB_DM_CONVERSATIONS}",
+                prefer = "resolution=ignore-duplicates",
                 body = JSONObject()
-                    .put("conversation_id", conversationId)
-                    .put("sender_id", senderId)
-                    .put("text", text)
+                    .put("id", conversationId)
+                    .put("club_id", clubId)
+                    .put("user_a_id", userAId)
+                    .put("user_b_id", userBId)
                     .toString(),
                 accessToken = accessToken
             )
             true
+        }.onFailure { e ->
+            android.util.Log.w("QuickyClubs", "insertClubDmConversation failed: ${e.message}")
         }.getOrDefault(false)
     }
 
@@ -1203,6 +1419,37 @@ object SupabaseRepository {
                 }
             } // member-list failures are non-fatal — clubs still list
 
+            // 2b) v3.3.7 — one batched read of every member's
+            //     profiles.allow_club_dm flag so each member's 3-dot menu
+            //     knows whether "Chat personally" may be offered. A member
+            //     whose profile row is missing defaults to allowed.
+            //     Failures are non-fatal (defaults apply).
+            val allowDmByUserId = mutableMapOf<String, Boolean>()
+            runCatching {
+                val memberIds = membersByClub.values.flatten()
+                    .map { it.userId }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                if (memberIds.isNotEmpty()) {
+                    val idFilter = memberIds.joinToString(",") { "\"$it\"" }
+                    val rawFlags = SupabaseClient.rest(
+                        method = "GET",
+                        path = "/rest/v1/${SupabaseConfig.TABLE_PROFILES}",
+                        query = mapOf(
+                            "select" to "id,allow_club_dm",
+                            "id" to "in.($idFilter)"
+                        ),
+                        accessToken = accessToken
+                    )
+                    val flagRows = SupabaseClient.parseArray(rawFlags)
+                    for (i in 0 until flagRows.length()) {
+                        val row = flagRows.optJSONObject(i) ?: continue
+                        val pid = row.optString("id")
+                        if (pid.isNotBlank()) allowDmByUserId[pid] = row.optBoolean("allow_club_dm", true)
+                    }
+                }
+            }
+
             buildList {
                 for (i in 0 until clubRows.length()) {
                     val row = clubRows.optJSONObject(i) ?: continue
@@ -1219,7 +1466,9 @@ object SupabaseRepository {
                             status = row.optString("status").ifBlank { "ACTIVE" },
                             createdAt = isoToClubLabel(row.optString("created_at")),
                             category = row.optString("category").ifBlank { "Casual Gaming" },
-                            members = membersByClub[id] ?: mutableListOf()
+                            members = (membersByClub[id] ?: mutableListOf()).map { member ->
+                                member.copy(allowClubDm = allowDmByUserId[member.userId] ?: true)
+                            }
                         )
                     )
                 }

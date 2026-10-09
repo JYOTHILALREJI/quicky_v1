@@ -85,6 +85,8 @@ alter table public.profiles add column if not exists qualification        text  
 alter table public.profiles add column if not exists occupation           text           not null default '';
 alter table public.profiles add column if not exists latitude             double precision;
 alter table public.profiles add column if not exists longitude            double precision;
+-- v3.3.7 — club personal chats opt-in (Settings > Privacy, receiver side)
+alter table public.profiles add column if not exists allow_club_dm         boolean not null default true;
 
 -- v2 language discovery filter: GIN index so the `p.languages && :filter`
 -- array-overlap check in get_discovery_profiles stays fast at scale.
@@ -189,11 +191,22 @@ create table if not exists public.messages (
     is_read         boolean not null default false,
     reply_to_text   text,
     reply_to_sender text,
+    message_type    text not null default 'TEXT',   -- 'TEXT' or 'SNAP' (v3.3.7)
+    snap_path       text,                              -- unviewed snap storage path (v3.3.7)
+    snap_viewed     boolean not null default false,    -- true once receiver opened the snap
     created_at      timestamptz not null default now()
 );
 
 create index if not exists messages_conversation_idx
     on public.messages (conversation_id, created_at desc);
+
+-- v3.3.7 idempotent alters (existing databases get them via snap_chat_v337.sql)
+alter table public.messages add column if not exists message_type text not null default 'TEXT';
+alter table public.messages add column if not exists snap_path text;
+alter table public.messages add column if not exists snap_viewed boolean not null default false;
+create index if not exists messages_unviewed_snaps_idx
+    on public.messages (snap_viewed)
+    where message_type = 'SNAP' and snap_viewed = false;
 
 
 -- ============================================================================
@@ -264,6 +277,27 @@ create table if not exists public.club_messages (
 
 create index if not exists club_messages_club_idx
     on public.club_messages (club_id, created_at desc);
+
+
+-- ============================================================================
+-- 8b. CLUB DM CONVERSATIONS  (v3.3.7 — 1:1 chats started from a club member list)
+-- ============================================================================
+-- Ids are deterministic on both devices: 'dm_<smallerUserId>_<largerUserId>'.
+-- The message history rides the regular `messages` table with that id as
+-- conversation_id, so the Chats tab and history loading need no changes.
+create table if not exists public.club_dm_conversations (
+    id          text primary key,                -- 'dm_<smaller_id>_<larger_id>'
+    club_id     text not null,                   -- the club it was started from
+    user_a_id   text not null,                   -- lexicographically smaller participant
+    user_b_id   text not null,                   -- lexicographically larger participant
+    created_at  timestamptz not null default now(),
+    unique (user_a_id, user_b_id)
+);
+
+create index if not exists club_dm_conversations_a_idx
+    on public.club_dm_conversations (user_a_id);
+create index if not exists club_dm_conversations_b_idx
+    on public.club_dm_conversations (user_b_id);
 
 
 -- ============================================================================
@@ -388,6 +422,7 @@ alter table public.messages       enable row level security;
 alter table public.clubs          enable row level security;
 alter table public.club_members   enable row level security;
 alter table public.club_messages  enable row level security;
+alter table public.club_dm_conversations enable row level security;
 alter table public.notifications  enable row level security;
 alter table public.games          enable row level security;
 alter table public.game_prompts   enable row level security;
@@ -441,6 +476,15 @@ create policy "messages_update_mark_read" on public.messages
     with check (auth.role() = 'authenticated');
 drop policy if exists "messages_insert" on public.messages;
 create policy "messages_insert" on public.messages for insert with check (auth.role() = 'authenticated');
+
+-- club_dm_conversations (v3.3.7): readable + creatable by any authenticated
+-- user; the pair unique constraint makes re-opens idempotent.
+drop policy if exists "club_dm_select" on public.club_dm_conversations;
+create policy "club_dm_select" on public.club_dm_conversations
+    for select using (auth.role() = 'authenticated');
+drop policy if exists "club_dm_insert" on public.club_dm_conversations;
+create policy "club_dm_insert" on public.club_dm_conversations
+    for insert with check (auth.role() = 'authenticated');
 
 -- clubs: readable by all authenticated (needed for discovery)
 drop policy if exists "clubs_select" on public.clubs;
@@ -507,6 +551,25 @@ on conflict (id) do nothing;
 insert into storage.buckets (id, name, public)
 values ('stickers', 'stickers', true)
 on conflict (id) do nothing;
+
+-- v3.3.7: view-once snap photos (private; destroyed by mark_snap_viewed
+-- the moment a receiver views one)
+insert into storage.buckets (id, name, public)
+values ('snap-images', 'snap-images', false)
+on conflict (id) do nothing;
+
+drop policy if exists "snap_images_insert" on storage.objects;
+create policy "snap_images_insert" on storage.objects
+    for insert to authenticated
+    with check (bucket_id = 'snap-images');
+
+drop policy if exists "snap_images_select" on storage.objects;
+create policy "snap_images_select" on storage.objects
+    for select to authenticated
+    using (bucket_id = 'snap-images');
+-- NOTE: no client-side DELETE policy — only the security-definer RPC
+-- mark_snap_viewed deletes snap objects, so no user can destroy someone
+-- else's unviewed snap through the storage API.
 
 -- Public read for the public buckets; authenticated users can upload
 drop policy if exists "profile_photos_public_read" on storage.objects;
@@ -1601,6 +1664,48 @@ $$;
 
 revoke all on function public.activate_boost(int) from public, anon;
 grant execute on function public.activate_boost(int) to authenticated;
+
+
+-- ============================================================================
+-- QUICKY v3.3.7 — SNAP PHOTOS + CLUB PERSONAL CHATS
+--   (existing projects: run supabase/snap_chat_v337.sql instead — same content)
+-- ============================================================================
+
+-- mark_snap_viewed — atomic "snap viewed" (v3.3.7):
+--   1. permanently deletes the stored image from the `snap-images` bucket
+--   2. marks the message row snap_viewed=true and nulls its path reference
+-- Runs as security definer so it can delete storage objects; no client-side
+-- DELETE policy exists on the bucket, so this RPC is the ONLY deleter.
+create or replace function public.mark_snap_viewed(p_message_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    v_path text;
+begin
+    -- Fetch the current (unviewed) path.
+    select snap_path into v_path
+    from public.messages
+    where id = p_message_id and message_type = 'SNAP';
+
+    -- Permanently destroy the stored image FIRST — no window exists where
+    -- the row is marked but the bytes survive.
+    if v_path is not null then
+        delete from storage.objects
+        where bucket_id = 'snap-images' and name = v_path;
+    end if;
+
+    -- Flip the row to viewed; the path reference disappears with it.
+    update public.messages
+    set snap_viewed = true,
+        snap_path = null
+    where id = p_message_id;
+end $$;
+
+revoke all on function public.mark_snap_viewed(uuid) from public, anon;
+grant execute on function public.mark_snap_viewed(uuid) to authenticated;
 
 
 -- ============================================================================

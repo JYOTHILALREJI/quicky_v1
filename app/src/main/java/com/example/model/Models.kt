@@ -196,7 +196,13 @@ data class UserProfile(
     val compatibilityScore: Int = 85,
     val compatibilityHighlights: List<String> = emptyList(),
     val profileCompletionScore: Int = 85,
-    val missingCompletionItems: List<String> = listOf("Add 3rd photo", "Answer audio prompt")
+    val missingCompletionItems: List<String> = listOf("Add 3rd photo", "Answer audio prompt"),
+    /**
+     * v3.3.7: server-side flag (profiles.allow_club_dm) — when false, other
+     * club members cannot start a 1:1 chat with this user from a club's
+     * member list. Toggled by the user in Settings > Privacy.
+     */
+    val allowClubDm: Boolean = true
 )
 
 /**
@@ -255,7 +261,14 @@ data class ChatMessage(
     val gameCard: GameCardData? = null,
     val imageResId: Int? = null,
     val isVoiceMessage: Boolean = false,
-    val voiceDurationSeconds: Int? = null
+    val voiceDurationSeconds: Int? = null,
+    // ---- v3.3.7 Snap photos (view-once, Snapchat-style) ----
+    /** True for a view-once photo snap — renders a snap chip, never inline image. */
+    val isSnap: Boolean = false,
+    /** Storage object path of the unviewed snap (private `snap-images` bucket); null once viewed/expired or for the sender's optimistic bubble. */
+    val snapUrl: String? = null,
+    /** True once the receiver has opened the snap — the stored image is deleted server-side at that exact moment. */
+    val snapViewed: Boolean = false
 )
 
 data class GameCardData(
@@ -422,7 +435,9 @@ data class ClubMember(
     val isVerified: Boolean = true,
     val role: String = "MEMBER", // "OWNER" or "MEMBER"
     val status: String = "ACTIVE",
-    val joinedAt: String = "1d ago"
+    val joinedAt: String = "1d ago",
+    /** v3.3.7: mirror of profiles.allow_club_dm — whether this member accepts 1:1 chats started from the club member list. */
+    val allowClubDm: Boolean = true
 )
 
 data class ClubMessage(

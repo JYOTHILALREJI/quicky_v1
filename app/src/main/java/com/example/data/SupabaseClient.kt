@@ -178,6 +178,38 @@ object SupabaseClient {
         }.getOrNull()
     }
 
+    /**
+     * Deletes an object from a bucket. v3.3.7: used by the view-once snap
+     * flow — when a receiver opens a snap, the stored image is destroyed so
+     * it can never be fetched again (the RPC `mark_snap_viewed` is the
+     * authoritative path; this direct delete is the fallback).
+     *
+     * @return true when the server acknowledged the delete.
+     */
+    suspend fun storageDelete(
+        bucket: String,
+        objectPath: String,
+        accessToken: String? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url("${SupabaseConfig.SUPABASE_URL}/storage/v1/object/$bucket/$objectPath")
+                .apply { authHeaders(accessToken).forEach { (k, v) -> header(k, v) } }
+                .delete()
+                .build()
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    android.util.Log.w(
+                        "QuickyStorage",
+                        "Delete failed ($bucket/$objectPath): HTTP ${response.code}"
+                    )
+                    return@runCatching false
+                }
+                true
+            }
+        }.getOrDefault(false)
+    }
+
     /** Convenience: parse a REST response as a JSON array. */
     fun parseArray(raw: String): JSONArray = JSONArray(raw.ifEmpty { "[]" })
 

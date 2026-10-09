@@ -31,6 +31,8 @@ object SupabaseConfig {
     const val BUCKET_PROFILE_PHOTOS = "profile-photos"
     const val BUCKET_VOICE_NOTES = "voice-notes"
     const val BUCKET_STICKERS = "stickers"
+    /** v3.3.7: view-once snap photos (private — deleted the moment they're viewed). */
+    const val BUCKET_SNAP_IMAGES = "snap-images"
 
     // ------------------------------------------------------------
     // Database table names (public schema, accessed via PostgREST)
@@ -44,6 +46,8 @@ object SupabaseConfig {
     const val TABLE_CLUBS = "clubs"
     const val TABLE_CLUB_MEMBERS = "club_members"
     const val TABLE_CLUB_MESSAGES = "club_messages"
+    /** v3.3.7: 1:1 conversations started from a club's member list. */
+    const val TABLE_CLUB_DM_CONVERSATIONS = "club_dm_conversations"
     const val TABLE_NOTIFICATIONS = "notifications"
     const val TABLE_GAMES = "games"
     const val TABLE_GAME_PROMPTS = "game_prompts"
@@ -77,6 +81,9 @@ object SupabaseConfig {
 
     /** PRD v2.3 §11: SECURITY DEFINER activation — keeps boosts account-scoped. */
     const val RPC_ACTIVATE_BOOST = "activate_boost"
+
+    /** v3.3.7: atomic "snap viewed" — nulls the row's path + destroys the stored image. */
+    const val RPC_MARK_SNAP_VIEWED = "mark_snap_viewed"
 
     /**
      * True once real credentials have been filled in above.

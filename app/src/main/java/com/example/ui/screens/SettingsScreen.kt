@@ -70,6 +70,8 @@ fun SettingsScreen(
     notificationPrefs: NotificationPreferences,
     showMeOnDiscovery: Boolean,
     privacySettings: PrivacySettings,
+    /** v3.3.7: server-backed flag — whether club members may open a 1:1 chat with this user. */
+    allowClubDm: Boolean = true,
     accountEmail: String,
     blockedUsers: List<BlockedUser>,
     onBack: () -> Unit,
@@ -78,6 +80,8 @@ fun SettingsScreen(
     onNotificationPrefChange: (String, Boolean) -> Unit,
     onShowMeOnDiscoveryChange: (Boolean) -> Unit,
     onPrivacySettingsChange: (PrivacySettings) -> Unit,
+    /** v3.3.7: mirrors profiles.allow_club_dm to the server. */
+    onAllowClubDmChange: (Boolean) -> Unit = {},
     onUnblockUser: (String) -> Unit,
     onEditProfileClick: () -> Unit,
     onPersonalInformationClick: () -> Unit,
@@ -343,6 +347,23 @@ fun SettingsScreen(
                     subtitle = "Don't show how far you are from others",
                     checked = !privacySettings.showDistance,
                     onCheckedChange = { onPrivacySettingsChange(privacySettings.copy(showDistance = !it)) }
+                )
+                // v3.3.7 — club personal chats: when ON, other club members
+                // see a "Chat personally" entry in the member 3-dot menu;
+                // when OFF, they can't start a 1:1 chat from a club. Stored
+                // server-side (profiles.allow_club_dm) so every device sees
+                // the receiver's live choice.
+                SettingsToggleRow(
+                    icon = Icons.Outlined.Forum,
+                    iconTint = QuickyPurple,
+                    title = "Club Members Can Chat With Me",
+                    subtitle = if (allowClubDm) {
+                        "Clubs member list offers a personal chat with you"
+                    } else {
+                        "Your club profile won't offer personal chats"
+                    },
+                    checked = allowClubDm,
+                    onCheckedChange = onAllowClubDmChange
                 )
                 SettingsNavigationRow(
                     icon = Icons.Outlined.Download,

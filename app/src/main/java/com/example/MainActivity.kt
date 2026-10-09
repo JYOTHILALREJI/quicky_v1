@@ -329,6 +329,10 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                 onSetMemberSuspended = { clubId, memberUserId, suspendMember ->
                     viewModel.setClubMemberSuspended(clubId, memberUserId, suspendMember)
                 },
+                // v3.3.7 — 1:1 personal chat from the club member list.
+                onOpenPersonalChat = { member ->
+                    viewModel.openClubMemberChat(club.id, member)
+                },
                 onDeleteClub = { clubId -> viewModel.deleteClub(clubId) },
                 onJoinClub = { clubId ->
                     viewModel.joinClub(clubId)
@@ -402,7 +406,10 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
                         onOpenPremiumStore = { viewModel.openPremiumStore() },
                         onOpenLudo = { viewModel.openLudoGame() },
                         onOpenStickerPicker = { viewModel.openStickerPicker() },
-                        onSendVoiceMessage = { duration -> viewModel.sendVoiceMessage(selectedChat.id, duration) }
+                        onSendVoiceMessage = { duration -> viewModel.sendVoiceMessage(selectedChat.id, duration) },
+                        // v3.3.7 — view-once photo snaps (camera in composer).
+                        onSendSnap = { imageBytes -> viewModel.sendSnapMessage(selectedChat.id, imageBytes) },
+                        onOpenSnap = { snapMessage -> viewModel.openSnapMessage(snapMessage) }
                     )
                 } else {
                     when (currentTab) {
@@ -535,6 +542,8 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             notificationPrefs = state.notificationPrefs,
             showMeOnDiscovery = state.showMeOnDiscovery,
             privacySettings = state.privacySettings,
+            // v3.3.7 — server-backed "club members can chat with me" flag.
+            allowClubDm = state.userProfile.allowClubDm,
             // PRD §6: the email registered on the AUTHENTICATED Supabase
             // account — from the live session, never the profile UUID.
             accountEmail = state.authSession?.email.orEmpty(),
@@ -546,6 +555,7 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             onNotificationPrefChange = { key, value -> viewModel.updateNotificationPref(key, value) },
             onShowMeOnDiscoveryChange = { show -> viewModel.setShowMeOnDiscovery(show) },
             onPrivacySettingsChange = { settings -> viewModel.updatePrivacySettings(settings) },
+            onAllowClubDmChange = { allowed -> viewModel.setAllowClubDm(allowed) },
             onUnblockUser = { userId -> viewModel.unblockUser(userId) },
             onEditProfileClick = { showEditProfileSheet = true },
             onPersonalInformationClick = { viewModel.togglePersonalInformation(true) },
@@ -572,6 +582,17 @@ fun SparkApp(viewModel: SparkViewModel = viewModel()) {
             onSendMessage = { viewModel.startChatFromCelebration(matchedProfile, launchGame = false) },
             onPlayGame = { viewModel.startChatFromCelebration(matchedProfile, launchGame = true) },
             onDismiss = { viewModel.dismissMatchCelebration() }
+        )
+    }
+
+    // v3.3.7 — Fullscreen photo-snap viewer (FLAG_SECURE: screenshots are
+    // blocked while it is on screen). Closing it marks the snap viewed and
+    // permanently deletes the stored image server-side.
+    if (state.viewingSnap != null) {
+        SnapViewerDialog(
+            isLoading = state.isLoadingSnap,
+            snapBytes = state.viewingSnapBytes,
+            onDismiss = { viewModel.closeSnapViewer() }
         )
     }
 

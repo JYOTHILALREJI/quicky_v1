@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.People
@@ -96,6 +97,8 @@ fun ClubDetailScreen(
     onToggleReaction: (messageId: String, emoji: String) -> Unit = { _, _ -> },
     onReportMember: (clubId: String, memberUserId: String, reason: String, details: String) -> Unit = { _, _, _, _ -> },
     onSetMemberSuspended: (clubId: String, memberUserId: String, suspendMember: Boolean) -> Unit = { _, _, _ -> },
+    /** v3.3.7: open a 1:1 personal chat with this member (honours their Settings toggle). */
+    onOpenPersonalChat: (ClubMember) -> Unit = {},
     onDeleteClub: (String) -> Unit = {},
     onJoinClub: (String) -> Unit = {},
     onLeaveAndJoinClub: (String) -> Unit = {},
@@ -989,6 +992,22 @@ fun ClubDetailScreen(
                                                 expanded = true,
                                                 onDismissRequest = { memberModerationMenu = null }
                                             ) {
+                                                // v3.3.7 — 1:1 personal chat.
+                                                // Offered only while the
+                                                // member's own Settings >
+                                                // Privacy toggle allows it
+                                                // (re-checked fresh on tap).
+                                                if (member.allowClubDm) {
+                                                    DropdownMenuItem(
+                                                        text = { Text("💬 Chat personally", color = SparkPurple, fontWeight = FontWeight.Bold) },
+                                                        onClick = {
+                                                            memberModerationMenu = null
+                                                            showMembersSheet = false
+                                                            onOpenPersonalChat(member)
+                                                        },
+                                                        leadingIcon = { Icon(Icons.Outlined.Chat, contentDescription = null, tint = SparkPurple) }
+                                                    )
+                                                }
                                                 DropdownMenuItem(
                                                     text = { Text("🚩 Report Member") },
                                                     onClick = {
